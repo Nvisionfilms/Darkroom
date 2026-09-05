@@ -241,6 +241,21 @@ input[type="number"] {
 .mo-center {
   fill: #4f8cff;
 }
+.crop-mask {
+  fill: rgba(0, 0, 0, 0.55);
+  pointer-events: none;
+}
+.crop-frame {
+  fill: transparent;
+  stroke: #fff;
+  stroke-width: 1.5;
+  pointer-events: all;
+  cursor: move;
+}
+.crop-thirds line {
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-width: 1;
+}
 .wm-frame {
   fill: rgba(255, 255, 255, 0.04);
   stroke: #fff;

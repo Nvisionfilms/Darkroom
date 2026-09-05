@@ -9,6 +9,7 @@ import {
   startupFile,
   supportedExtensions,
 } from "./api";
+import { aspectRatio, CropPanel, fitAspect } from "./components/CropPanel";
 import { CurveEditor } from "./components/CurveEditor";
 import { ExportDialog } from "./components/ExportDialog";
 import { Histogram } from "./components/Histogram";
@@ -68,6 +69,8 @@ export default function App() {
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showExport, setShowExport] = useState(false);
+  const [cropMode, setCropMode] = useState(false);
+  const [aspectKey, setAspectKey] = useState("free");
   const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -144,6 +147,7 @@ export default function App() {
       performance.measure("ipc.get_preview", { start: t1 });
       setCurrent(info);
       setPreview(pv);
+      setCropMode(false);
       setParams(info.edits ?? defaultParams());
       setFiles((prev) => {
         const i = prev.findIndex((f) => f.path === info.path);
@@ -174,6 +178,23 @@ export default function App() {
   const rotate = useCallback(
     (deg: number) => setParams((p) => ({ ...p, rotation: (((p.rotation + deg) % 360) + 360) % 360 })),
     [],
+  );
+
+  const cropAspect = current ? aspectRatio(aspectKey, current.width, current.height) : null;
+  const toggleCropMode = useCallback(() => {
+    setCropMode((m) => {
+      if (!m) setParams((p) => ({ ...p, crop: { ...p.crop, enabled: true } }));
+      return !m;
+    });
+  }, []);
+  const chooseAspect = useCallback(
+    (key: string) => {
+      setAspectKey(key);
+      if (!current) return;
+      const ratio = aspectRatio(key, current.width, current.height);
+      setParams((p) => ({ ...p, crop: fitAspect(ratio, current.width, current.height, { ...p.crop, enabled: true }) }));
+    },
+    [current],
   );
 
   // dev hook for automation: window.__darkroom.load(path)
@@ -214,6 +235,12 @@ export default function App() {
       if (e.key === "\\") {
         setBefore(true);
         e.preventDefault();
+      } else if ((e.key === "Escape" || e.key === "Enter") && cropMode) {
+        e.preventDefault();
+        setCropMode(false);
+      } else if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && current) {
+        e.preventDefault();
+        toggleCropMode();
       } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
         e.preventDefault();
         void openFiles();
@@ -237,7 +264,7 @@ export default function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [openFiles, current, rotate]);
+  }, [openFiles, current, rotate, cropMode, toggleCropMode]);
 
   const set =
     <K extends keyof EditParams>(key: K) =>
@@ -261,6 +288,9 @@ export default function App() {
         </button>
         <button onClick={() => rotate(90)} disabled={!current} title="Rotate right (Ctrl+])">
           ⟳ Rotate
+        </button>
+        <button className={cropMode ? "active" : ""} onClick={toggleCropMode} disabled={!current} title="Crop (C)">
+          {cropMode ? "Done" : "Crop"}
         </button>
         <button
           className={before ? "active" : ""}
@@ -288,6 +318,10 @@ export default function App() {
           onMirrorChange={set("mirror")}
           watermark={params.watermark}
           onWatermarkChange={set("watermark")}
+          crop={params.crop}
+          cropMode={cropMode}
+          cropAspect={cropAspect}
+          onCropChange={set("crop")}
           onHistogram={setHist}
           onZoom={setZoom}
         />
@@ -295,6 +329,20 @@ export default function App() {
         <aside className="panel">
           <section>
             <Histogram hist={hist} />
+          </section>
+
+          <section>
+            <h3>Crop &amp; Straighten</h3>
+            <CropPanel
+              crop={params.crop}
+              cropMode={cropMode}
+              aspectKey={aspectKey}
+              imageWidth={current?.width ?? 1}
+              imageHeight={current?.height ?? 1}
+              onChange={set("crop")}
+              onAspect={chooseAspect}
+              onToggleMode={toggleCropMode}
+            />
           </section>
 
           <section>

@@ -27,6 +27,8 @@ Edits are stored in a sidecar `<image>.drk.json` next to the source and re-appli
   detail restoration; noise level estimated from the image
 - Output sharpening
 - Rotate 90° left / right
+- Crop and straighten: crop mode with draggable edges and corners, aspect presets, straighten angle
+- Session restore: reopens the photos you had open last time
 - Color grading: shadow / midtone / highlight tints with balance (split toning)
 - Mirror power window: an ellipse you drag on the image whose content is reflected across its
   far edge into a tail that fades with distance (feather, gap, direction, length, opacity)
@@ -91,6 +93,7 @@ is ad-hoc signed; add the `APPLE_*` secrets for a notarised build.
 | Ctrl+O | Open images |
 | Ctrl+E | Export |
 | Ctrl+[ / Ctrl+] | Rotate left / right |
+| C | Enter / leave crop mode (Enter or Esc also leaves) |
 | `\` (hold) | Show the unedited original |
 | Scroll | Zoom |
 | Drag | Pan |

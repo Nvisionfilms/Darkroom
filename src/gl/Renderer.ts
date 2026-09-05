@@ -1,4 +1,4 @@
-import type { EditParams, Histogram, Mirror, PreviewImage } from "../types";
+import { cropIsIdentity, type Crop, type EditParams, type Histogram, type Mirror, type PreviewImage } from "../types";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
@@ -7,6 +7,7 @@ import {
   DEVELOP_FRAG,
   DOWN2_FRAG,
   DOWNSAMPLE_FRAG,
+  IDENTITY3,
   LOGLUMA_FRAG,
   MIRROR_FRAG,
   PREP_FRAG,
@@ -286,6 +287,7 @@ export class Renderer {
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, target.tex, 0);
     gl.viewport(0, 0, target.w, target.h);
     gl.uniformMatrix3fv(this.loc(prog, "uTransform"), false, FULL_QUAD);
+    gl.uniformMatrix3fv(this.loc(prog, "uUvMat"), false, IDENTITY3);
     setup();
     gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
   }
@@ -594,13 +596,23 @@ export class Renderer {
     gl.generateMipmap(gl.TEXTURE_2D);
   }
 
-  /** Size of the image as displayed after rotation. */
-  displaySize(rotation: number): { w: number; h: number } {
-    return rotation % 180 === 0 ? { w: this.imgW, h: this.imgH } : { w: this.imgH, h: this.imgW };
+  /** Size of the crop output before 90° rotation (whole image when cropping is off or being edited). */
+  cropSize(crop?: Crop | null, cropMode = false): { w: number; h: number } {
+    if (!crop || cropMode || cropIsIdentity(crop)) return { w: this.imgW, h: this.imgH };
+    return {
+      w: Math.max(1, Math.round(Math.max(0.01, Math.min(1, crop.w)) * this.imgW)),
+      h: Math.max(1, Math.round(Math.max(0.01, Math.min(1, crop.h)) * this.imgH)),
+    };
   }
 
-  /** Draw the developed image to the canvas with pan/zoom, rotation and output sharpening. */
-  draw(view: View, sharpen: number, rotation = 0): void {
+  /** Size of the image as displayed after crop and rotation. */
+  displaySize(rotation: number, crop?: Crop | null, cropMode = false): { w: number; h: number } {
+    const c = this.cropSize(crop, cropMode);
+    return rotation % 180 === 0 ? c : { w: c.h, h: c.w };
+  }
+
+  /** Draw the developed image to the canvas with pan/zoom, crop/straighten, rotation and output sharpening. */
+  draw(view: View, sharpen: number, rotation = 0, crop?: Crop | null, cropMode = false): void {
     const gl = this.gl;
     const cw = this.canvas.width;
     const ch = this.canvas.height;
@@ -616,8 +628,35 @@ export class Renderer {
     gl.uniform1i(this.loc(pr, "uTex"), 0);
     gl.uniform2f(this.loc(pr, "uTexel"), 1 / this.imgW, 1 / this.imgH);
     gl.uniform1f(this.loc(pr, "uSharpen"), Math.max(0, Math.min(1.5, sharpen / 100)));
-    const W = this.imgW;
-    const H = this.imgH;
+    gl.uniform3f(this.loc(pr, "uOutside"), 0.09, 0.09, 0.09);
+    // crop/straighten: the quad shows the crop output (or the whole straightened
+    // canvas in crop mode); uUvMat maps quad coords to source texture coords
+    const out = this.cropSize(crop, cropMode);
+    const active = !!crop && crop.enabled && !cropIsIdentity(crop);
+    const ang = active ? (crop!.angle * Math.PI) / 180 : 0;
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const IW = this.imgW;
+    const IH = this.imgH;
+    const cx = IW / 2;
+    const cy = IH / 2;
+    const x0 = active && !cropMode ? Math.max(0, Math.min(1, crop!.x)) * IW : 0;
+    const y0 = active && !cropMode ? Math.max(0, Math.min(1, crop!.y)) * IH : 0;
+    const tx = cx + ca * (x0 - cx) - sa * (y0 - cy);
+    const ty = cy + sa * (x0 - cx) + ca * (y0 - cy);
+    gl.uniformMatrix3fv(this.loc(pr, "uUvMat"), false, [
+      (ca * out.w) / IW,
+      (sa * out.w) / IH,
+      0,
+      (-sa * out.h) / IW,
+      (ca * out.h) / IH,
+      0,
+      tx / IW,
+      ty / IH,
+      1,
+    ]);
+    const W = out.w;
+    const H = out.h;
     let px: [number, number, number];
     let py: [number, number, number];
     switch (((rotation % 360) + 360) % 360) {

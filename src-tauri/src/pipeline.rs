@@ -72,6 +72,8 @@ pub struct EditParams {
     pub mirror: Mirror,
     #[serde(default)]
     pub watermark: Watermark,
+    #[serde(default)]
+    pub crop: Crop,
     pub hsl: HslParams,
     pub curves: Curves,
 }
@@ -269,6 +271,73 @@ pub fn watermark_pass(img: &mut [f32], width: usize, height: usize, w: &Watermar
         });
 }
 
+/// Crop + straighten. The image is first rotated by `angle` degrees about its
+/// centre (the "straightened canvas", same size as the source), then the
+/// rectangle (x, y, w, h), given as fractions of the source width/height in
+/// that canvas, is kept. Applied after mirror/watermark, before 90° rotation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Crop {
+    pub enabled: bool,
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    /// straighten angle in degrees, clockwise positive
+    pub angle: f32,
+}
+
+impl Default for Crop {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            x: 0.0,
+            y: 0.0,
+            w: 1.0,
+            h: 1.0,
+            angle: 0.0,
+        }
+    }
+}
+
+impl Crop {
+    pub fn is_identity(&self) -> bool {
+        !self.enabled || (self.angle == 0.0 && self.x <= 0.0 && self.y <= 0.0 && self.w >= 1.0 && self.h >= 1.0)
+    }
+}
+
+/// Apply crop + straighten to a developed buffer. Returns (data, width, height).
+/// Twin of the `uUvMat` path in the present shader.
+pub fn crop_pass(img: &[f32], width: usize, height: usize, c: &Crop) -> (Vec<f32>, usize, usize) {
+    if c.is_identity() {
+        return (img.to_vec(), width, height);
+    }
+    let (wf, hf) = (width as f32, height as f32);
+    let ow = ((c.w.clamp(0.01, 1.0) * wf).round() as usize).max(1);
+    let oh = ((c.h.clamp(0.01, 1.0) * hf).round() as usize).max(1);
+    let x0 = c.x.clamp(0.0, 1.0) * wf;
+    let y0 = c.y.clamp(0.0, 1.0) * hf;
+    let (cx, cy) = (wf / 2.0, hf / 2.0);
+    let a = c.angle.to_radians();
+    let (ca, sa) = (a.cos(), a.sin());
+    let mut out = vec![0.0f32; ow * oh * 3];
+    out.par_chunks_mut(ow * 3).enumerate().for_each(|(oy, row)| {
+        let sy = y0 + oy as f32 + 0.5 - cy;
+        for ox in 0..ow {
+            let sx = x0 + ox as f32 + 0.5 - cx;
+            // straightened canvas -> source: rotate about the centre
+            let px = cx + ca * sx - sa * sy;
+            let py = cy + sa * sx + ca * sy;
+            if px < 0.0 || py < 0.0 || px >= wf || py >= hf {
+                continue; // outside the source: black
+            }
+            let s = bilinear(img, width, height, px - 0.5, py - 0.5);
+            row[ox * 3..ox * 3 + 3].copy_from_slice(&s);
+        }
+    });
+    (out, ow, oh)
+}
+
 fn default_denoise_chroma() -> f32 {
     25.0
 }
@@ -301,6 +370,7 @@ impl Default for EditParams {
             grading: Grading::default(),
             mirror: Mirror::default(),
             watermark: Watermark::default(),
+            crop: Crop::default(),
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],

@@ -4,12 +4,15 @@
 export const VERTEX = `#version 300 es
 in vec2 aPos;
 uniform mat3 uTransform;
+uniform mat3 uUvMat;   // unit quad -> texture coords (identity except for crop/straighten)
 out vec2 vUv;
 void main() {
-  vUv = aPos;
+  vUv = (uUvMat * vec3(aPos, 1.0)).xy;
   vec3 p = uTransform * vec3(aPos, 1.0);
   gl_Position = vec4(p.xy, 0.0, 1.0);
 }`;
+
+export const IDENTITY3: number[] = [1, 0, 0, 0, 1, 0, 0, 0, 1];
 
 const COMMON = `
 const vec3 LUMA_PROXY = vec3(0.2627, 0.6780, 0.0593);
@@ -440,8 +443,13 @@ out vec4 outColor;
 uniform sampler2D uTex;
 uniform vec2 uTexel;
 uniform float uSharpen;
+uniform vec3 uOutside;   // colour for texels outside the image (straighten corners)
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
 void main() {
+  if (any(lessThan(vUv, vec2(0.0))) || any(greaterThan(vUv, vec2(1.0)))) {
+    outColor = vec4(uOutside, 1.0);
+    return;
+  }
   vec3 c = texture(uTex, vUv).rgb;
   if (uSharpen > 0.0) {
     float b = 0.0;

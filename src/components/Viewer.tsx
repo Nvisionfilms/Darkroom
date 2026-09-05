@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
 import { getWatermarkPixels, openWatermark } from "../api";
-import type { EditParams, Histogram, Mirror, PreviewImage, Watermark } from "../types";
+import { cropIsIdentity, type Crop, type EditParams, type Histogram, type Mirror, type PreviewImage, type Watermark } from "../types";
+import { CropOverlay } from "./CropOverlay";
 import { MirrorOverlay, type Mapper } from "./MirrorOverlay";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 
@@ -16,6 +17,10 @@ interface Props {
   onMirrorChange?: (m: Mirror) => void;
   watermark?: Watermark | null;
   onWatermarkChange?: (w: Watermark) => void;
+  crop?: Crop | null;
+  cropMode?: boolean;
+  cropAspect?: number | null;
+  onCropChange?: (c: Crop) => void;
   onHistogram: (h: Histogram) => void;
   onZoom: (label: string) => void;
 }
@@ -43,6 +48,10 @@ export function Viewer({
   onMirrorChange,
   watermark,
   onWatermarkChange,
+  crop,
+  cropMode = false,
+  cropAspect = null,
+  onCropChange,
   onHistogram,
   onZoom,
 }: Props) {
@@ -56,6 +65,10 @@ export function Viewer({
   const fitRef = useRef(true);
   const rotRef = useRef(0);
   rotRef.current = rotation;
+  const cropRef = useRef<Crop | null>(null);
+  cropRef.current = crop ?? null;
+  const cropModeRef = useRef(false);
+  cropModeRef.current = cropMode;
   const developDirty = useRef(true);
   const frame = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -74,7 +87,7 @@ export function Viewer({
     const r = rendererRef.current;
     const c = canvasRef.current;
     if (!r || !c || !r.imgW) return;
-    const d = r.displaySize(rotRef.current);
+    const d = r.displaySize(rotRef.current, cropRef.current, cropModeRef.current);
     const s = Math.min(c.width / d.w, c.height / d.h);
     viewRef.current = {
       scale: s,
@@ -89,7 +102,7 @@ export function Viewer({
     const c = canvasRef.current;
     if (!r || !c) return;
     const v = viewRef.current;
-    const d = r.displaySize(rotRef.current);
+    const d = r.displaySize(rotRef.current, cropRef.current, cropModeRef.current);
     const w = d.w * v.scale;
     const h = d.h * v.scale;
     if (w <= c.width) v.x = (c.width - w) / 2;
@@ -124,9 +137,9 @@ export function Viewer({
       developDirty.current = false;
       histPending.current = true;
     }
-    r.draw(viewRef.current, params.sharpen, rotRef.current);
+    r.draw(viewRef.current, params.sharpen, rotRef.current, cropRef.current, cropModeRef.current);
     onZoom(zoomLabel());
-    if (mirror?.enabled || watermark?.enabled) setOverlayTick((t) => t + 1);
+    if (mirror?.enabled || watermark?.enabled || cropMode) setOverlayTick((t) => t + 1);
     // read the histogram only once the GPU is done, so the UI never waits on it
     if (histPending.current) {
       if (r.histogramReady()) {
@@ -239,6 +252,13 @@ export function Viewer({
     };
   }, [wmPath, requestRender]);
 
+  // crop mode or crop output size changed: refit
+  const cropKey = crop ? `${cropMode}|${cropIsIdentity(crop)}|${crop.w.toFixed(4)}|${crop.h.toFixed(4)}|${crop.angle}` : "";
+  useEffect(() => {
+    fit();
+    requestRender();
+  }, [cropKey, fit, requestRender]);
+
   // rotation changed: refit so the whole image stays visible
   useEffect(() => {
     fit();
@@ -255,7 +275,7 @@ export function Viewer({
     const mx = (e.clientX - rect.left) * d;
     const my = (e.clientY - rect.top) * d;
     const v = viewRef.current;
-    const dsz = r.displaySize(rotRef.current);
+    const dsz = r.displaySize(rotRef.current, cropRef.current, cropModeRef.current);
     const fitScale = Math.min(c.width / dsz.w, c.height / dsz.h);
     const k = Math.exp(-e.deltaY * 0.0015);
     const ns = Math.max(fitScale * 0.25, Math.min(8 * d, v.scale * k));
@@ -312,39 +332,73 @@ export function Viewer({
   // mapper for the overlay (recomputed each render; overlayTick forces updates after pan/zoom)
   let mapper: Mapper | null = null;
   const rr = rendererRef.current;
-  if ((mirror?.enabled || (watermark?.enabled && watermark.path)) && rr && rr.imgW && image) {
+  if ((cropMode || mirror?.enabled || (watermark?.enabled && watermark.path)) && rr && rr.imgW && image) {
     void overlayTick;
     const d = dpr();
     const v = viewRef.current;
     const W = rr.imgW;
     const H = rr.imgH;
-    const { px, py } = rotationCoeffs(rotation, W, H);
-    const toScreen = (ix: number, iy: number): [number, number] => {
-      const u = ix / W;
-      const vv = iy / H;
+    const out = rr.cropSize(crop, cropMode);
+    const active = !!crop && crop.enabled && !cropIsIdentity(crop);
+    const ang = active ? (crop!.angle * Math.PI) / 180 : 0;
+    const ca = Math.cos(ang);
+    const sa = Math.sin(ang);
+    const cx = W / 2;
+    const cy = H / 2;
+    const x0 = active && !cropMode ? Math.max(0, Math.min(1, crop!.x)) * W : 0;
+    const y0 = active && !cropMode ? Math.max(0, Math.min(1, crop!.y)) * H : 0;
+    const { px, py } = rotationCoeffs(rotation, out.w, out.h);
+    // straightened-canvas coords -> screen
+    const canvasToScreen = (sx: number, sy: number): [number, number] => {
+      const u = (sx - x0) / out.w;
+      const vv = (sy - y0) / out.h;
       const dx = px[0] * u + px[1] * vv + px[2];
       const dy = py[0] * u + py[1] * vv + py[2];
       return [(v.x + dx * v.scale) / d, (v.y + dy * v.scale) / d];
     };
-    const toImage = (sx: number, sy: number): [number, number] => {
-      const dx = (sx * d - v.x) / v.scale;
-      const dy = (sy * d - v.y) / v.scale;
+    const screenToCanvas = (sxs: number, sys: number): [number, number] => {
+      const dx = (sxs * d - v.x) / v.scale;
+      const dy = (sys * d - v.y) / v.scale;
+      let u: number;
+      let vv: number;
       switch (((rotation % 360) + 360) % 360) {
         case 90:
-          return [dy, H - dx];
+          u = dy / out.w;
+          vv = 1 - dx / out.h;
+          break;
         case 180:
-          return [W - dx, H - dy];
+          u = 1 - dx / out.w;
+          vv = 1 - dy / out.h;
+          break;
         case 270:
-          return [W - dy, dx];
+          u = 1 - dy / out.w;
+          vv = dx / out.h;
+          break;
         default:
-          return [dx, dy];
+          u = dx / out.w;
+          vv = dy / out.h;
       }
+      return [x0 + u * out.w, y0 + vv * out.h];
+    };
+    // source coords <-> canvas coords (rotate about the centre by the straighten angle)
+    const toScreen = (ix: number, iy: number): [number, number] => {
+      const rx = ix - cx;
+      const ry = iy - cy;
+      return canvasToScreen(cx + ca * rx + sa * ry, cy - sa * rx + ca * ry);
+    };
+    const toImage = (sxs: number, sys: number): [number, number] => {
+      const [sx, sy] = screenToCanvas(sxs, sys);
+      const rx = sx - cx;
+      const ry = sy - cy;
+      return [cx + ca * rx - sa * ry, cy + sa * rx + ca * ry];
     };
     mapper = {
       toScreen,
       toImage,
+      canvasToScreen,
+      screenToCanvas,
       scale: v.scale / d,
-      screenRotation: ((rotation % 360) + 360) % 360,
+      screenRotation: (((rotation % 360) + 360) % 360) - (active ? crop!.angle : 0),
       width: W,
       height: H,
     };
@@ -362,10 +416,13 @@ export function Viewer({
       onDoubleClick={onDoubleClick}
     >
       <canvas ref={canvasRef} />
-      {mapper && mirror?.enabled && onMirrorChange && (
+      {mapper && cropMode && crop && onCropChange && (
+        <CropOverlay crop={crop} aspect={cropAspect} mapper={mapper} onChange={onCropChange} />
+      )}
+      {mapper && !cropMode && mirror?.enabled && onMirrorChange && (
         <MirrorOverlay mirror={mirror} mapper={mapper} onChange={onMirrorChange} />
       )}
-      {mapper && watermark?.enabled && watermark.path && onWatermarkChange && (
+      {mapper && !cropMode && watermark?.enabled && watermark.path && onWatermarkChange && (
         <WatermarkOverlay watermark={watermark} aspect={wmAspect} mapper={mapper} onChange={onWatermarkChange} />
       )}
       {error && <div className="viewer-error">{error}</div>}

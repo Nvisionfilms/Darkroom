@@ -56,6 +56,19 @@ export interface Watermark {
   opacity: number;
 }
 
+/**
+ * Crop + straighten. Rectangle as fractions of the source size, measured on
+ * the canvas after rotating the source by `angle` degrees about its centre.
+ */
+export interface Crop {
+  enabled: boolean;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  angle: number;
+}
+
 export interface EditParams {
   exposure: number;
   contrast: number;
@@ -84,6 +97,7 @@ export interface EditParams {
   grading: Grading;
   mirror: Mirror;
   watermark: Watermark;
+  crop: Crop;
   hsl: HslParams;
   curves: Curves;
 }
@@ -173,6 +187,14 @@ export interface WatermarkInfo {
   height: number;
 }
 
+export function defaultCrop(): Crop {
+  return { enabled: false, x: 0, y: 0, w: 1, h: 1, angle: 0 };
+}
+
+export function cropIsIdentity(c: Crop): boolean {
+  return !c.enabled || (c.angle === 0 && c.x <= 0 && c.y <= 0 && c.w >= 1 && c.h >= 1);
+}
+
 export function defaultParams(): EditParams {
   return {
     exposure: 0,
@@ -196,6 +218,7 @@ export function defaultParams(): EditParams {
     grading: defaultGrading(),
     mirror: defaultMirror(),
     watermark: defaultWatermark(),
+    crop: defaultCrop(),
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),

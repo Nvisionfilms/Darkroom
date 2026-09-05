@@ -7,6 +7,9 @@ export interface Mapper {
   toScreen: (ix: number, iy: number) => [number, number];
   /** CSS pixel inside the viewer -> image pixel */
   toImage: (sx: number, sy: number) => [number, number];
+  /** straightened-canvas pixel (crop space) <-> CSS pixel */
+  canvasToScreen: (sx: number, sy: number) => [number, number];
+  screenToCanvas: (sx: number, sy: number) => [number, number];
   /** image px per CSS px */
   scale: number;
   /** total on-screen rotation of image axes, degrees */
