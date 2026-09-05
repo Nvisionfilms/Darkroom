@@ -1,0 +1,171 @@
+pub mod color;
+pub mod decode;
+pub mod denoise;
+pub mod detail;
+pub mod export;
+pub mod pipeline;
+pub mod sidecar;
+
+use decode::{LinearImage, Metadata};
+use pipeline::EditParams;
+use serde::Serialize;
+use std::path::Path;
+use std::sync::{Arc, Mutex};
+use tauri::ipc::Response;
+use tauri::State;
+
+const PREVIEW_MAX_EDGE: usize = 2560;
+const THUMB_MAX_EDGE: usize = 240;
+
+pub struct Loaded {
+    path: String,
+    image: Arc<LinearImage>,
+    preview_f16: Arc<Vec<u8>>,
+    preview_w: usize,
+    preview_h: usize,
+    preview_sigma: f32,
+}
+
+#[derive(Default)]
+pub struct AppState {
+    loaded: Mutex<Option<Loaded>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImageInfo {
+    path: String,
+    width: usize,
+    height: usize,
+    preview_width: usize,
+    preview_height: usize,
+    /// noise sigma of the preview in the sqrt-luma domain (see denoise.rs)
+    noise_sigma: f32,
+    metadata: Metadata,
+    edits: Option<EditParams>,
+    thumbnail: String,
+}
+
+fn err(e: anyhow::Error) -> String {
+    format!("{e:#}")
+}
+
+#[tauri::command]
+async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInfo, String> {
+    let p = path.clone();
+    let (loaded, meta, thumb) = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<_> {
+        let t0 = std::time::Instant::now();
+        let (image, meta) = decode::load(Path::new(&p))?;
+        let t1 = t0.elapsed();
+        let preview = decode::downsample(&image, PREVIEW_MAX_EDGE);
+        let t2 = t0.elapsed();
+        let thumb = export::thumbnail_data_url(&preview, THUMB_MAX_EDGE)?;
+        let t3 = t0.elapsed();
+        let sigma = denoise::estimate_sigma(&preview.data, preview.width, preview.height);
+        let t4 = t0.elapsed();
+        let f16 = decode::to_f16_bytes(&preview.data);
+        log::info!(
+            "open {}x{}: decode {:.2}s, preview {:.2}s, thumb {:.2}s, sigma {:.2}s ({sigma:.5}), f16 {:.2}s",
+            image.width,
+            image.height,
+            t1.as_secs_f32(),
+            (t2 - t1).as_secs_f32(),
+            (t3 - t2).as_secs_f32(),
+            (t4 - t3).as_secs_f32(),
+            (t0.elapsed() - t4).as_secs_f32()
+        );
+        Ok((
+            Loaded {
+                path: p,
+                image: Arc::new(image),
+                preview_f16: Arc::new(f16),
+                preview_w: preview.width,
+                preview_h: preview.height,
+                preview_sigma: sigma,
+            },
+            meta,
+            thumb,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+
+    let info = ImageInfo {
+        path: loaded.path.clone(),
+        width: loaded.image.width,
+        height: loaded.image.height,
+        preview_width: loaded.preview_w,
+        preview_height: loaded.preview_h,
+        noise_sigma: loaded.preview_sigma,
+        metadata: meta,
+        edits: sidecar::load(Path::new(&loaded.path)),
+        thumbnail: thumb,
+    };
+    *state.loaded.lock().unwrap() = Some(loaded);
+    Ok(info)
+}
+
+/// Returns the preview as raw little-endian RGB half floats (3 x u16 per pixel).
+#[tauri::command]
+fn get_preview(state: State<'_, AppState>) -> Result<Response, String> {
+    let guard = state.loaded.lock().unwrap();
+    let loaded = guard.as_ref().ok_or("no image loaded")?;
+    Ok(Response::new(loaded.preview_f16.as_ref().clone()))
+}
+
+#[tauri::command]
+fn save_edits(path: String, edits: EditParams) -> Result<(), String> {
+    sidecar::save(Path::new(&path), &edits).map_err(err)
+}
+
+#[tauri::command]
+async fn export_image(req: export::ExportRequest, state: State<'_, AppState>) -> Result<String, String> {
+    let image = {
+        let guard = state.loaded.lock().unwrap();
+        let loaded = guard.as_ref().ok_or("no image loaded")?;
+        loaded.image.clone()
+    };
+    let out = req.out_path.clone();
+    tauri::async_runtime::spawn_blocking(move || export::export(&image, &req))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)?;
+    Ok(out)
+}
+
+/// Image path passed on the command line (`darkroom photo.CR3`), if any.
+#[tauri::command]
+fn startup_file() -> Option<String> {
+    std::env::args()
+        .skip(1)
+        .find(|a| !a.starts_with('-') && Path::new(a).is_file())
+}
+
+#[tauri::command]
+fn supported_extensions() -> Vec<String> {
+    decode::RAW_EXTENSIONS
+        .iter()
+        .chain(decode::IMAGE_EXTENSIONS.iter())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
+pub fn run() {
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+    tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
+        .manage(AppState::default())
+        .invoke_handler(tauri::generate_handler![
+            open_image,
+            get_preview,
+            save_edits,
+            export_image,
+            startup_file,
+            supported_extensions
+        ])
+        .run(tauri::generate_context!())
+        .expect("error while running tauri application");
+}
