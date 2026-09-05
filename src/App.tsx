@@ -17,7 +17,10 @@ import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { Slider } from "./components/Slider";
+import { AboutDialog } from "./components/AboutDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
+import { useUpdater } from "./updater";
+import { getVersion } from "@tauri-apps/api/app";
 import { Viewer } from "./components/Viewer";
 import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
@@ -71,6 +74,12 @@ export default function App() {
   const [showExport, setShowExport] = useState(false);
   const [cropMode, setCropMode] = useState(false);
   const [aspectKey, setAspectKey] = useState("free");
+  const [showAbout, setShowAbout] = useState(false);
+  const [version, setVersion] = useState("");
+  const updater = useUpdater(version);
+  useEffect(() => {
+    getVersion().then(setVersion).catch(() => setVersion("dev"));
+  }, []);
   const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
@@ -303,6 +312,9 @@ export default function App() {
           Before
         </button>
         <span className="spacer" />
+        <button onClick={() => setShowAbout(true)} title="Version and updates">
+          About
+        </button>
         {loading && <span className="status">Loading {loading}…</span>}
         {current && !loading && <span className="status meta">{metaLine(current)}</span>}
         <span className="status zoom">{zoom}</span>
@@ -491,7 +503,16 @@ export default function App() {
         ))}
       </footer>
 
-      <UpdateBanner />
+      {!showAbout && <UpdateBanner status={updater.status} onInstall={updater.install} onDismiss={updater.dismiss} />}
+      {showAbout && (
+        <AboutDialog
+          version={version}
+          status={updater.status}
+          onCheck={updater.checkNow}
+          onInstall={updater.install}
+          onClose={() => setShowAbout(false)}
+        />
+      )}
       {error && (
         <div className="toast" onClick={() => setError(null)}>
           {error}

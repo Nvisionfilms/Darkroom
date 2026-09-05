@@ -510,3 +510,29 @@ input[type="number"] {
   user-select: text;
   word-break: break-all;
 }
+
+.modal.about {
+  width: 360px;
+}
+.about-version {
+  color: var(--muted);
+  margin-bottom: 10px;
+}
+.about-line {
+  min-height: 18px;
+  user-select: text;
+}
+.about-progress {
+  display: block;
+  width: 100%;
+  margin-top: 8px;
+}
+.about-repo {
+  margin-top: 10px;
+  font-size: 11px;
+  color: #666;
+  user-select: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
