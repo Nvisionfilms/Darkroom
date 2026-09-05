@@ -7,7 +7,9 @@ import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { Slider } from "./components/Slider";
+import { UpdateBanner } from "./components/UpdateBanner";
 import { Viewer } from "./components/Viewer";
+import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
 import { defaultParams, type EditParams, type Histogram as Hist, type ImageInfo, type PreviewImage } from "./types";
 import "./App.css";
@@ -232,6 +234,8 @@ export default function App() {
           rotation={params.rotation}
           mirror={params.mirror}
           onMirrorChange={set("mirror")}
+          watermark={params.watermark}
+          onWatermarkChange={set("watermark")}
           onHistogram={setHist}
           onZoom={setZoom}
         />
@@ -312,6 +316,22 @@ export default function App() {
           </section>
 
           <section>
+            <h3>
+              Watermark
+              <label className="h3-toggle">
+                <input
+                  type="checkbox"
+                  checked={params.watermark.enabled}
+                  disabled={!params.watermark.path}
+                  onChange={(e) => set("watermark")({ ...params.watermark, enabled: e.target.checked })}
+                />
+                on
+              </label>
+            </h3>
+            <WatermarkPanel watermark={params.watermark} onChange={set("watermark")} onError={setError} />
+          </section>
+
+          <section>
             <h3>Detail</h3>
             <Slider label="Texture" value={params.texture} min={-100} max={100} onChange={set("texture")} />
             <Slider label="Clarity" value={params.clarity} min={-100} max={100} onChange={set("clarity")} />
@@ -371,6 +391,7 @@ export default function App() {
         ))}
       </footer>
 
+      <UpdateBanner />
       {error && (
         <div className="toast" onClick={() => setError(null)}>
           {error}

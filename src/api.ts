@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { EditParams, ExportRequest, ImageInfo, PreviewImage } from "./types";
+import type { EditParams, ExportRequest, ImageInfo, PreviewImage, WatermarkInfo } from "./types";
 
 export async function openImage(path: string): Promise<ImageInfo> {
   return invoke<ImageInfo>("open_image", { path });
@@ -22,6 +22,27 @@ export async function saveEdits(path: string, edits: EditParams): Promise<void> 
 
 export async function exportImage(req: ExportRequest): Promise<string> {
   return invoke<string>("export_image", { req });
+}
+
+/** Decode a watermark image on the Rust side; returns its size. */
+export async function openWatermark(path: string): Promise<WatermarkInfo> {
+  return invoke<WatermarkInfo>("open_watermark", { path });
+}
+
+/** RGBA8 pixels of the watermark loaded with openWatermark. */
+export async function getWatermarkPixels(): Promise<Uint8Array> {
+  const buf = await invoke<ArrayBuffer>("get_watermark_pixels");
+  return new Uint8Array(buf);
+}
+
+export async function pickWatermark(): Promise<string | null> {
+  const result = await open({
+    multiple: false,
+    directory: false,
+    filters: [{ name: "Watermark image", extensions: ["png", "jpg", "jpeg", "webp", "tif", "tiff"] }],
+  });
+  if (!result) return null;
+  return Array.isArray(result) ? result[0] : result;
 }
 
 export async function startupFile(): Promise<string | null> {

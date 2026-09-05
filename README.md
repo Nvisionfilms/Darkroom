@@ -30,6 +30,8 @@ Edits are stored in a sidecar `<image>.drk.json` next to the source and re-appli
 - Color grading: shadow / midtone / highlight tints with balance (split toning)
 - Mirror power window: an ellipse you drag on the image whose content is reflected across its
   far edge into a tail that fades with distance (feather, gap, direction, length, opacity)
+- Watermark: any PNG/JPEG placed anywhere on the photo, dragged to move, corner-dragged to
+  resize, with opacity; baked into exports
 
 Colour pipeline: linear DaVinci Wide Gamut working space, log-space tone controls, hue-preserving
 gamut compression and a highlight shoulder on the way to sRGB. See
@@ -64,6 +66,23 @@ cargo run --example develop -- "path/to/photo.CR3" out.jpg [edits.json] [max_lon
 ```
 
 Prerequisites: Rust (rustup), Bun, and on Windows the MSVC Build Tools + WebView2 (built into Windows 11).
+
+## Releases and automatic updates
+
+Installed apps check GitHub Releases at launch and offer to install newer versions.
+
+```bash
+bun run release 0.2.0     # or: bun run release patch|minor|major
+```
+
+That bumps the version in package.json, tauri.conf.json and Cargo.toml, commits, tags `v0.2.0`
+and pushes. The `release` GitHub Action then builds macOS (Apple silicon + Intel) and Windows
+installers, signs the update bundles and publishes the release with `latest.json`.
+
+One-time setup: add the updater private key as the repository secret
+`TAURI_SIGNING_PRIVATE_KEY` (and `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, empty if none).
+The public key lives in `tauri.conf.json`. Without an Apple Developer certificate the Mac build
+is ad-hoc signed; add the `APPLE_*` secrets for a notarised build.
 
 ## Shortcuts
 

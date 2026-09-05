@@ -29,6 +29,40 @@ pub struct Loaded {
 #[derive(Default)]
 pub struct AppState {
     loaded: Mutex<Option<Loaded>>,
+    watermark: Mutex<Option<(String, Arc<pipeline::WatermarkImage>)>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WatermarkInfo {
+    path: String,
+    width: usize,
+    height: usize,
+}
+
+/// Decode a watermark overlay image and keep it for `get_watermark_pixels`.
+#[tauri::command]
+async fn open_watermark(path: String, state: State<'_, AppState>) -> Result<WatermarkInfo, String> {
+    let p = path.clone();
+    let wm = tauri::async_runtime::spawn_blocking(move || pipeline::WatermarkImage::load(Path::new(&p)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)?;
+    let info = WatermarkInfo {
+        path: path.clone(),
+        width: wm.width,
+        height: wm.height,
+    };
+    *state.watermark.lock().unwrap() = Some((path, Arc::new(wm)));
+    Ok(info)
+}
+
+/// RGBA8 pixels of the watermark loaded with `open_watermark`.
+#[tauri::command]
+fn get_watermark_pixels(state: State<'_, AppState>) -> Result<Response, String> {
+    let guard = state.watermark.lock().unwrap();
+    let (_, wm) = guard.as_ref().ok_or("no watermark loaded")?;
+    Ok(Response::new(wm.rgba.clone()))
 }
 
 #[derive(Serialize)]
@@ -157,12 +191,16 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             open_image,
             get_preview,
             save_edits,
             export_image,
+            open_watermark,
+            get_watermark_pixels,
             startup_file,
             supported_extensions
         ])

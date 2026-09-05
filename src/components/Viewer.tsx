@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
-import type { EditParams, Histogram, Mirror, PreviewImage } from "../types";
+import { getWatermarkPixels, openWatermark } from "../api";
+import type { EditParams, Histogram, Mirror, PreviewImage, Watermark } from "../types";
 import { MirrorOverlay, type Mapper } from "./MirrorOverlay";
+import { WatermarkOverlay } from "./WatermarkOverlay";
 
 interface Props {
   image: PreviewImage | null;
@@ -12,6 +14,8 @@ interface Props {
   /** when set, the mirror window handles are drawn and editable */
   mirror?: Mirror | null;
   onMirrorChange?: (m: Mirror) => void;
+  watermark?: Watermark | null;
+  onWatermarkChange?: (w: Watermark) => void;
   onHistogram: (h: Histogram) => void;
   onZoom: (label: string) => void;
 }
@@ -30,8 +34,21 @@ function rotationCoeffs(rotation: number, W: number, H: number) {
   }
 }
 
-export function Viewer({ image, params, lut, rotation, mirror, onMirrorChange, onHistogram, onZoom }: Props) {
+export function Viewer({
+  image,
+  params,
+  lut,
+  rotation,
+  mirror,
+  onMirrorChange,
+  watermark,
+  onWatermarkChange,
+  onHistogram,
+  onZoom,
+}: Props) {
   const [overlayTick, setOverlayTick] = useState(0);
+  const [wmAspect, setWmAspect] = useState(1);
+  const wmLoaded = useRef("");
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const wrapRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<Renderer | null>(null);
@@ -109,7 +126,7 @@ export function Viewer({ image, params, lut, rotation, mirror, onMirrorChange, o
     }
     r.draw(viewRef.current, params.sharpen, rotRef.current);
     onZoom(zoomLabel());
-    if (mirror?.enabled) setOverlayTick((t) => t + 1);
+    if (mirror?.enabled || watermark?.enabled) setOverlayTick((t) => t + 1);
     // read the histogram only once the GPU is done, so the UI never waits on it
     if (histPending.current) {
       if (r.histogramReady()) {
@@ -190,6 +207,38 @@ export function Viewer({ image, params, lut, rotation, mirror, onMirrorChange, o
     requestRender();
   }, [params, requestRender]);
 
+  // watermark file changed: decode it in Rust and upload the pixels
+  const wmPath = watermark?.path ?? "";
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || wmLoaded.current === wmPath) return;
+    if (!wmPath) {
+      wmLoaded.current = "";
+      r.setWatermark("", 1, 1, null);
+      developDirty.current = true;
+      requestRender();
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await openWatermark(wmPath);
+        const px = await getWatermarkPixels();
+        if (cancelled || !rendererRef.current) return;
+        rendererRef.current.setWatermark(wmPath, info.width, info.height, px);
+        wmLoaded.current = wmPath;
+        setWmAspect(info.width / Math.max(1, info.height));
+        developDirty.current = true;
+        requestRender();
+      } catch (e) {
+        if (!cancelled) setError(`Could not load watermark: ${String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [wmPath, requestRender]);
+
   // rotation changed: refit so the whole image stays visible
   useEffect(() => {
     fit();
@@ -263,7 +312,7 @@ export function Viewer({ image, params, lut, rotation, mirror, onMirrorChange, o
   // mapper for the overlay (recomputed each render; overlayTick forces updates after pan/zoom)
   let mapper: Mapper | null = null;
   const rr = rendererRef.current;
-  if (mirror?.enabled && rr && rr.imgW && image) {
+  if ((mirror?.enabled || (watermark?.enabled && watermark.path)) && rr && rr.imgW && image) {
     void overlayTick;
     const d = dpr();
     const v = viewRef.current;
@@ -313,7 +362,12 @@ export function Viewer({ image, params, lut, rotation, mirror, onMirrorChange, o
       onDoubleClick={onDoubleClick}
     >
       <canvas ref={canvasRef} />
-      {mapper && mirror && onMirrorChange && <MirrorOverlay mirror={mirror} mapper={mapper} onChange={onMirrorChange} />}
+      {mapper && mirror?.enabled && onMirrorChange && (
+        <MirrorOverlay mirror={mirror} mapper={mapper} onChange={onMirrorChange} />
+      )}
+      {mapper && watermark?.enabled && watermark.path && onWatermarkChange && (
+        <WatermarkOverlay watermark={watermark} aspect={wmAspect} mapper={mapper} onChange={onWatermarkChange} />
+      )}
       {error && <div className="viewer-error">{error}</div>}
       {!image && !error && (
         <div className="viewer-empty">

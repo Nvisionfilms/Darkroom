@@ -34,7 +34,12 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
 
     // 1. denoise + local-contrast maps + develop at full resolution
     let developed = develop_full(img, &req.params, &lut);
-    let developed = pipeline::mirror_pass(&developed, img.width, img.height, &req.params.mirror);
+    let mut developed = pipeline::mirror_pass(&developed, img.width, img.height, &req.params.mirror);
+    let wmp = &req.params.watermark;
+    if wmp.enabled && !wmp.path.is_empty() {
+        let wm = pipeline::WatermarkImage::load(Path::new(&wmp.path))?;
+        pipeline::watermark_pass(&mut developed, img.width, img.height, wmp, &wm);
+    }
     let (developed, dw, dh) = pipeline::rotate(&developed, img.width, img.height, req.params.rotation);
     let mut buf: ImageBuffer<Rgb<f32>, Vec<f32>> =
         ImageBuffer::from_raw(dw as u32, dh as u32, developed).context("buffer size mismatch")?;

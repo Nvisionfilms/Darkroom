@@ -12,6 +12,7 @@ import {
   PREP_FRAG,
   PRESENT_FRAG,
   VERTEX,
+  WATERMARK_FRAG,
 } from "./shaders";
 
 export interface View {
@@ -193,6 +194,7 @@ export class Renderer {
       down: link(gl, VERTEX, DOWNSAMPLE_FRAG),
       develop: link(gl, VERTEX, DEVELOP_FRAG),
       mirror: link(gl, VERTEX, MIRROR_FRAG),
+      watermark: link(gl, VERTEX, WATERMARK_FRAG),
       present: link(gl, VERTEX, PRESENT_FRAG),
     };
 
@@ -323,6 +325,7 @@ export class Renderer {
     this.makeTex("B3", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
     this.makeTex("dev", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.makeTex("fx", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
+    this.makeTex("fx2", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.histH = Math.max(1, Math.round((HIST_W * H) / W));
     this.makeTex("hist", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, HIST_W, this.histH, gl.NEAREST);
     this.histPixels = new Uint8Array(HIST_W * this.histH * 4);
@@ -522,6 +525,28 @@ export class Renderer {
       this.bindTex(0, this.t.fx.tex);
       gl.generateMipmap(gl.TEXTURE_2D);
     }
+    // watermark on top of whatever came out of the mirror stage
+    const wm = p.watermark;
+    this.watermarkOn = wm.enabled && wm.opacity > 0 && !!this.wmTex && this.wmPath === wm.path;
+    if (this.watermarkOn) {
+      const src = this.mirrorOn ? this.t.fx : this.t.dev;
+      const long = Math.max(this.imgW, this.imgH);
+      const dw = Math.max(1, wm.size * long);
+      const dh = (dw * this.wmH) / this.wmW;
+      const pr = this.prog.watermark;
+      this.pass(pr, this.t.fx2, () => {
+        this.bindTex(0, src.tex);
+        this.bindTex(1, this.wmTex!);
+        gl.uniform1i(this.loc(pr, "uTex"), 0);
+        gl.uniform1i(this.loc(pr, "uWm"), 1);
+        gl.uniform2f(this.loc(pr, "uSize"), this.imgW, this.imgH);
+        gl.uniform4f(this.loc(pr, "uRect"), wm.x * this.imgW - dw / 2, wm.y * this.imgH - dh / 2, dw, dh);
+        gl.uniform1f(this.loc(pr, "uOpacity"), Math.max(0, Math.min(1, wm.opacity / 100)));
+      });
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      this.bindTex(0, this.t.fx2.tex);
+      gl.generateMipmap(gl.TEXTURE_2D);
+    }
     // fence so the histogram read-back can wait without blocking the UI thread
     if (this.histFence) gl.deleteSync(this.histFence);
     this.histFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -539,8 +564,34 @@ export class Renderer {
   }
 
   private mirrorOn = false;
+  private watermarkOn = false;
+  private wmTex: WebGLTexture | null = null;
+  private wmPath = "";
+  private wmW = 1;
+  private wmH = 1;
   private output(): Tex {
+    if (this.watermarkOn) return this.t.fx2;
     return this.mirrorOn ? this.t.fx : this.t.dev;
+  }
+
+  /** Upload (or clear) the watermark overlay. `path` identifies which file the pixels belong to. */
+  setWatermark(path: string, width: number, height: number, rgba: Uint8Array | null): void {
+    const gl = this.gl;
+    if (this.wmTex) {
+      gl.deleteTexture(this.wmTex);
+      this.wmTex = null;
+    }
+    this.wmPath = path;
+    if (!rgba || !path) return;
+    this.wmTex = gl.createTexture()!;
+    this.wmW = width;
+    this.wmH = height;
+    gl.bindTexture(gl.TEXTURE_2D, this.wmTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    this.setParams(gl.LINEAR, true);
+    gl.generateMipmap(gl.TEXTURE_2D);
   }
 
   /** Size of the image as displayed after rotation. */

@@ -70,6 +70,8 @@ pub struct EditParams {
     pub grading: Grading,
     #[serde(default)]
     pub mirror: Mirror,
+    #[serde(default)]
+    pub watermark: Watermark,
     pub hsl: HslParams,
     pub curves: Curves,
 }
@@ -148,6 +150,125 @@ impl Default for Mirror {
     }
 }
 
+/// Image watermark: centre as fractions of the photo size, width as a
+/// fraction of the photo's long edge, opacity 0..100. `path` empty = none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Watermark {
+    pub enabled: bool,
+    pub path: String,
+    pub x: f32,
+    pub y: f32,
+    pub size: f32,
+    pub opacity: f32,
+}
+
+impl Default for Watermark {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            path: String::new(),
+            x: 0.85,
+            y: 0.92,
+            size: 0.2,
+            opacity: 80.0,
+        }
+    }
+}
+
+/// Decoded watermark overlay, RGBA8 in sRGB, straight (non-premultiplied) alpha.
+pub struct WatermarkImage {
+    pub width: usize,
+    pub height: usize,
+    pub rgba: Vec<u8>,
+}
+
+impl WatermarkImage {
+    pub fn load(path: &std::path::Path) -> anyhow::Result<Self> {
+        use anyhow::Context;
+        let img = image::ImageReader::open(path)
+            .with_context(|| format!("open {}", path.display()))?
+            .with_guessed_format()?
+            .decode()
+            .context("decode watermark")?
+            .into_rgba8();
+        let (w, h) = (img.width() as usize, img.height() as usize);
+        anyhow::ensure!(w > 0 && h > 0, "empty watermark image");
+        Ok(Self {
+            width: w,
+            height: h,
+            rgba: img.into_raw(),
+        })
+    }
+
+    /// Bilinear sample at (u, v) in 0..1, returns gamma-encoded rgb + alpha.
+    #[inline]
+    fn sample(&self, u: f32, v: f32) -> [f32; 4] {
+        let fx = (u * self.width as f32 - 0.5).clamp(0.0, self.width as f32 - 1.0);
+        let fy = (v * self.height as f32 - 0.5).clamp(0.0, self.height as f32 - 1.0);
+        let x0 = fx.floor() as usize;
+        let y0 = fy.floor() as usize;
+        let x1 = (x0 + 1).min(self.width - 1);
+        let y1 = (y0 + 1).min(self.height - 1);
+        let tx = fx - x0 as f32;
+        let ty = fy - y0 as f32;
+        let px = |x: usize, y: usize, c: usize| self.rgba[(y * self.width + x) * 4 + c] as f32 / 255.0;
+        let mut o = [0.0f32; 4];
+        for c in 0..4 {
+            let a = px(x0, y0, c) * (1.0 - tx) + px(x1, y0, c) * tx;
+            let b = px(x0, y1, c) * (1.0 - tx) + px(x1, y1, c) * tx;
+            o[c] = a * (1.0 - ty) + b * ty;
+        }
+        o
+    }
+}
+
+/// Composite the watermark onto a developed (display-space) buffer.
+/// Twin of `WATERMARK_FRAG`.
+pub fn watermark_pass(img: &mut [f32], width: usize, height: usize, w: &Watermark, wm: &WatermarkImage) {
+    if !w.enabled || w.opacity <= 0.0 {
+        return;
+    }
+    let long = width.max(height) as f32;
+    let dw = (w.size * long).max(1.0);
+    let dh = dw * wm.height as f32 / wm.width as f32;
+    let x0 = w.x * width as f32 - dw / 2.0;
+    let y0 = w.y * height as f32 - dh / 2.0;
+    let opacity = (w.opacity / 100.0).clamp(0.0, 1.0);
+    let ys = (y0.floor().max(0.0)) as usize;
+    let ye = ((y0 + dh).ceil().min(height as f32)) as usize;
+    let xs = (x0.floor().max(0.0)) as usize;
+    let xe = ((x0 + dw).ceil().min(width as f32)) as usize;
+    if ys >= ye || xs >= xe {
+        return;
+    }
+    img.par_chunks_mut(width * 3)
+        .enumerate()
+        .skip(ys)
+        .take(ye - ys)
+        .for_each(|(y, row)| {
+            let v = (y as f32 + 0.5 - y0) / dh;
+            if !(0.0..1.0).contains(&v) {
+                return;
+            }
+            for x in xs..xe {
+                let u = (x as f32 + 0.5 - x0) / dw;
+                if !(0.0..1.0).contains(&u) {
+                    continue;
+                }
+                let s = wm.sample(u, v);
+                let a = s[3] * opacity;
+                if a <= 0.0 {
+                    continue;
+                }
+                let p = &mut row[x * 3..x * 3 + 3];
+                for c in 0..3 {
+                    p[c] = p[c] + (s[c] - p[c]) * a;
+                }
+            }
+        });
+}
+
 fn default_denoise_chroma() -> f32 {
     25.0
 }
@@ -179,6 +300,7 @@ impl Default for EditParams {
             denoise_detail: default_denoise_detail(),
             grading: Grading::default(),
             mirror: Mirror::default(),
+            watermark: Watermark::default(),
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],

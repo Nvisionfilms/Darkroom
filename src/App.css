@@ -241,6 +241,53 @@ input[type="number"] {
 .mo-center {
   fill: #4f8cff;
 }
+.wm-frame {
+  fill: rgba(255, 255, 255, 0.04);
+  stroke: #fff;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  pointer-events: all;
+  cursor: move;
+}
+.wm-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 180px;
+}
+.watermark-panel.disabled .slider {
+  opacity: 0.45;
+}
+
+.update-banner {
+  position: fixed;
+  top: 48px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: #1f2a3f;
+  border: 1px solid #3b5a92;
+  border-radius: 6px;
+  padding: 8px 14px;
+  z-index: 20;
+}
+.update-progress {
+  width: 160px;
+  height: 6px;
+  background: #142033;
+  border-radius: 3px;
+  overflow: hidden;
+}
+.update-bar {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.update-error {
+  color: #f99;
+}
 .mo-dir,
 .mo-tailend {
   fill: #ffd24f;

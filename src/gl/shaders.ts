@@ -411,6 +411,28 @@ void main() {
   outColor = vec4(c, 1.0);
 }`;
 
+/** Composite an RGBA watermark over the developed image. Twin of pipeline.rs watermark_pass. */
+export const WATERMARK_FRAG = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uTex;
+uniform sampler2D uWm;
+uniform vec2 uSize;    // image px
+uniform vec4 uRect;    // x0, y0, w, h in image px
+uniform float uOpacity;
+void main() {
+  vec3 c = texture(uTex, vUv).rgb;
+  vec2 p = vUv * uSize;
+  vec2 uv = (p - uRect.xy) / uRect.zw;
+  if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThan(uv, vec2(1.0)))) {
+    vec4 s = texture(uWm, uv);
+    c = mix(c, s.rgb, s.a * uOpacity);
+  }
+  outColor = vec4(c, 1.0);
+}`;
+
 export const PRESENT_FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv;

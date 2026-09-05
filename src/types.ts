@@ -42,6 +42,20 @@ export interface Mirror {
   opacity: number;
 }
 
+/**
+ * Image watermark. `path` is the overlay file (PNG with alpha works best),
+ * `x`/`y` its centre as fractions of the photo width/height, `size` its width
+ * as a fraction of the photo's long edge, `opacity` 0..100.
+ */
+export interface Watermark {
+  enabled: boolean;
+  path: string;
+  x: number;
+  y: number;
+  size: number;
+  opacity: number;
+}
+
 export interface EditParams {
   exposure: number;
   contrast: number;
@@ -69,6 +83,7 @@ export interface EditParams {
   denoiseDetail: number;
   grading: Grading;
   mirror: Mirror;
+  watermark: Watermark;
   hsl: HslParams;
   curves: Curves;
 }
@@ -148,6 +163,16 @@ export function defaultMirror(): Mirror {
   };
 }
 
+export function defaultWatermark(): Watermark {
+  return { enabled: false, path: "", x: 0.85, y: 0.92, size: 0.2, opacity: 80 };
+}
+
+export interface WatermarkInfo {
+  path: string;
+  width: number;
+  height: number;
+}
+
 export function defaultParams(): EditParams {
   return {
     exposure: 0,
@@ -170,6 +195,7 @@ export function defaultParams(): EditParams {
     denoiseDetail: 50,
     grading: defaultGrading(),
     mirror: defaultMirror(),
+    watermark: defaultWatermark(),
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),
