@@ -168,6 +168,45 @@ async fn export_image(req: export::ExportRequest, state: State<'_, AppState>) ->
     Ok(out)
 }
 
+/// What was open when the app last closed, restored on the next launch.
+#[derive(Serialize, serde::Deserialize, Default, Clone)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Session {
+    files: Vec<String>,
+    current: Option<String>,
+}
+
+fn session_path(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    use tauri::Manager;
+    let dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    Ok(dir.join("session.json"))
+}
+
+#[tauri::command]
+fn load_session(app: tauri::AppHandle) -> Result<Session, String> {
+    let p = session_path(&app)?;
+    let Ok(text) = std::fs::read_to_string(&p) else {
+        return Ok(Session::default());
+    };
+    let mut s: Session = serde_json::from_str(&text).unwrap_or_default();
+    // drop photos that no longer exist
+    s.files.retain(|f| Path::new(f).is_file());
+    if let Some(c) = &s.current {
+        if !Path::new(c).is_file() {
+            s.current = None;
+        }
+    }
+    Ok(s)
+}
+
+#[tauri::command]
+fn save_session(app: tauri::AppHandle, session: Session) -> Result<(), String> {
+    let p = session_path(&app)?;
+    let text = serde_json::to_string_pretty(&session).map_err(|e| e.to_string())?;
+    std::fs::write(&p, text).map_err(|e| e.to_string())
+}
+
 /// Image path passed on the command line (`darkroom photo.CR3`), if any.
 #[tauri::command]
 fn startup_file() -> Option<String> {
@@ -202,6 +241,8 @@ pub fn run() {
             open_watermark,
             get_watermark_pixels,
             startup_file,
+            load_session,
+            save_session,
             supported_extensions
         ])
         .run(tauri::generate_context!())

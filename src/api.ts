@@ -45,6 +45,19 @@ export async function pickWatermark(): Promise<string | null> {
   return Array.isArray(result) ? result[0] : result;
 }
 
+export interface Session {
+  files: string[];
+  current: string | null;
+}
+
+export async function loadSession(): Promise<Session> {
+  return invoke<Session>("load_session");
+}
+
+export async function saveSession(session: Session): Promise<void> {
+  await invoke("save_session", { session });
+}
+
 export async function startupFile(): Promise<string | null> {
   return invoke<string | null>("startup_file");
 }

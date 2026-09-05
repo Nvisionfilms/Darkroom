@@ -1,5 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { getPreview, openImage, pickImages, saveEdits, startupFile, supportedExtensions } from "./api";
+import {
+  getPreview,
+  loadSession,
+  openImage,
+  pickImages,
+  saveEdits,
+  saveSession,
+  startupFile,
+  supportedExtensions,
+} from "./api";
 import { CurveEditor } from "./components/CurveEditor";
 import { ExportDialog } from "./components/ExportDialog";
 import { Histogram } from "./components/Histogram";
@@ -73,13 +82,16 @@ export default function App() {
   const shownParams = before ? defaults : params;
   const shownLut = before ? defaultLut : lut;
 
-  // autosave edits to the sidecar (debounced)
+  // autosave edits to the sidecar (debounced); a pending save is flushed on close
+  const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
   useEffect(() => {
     if (!current) return;
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
     const path = current.path;
+    pendingSave.current = { path, params };
     saveTimer.current = window.setTimeout(() => {
       saveTimer.current = null;
+      pendingSave.current = null;
       saveEdits(path, params).catch((e) => setError(`Could not save edits: ${String(e)}`));
     }, 400);
     return () => {
@@ -89,6 +101,36 @@ export default function App() {
       }
     };
   }, [params, current]);
+
+  useEffect(() => {
+    const flush = () => {
+      const p = pendingSave.current;
+      if (p) {
+        pendingSave.current = null;
+        void saveEdits(p.path, p.params);
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") flush();
+    };
+    window.addEventListener("beforeunload", flush);
+    window.addEventListener("pagehide", flush);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.removeEventListener("beforeunload", flush);
+      window.removeEventListener("pagehide", flush);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, []);
+
+  // remember which photos are open so the next launch restores them
+  useEffect(() => {
+    if (!files.length) return;
+    const t = window.setTimeout(() => {
+      saveSession({ files: files.map((f) => f.path), current: current?.path ?? null }).catch(() => {});
+    }, 300);
+    return () => window.clearTimeout(t);
+  }, [files, current]);
 
   const load = useCallback(async (path: string) => {
     setLoading(fileName(path));
@@ -145,11 +187,21 @@ export default function App() {
     if (startedRef.current) return;
     startedRef.current = true;
     startupFile()
-      .then((p) => {
+      .then(async (p) => {
         if (p) {
           setFiles((prev) => (prev.some((f) => f.path === p) ? prev : [...prev, placeholder(p)]));
           void load(p);
+          return;
         }
+        // no file given: restore the last session
+        const s = await loadSession();
+        if (!s.files.length) return;
+        setFiles((prev) => {
+          const next = [...prev];
+          for (const f of s.files) if (!next.some((x) => x.path === f)) next.push(placeholder(f));
+          return next;
+        });
+        void load(s.current ?? s.files[0]);
       })
       .catch(() => {});
   }, [load]);
