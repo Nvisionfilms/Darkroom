@@ -289,6 +289,13 @@ export function Viewer(props: Props) {
     window.dispatchEvent(new CustomEvent("darkroom:zoom", { detail: mode }));
   };
 
+  // Crop and comparison are both direct-manipulation overlays. Letting both sit
+  // on top of the photo at once makes the crop handles disappear under the
+  // Before layer and makes the divider feel attached to a crop edge. While Crop
+  // mode is active, temporarily hide comparison UI/layers and preserve the
+  // previous split position so it returns when the user presses Done.
+  const comparisonActive = !!props.image && !props.cropMode;
+
   return (
     <div className="motion-trail-viewer compare-viewer" ref={wrapRef}>
       <div className="motion-trail-edited">
@@ -297,7 +304,7 @@ export function Viewer(props: Props) {
 
       <canvas ref={overlayRef} className="motion-trail-preview" aria-hidden="true" />
 
-      {props.image && comparePosition > 0 && (
+      {comparisonActive && comparePosition > 0 && (
         <div className="compare-before-layer" style={{ clipPath: `inset(0 ${100 - comparePosition}% 0 0)` }}>
           <CoreViewer
             {...coreProps}
@@ -307,7 +314,7 @@ export function Viewer(props: Props) {
             onMirrorChange={undefined}
             watermark={null}
             onWatermarkChange={undefined}
-            cropMode={props.cropMode}
+            cropMode={false}
             onCropChange={undefined}
             onHistogram={() => {}}
             onZoom={() => {}}
@@ -317,19 +324,21 @@ export function Viewer(props: Props) {
 
       {props.image && (
         <>
-          <div className="compare-tabs" aria-label="Before and after comparison">
-            <button type="button" className={comparePosition === 100 ? "active" : ""} onClick={() => setComparePosition(100)}>
-              Before
-            </button>
-            <button type="button" className={comparePosition === 0 ? "active" : ""} onClick={() => setComparePosition(0)}>
-              After
-            </button>
-          </div>
+          {comparisonActive && (
+            <div className="compare-tabs" aria-label="Before and after comparison">
+              <button type="button" className={comparePosition === 100 ? "active" : ""} onClick={() => setComparePosition(100)}>
+                Before
+              </button>
+              <button type="button" className={comparePosition === 0 ? "active" : ""} onClick={() => setComparePosition(0)}>
+                After
+              </button>
+            </div>
+          )}
           <div className="compare-zoom-actions" aria-label="Viewer zoom">
             <button type="button" onClick={() => requestZoom("fit")}>Fit</button>
             <button type="button" onClick={() => requestZoom("100")}>100%</button>
           </div>
-          {comparePosition > 0 && comparePosition < 100 && (
+          {comparisonActive && comparePosition > 0 && comparePosition < 100 && (
             <div
               className="compare-divider-hit"
               style={{ left: `${comparePosition}%` }}
