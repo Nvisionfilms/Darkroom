@@ -1,0 +1,1 @@
+Darkroom v0.2.4 release was triggered by creating the release branch. This file is retained only as history; future releases should not add a second trigger commit.
