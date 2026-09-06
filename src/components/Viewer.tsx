@@ -307,7 +307,8 @@ export function Viewer(props: Props) {
             onMirrorChange={undefined}
             watermark={null}
             onWatermarkChange={undefined}
-            cropMode={false}
+            cropMode={props.cropMode}
+            onCropChange={undefined}
             onHistogram={() => {}}
             onZoom={() => {}}
           />
