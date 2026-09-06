@@ -6,40 +6,65 @@ interface Props {
   onChange: (m: Mirror) => void;
 }
 
+/**
+ * Motion Trails keeps the legacy `mirror` wire shape so old sidecars continue
+ * to load. The old geometry fields are intentionally repurposed:
+ *   cx -> copies / 10, rx -> blur / 100, ry -> amount / 100,
+ *   feather -> fade, length -> distance, direction/opacity keep their meaning.
+ */
 export function MirrorPanel({ mirror, onChange }: Props) {
   const set = <K extends keyof Mirror>(key: K) => (v: Mirror[K]) => onChange({ ...mirror, [key]: v });
+  const copies = Math.max(1, Math.min(8, Math.round(mirror.cx * 10)));
+
   return (
     <div className={"mirror-panel" + (mirror.enabled ? "" : " disabled")}>
       <div className="hint">
-        Drag the window on the image: the centre moves it, the squares resize it, the ring on the edge sets the
-        mirror side and gap, the end dot sets the tail length.
+        Creates repeated ghosted frames in one direction, like a long-exposure motion echo. It is a normal image
+        effect — no generative AI or content replacement.
       </div>
-      <Slider label="Opacity" value={mirror.opacity} min={0} max={100} defaultValue={70} onChange={set("opacity")} />
       <Slider
-        label="Tail length"
-        value={mirror.length * 100}
-        min={2}
+        label="Amount"
+        value={mirror.ry * 100}
+        min={0}
         max={100}
-        defaultValue={35}
-        onChange={(v) => set("length")(v / 100)}
+        defaultValue={70}
+        onChange={(v) => set("ry")(v / 100)}
       />
-      <Slider label="Feather" value={mirror.feather} min={0} max={100} defaultValue={30} onChange={set("feather")} />
-      <Slider label="Rotation" value={mirror.rotation} min={-90} max={90} onChange={set("rotation")} />
       <Slider
         label="Direction"
         value={mirror.direction}
         min={-180}
         max={180}
-        defaultValue={90}
+        defaultValue={-35}
         onChange={set("direction")}
       />
       <Slider
-        label="Gap"
-        value={mirror.offset * 100}
-        min={0}
-        max={50}
-        onChange={(v) => set("offset")(v / 100)}
+        label="Distance"
+        value={mirror.length * 100}
+        min={1}
+        max={70}
+        defaultValue={16}
+        onChange={(v) => set("length")(v / 100)}
       />
+      <Slider
+        label="Copies"
+        value={copies}
+        min={1}
+        max={8}
+        step={1}
+        defaultValue={4}
+        onChange={(v) => set("cx")(Math.round(v) / 10)}
+      />
+      <Slider label="Fade" value={mirror.feather} min={0} max={100} defaultValue={65} onChange={set("feather")} />
+      <Slider
+        label="Blur"
+        value={mirror.rx * 100}
+        min={0}
+        max={100}
+        defaultValue={20}
+        onChange={(v) => set("rx")(v / 100)}
+      />
+      <Slider label="Opacity" value={mirror.opacity} min={0} max={100} defaultValue={65} onChange={set("opacity")} />
       <div className="curve-tabs">
         <span className="spacer" />
         <button className="tab" onClick={() => onChange({ ...defaultMirror(), enabled: mirror.enabled })}>

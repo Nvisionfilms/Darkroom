@@ -25,8 +25,20 @@ export interface Grading {
 }
 
 /**
- * Mirror power window. Center as fractions of image width/height, sizes and
- * distances as fractions of the long edge, angles in degrees (0 = right, 90 = down).
+ * Motion-trail settings stored under the legacy `mirror` sidecar key so edits
+ * written by older Darkroom builds remain readable.
+ *
+ * Semantic mapping used by the current UI/renderers:
+ * - cx: number of copies / 10 (1..8 copies)
+ * - rx: blur amount 0..1
+ * - ry: trail amount 0..1
+ * - feather: fade 0..100
+ * - direction: degrees (0 = right, 90 = down)
+ * - length: distance as a fraction of the long edge
+ * - opacity: 0..100
+ *
+ * cy, rotation and offset remain on the wire for backwards compatibility but
+ * are not used by the motion-trail renderer.
  */
 export interface Mirror {
   enabled: boolean;
@@ -95,6 +107,7 @@ export interface EditParams {
   /** 0..100 */
   denoiseDetail: number;
   grading: Grading;
+  /** legacy key; rendered as Motion Trails in the UI */
   mirror: Mirror;
   watermark: Watermark;
   crop: Crop;
@@ -164,16 +177,16 @@ export function defaultGrading(): Grading {
 export function defaultMirror(): Mirror {
   return {
     enabled: false,
-    cx: 0.5,
-    cy: 0.45,
-    rx: 0.18,
-    ry: 0.22,
-    rotation: 0,
-    feather: 30,
-    direction: 90,
-    offset: 0,
-    length: 0.35,
-    opacity: 70,
+    cx: 0.4, // 4 copies
+    cy: 0.5, // legacy / unused
+    rx: 0.2, // blur
+    ry: 0.7, // amount
+    rotation: 0, // legacy / unused
+    feather: 65, // fade
+    direction: -35,
+    offset: 0, // legacy / unused
+    length: 0.16, // distance
+    opacity: 65,
   };
 }
 

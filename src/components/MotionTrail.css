@@ -1,0 +1,20 @@
+.motion-trail-viewer {
+  position: relative;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  overflow: hidden;
+}
+
+.motion-trail-viewer > .viewer {
+  position: absolute;
+  inset: 0;
+}
+
+.motion-trail-preview {
+  position: absolute;
+  inset: 0 auto auto 0;
+  z-index: 4;
+  pointer-events: none;
+  background: transparent;
+}

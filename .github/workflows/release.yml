@@ -9,6 +9,10 @@
 # Optional, for a notarised Mac build instead of ad-hoc signing:
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
+#
+# Windows note: updater signing is not Windows Authenticode code signing.
+# A Windows code-signing certificate / signing service is still required to
+# remove SmartScreen publisher warnings for browser-downloaded installers.
 
 name: release
 
@@ -31,7 +35,9 @@ jobs:
           - platform: macos-latest
             args: --target x86_64-apple-darwin
           - platform: windows-latest
-            args: ""
+            # Publish one obvious Windows installer instead of both WiX MSI
+            # and NSIS. NSIS current-user mode avoids requiring elevation.
+            args: --bundles nsis
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
@@ -64,8 +70,23 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Darkroom ${{ github.ref_name }}
-          releaseBody: Download the installer for your platform. Installed copies update themselves.
+          releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update themselves.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           args: ${{ matrix.args }}
+
+      - name: Smoke test Windows installer
+        if: matrix.platform == 'windows-latest'
+        shell: pwsh
+        run: |
+          $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "Darkroom NSIS installer was not produced."
+          }
+
+          Write-Host "Testing installer: $($installer.FullName)"
+          $process = Start-Process -FilePath $installer.FullName -ArgumentList "/S" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Darkroom installer returned exit code $($process.ExitCode)."
+          }
