@@ -33,10 +33,10 @@
   will-change: clip-path;
 }
 
-.compare-tabs {
+.compare-tabs,
+.compare-zoom-actions {
   position: absolute;
   top: 14px;
-  left: 14px;
   z-index: 9;
   display: inline-flex;
   padding: 3px;
@@ -48,7 +48,16 @@
   box-shadow: 0 6px 18px rgba(0, 0, 0, 0.24);
 }
 
-.compare-tabs button {
+.compare-tabs {
+  left: 14px;
+}
+
+.compare-zoom-actions {
+  right: 14px;
+}
+
+.compare-tabs button,
+.compare-zoom-actions button {
   min-width: 58px;
   padding: 5px 9px;
   border: 0;
@@ -58,8 +67,10 @@
   font-size: 10px;
 }
 
-.compare-tabs button:hover {
+.compare-tabs button:hover,
+.compare-zoom-actions button:hover {
   background: rgba(255, 255, 255, 0.06);
+  color: #eef2ff;
 }
 
 .compare-tabs button.active {
