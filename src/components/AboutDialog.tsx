@@ -8,7 +8,7 @@ interface Props {
   onClose: () => void;
 }
 
-const RELEASES = "https://github.com/Nvisionfilms/Darkroom-Releases/releases";
+const UPDATE_CHANNEL = "updates.nvisionfilms.com";
 
 export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Props) {
   const busy = status.kind === "checking" || status.kind === "installing";
@@ -30,7 +30,7 @@ export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Pr
       line = `Update check failed: ${status.message}`;
       break;
     default:
-      line = "Updates are downloaded from the Darkroom releases channel.";
+      line = "Updates are delivered through the secure Darkroom update channel.";
   }
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
@@ -43,8 +43,8 @@ export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Pr
             <span className="update-bar" style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }} />
           </span>
         )}
-        <div className="about-repo" title={RELEASES}>
-          {RELEASES}
+        <div className="about-repo" title="Darkroom update channel">
+          {UPDATE_CHANNEL}
         </div>
         <div className="modal-actions">
           <button onClick={onClose} disabled={busy}>
