@@ -33,8 +33,7 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     };
 
     // 1. denoise + local-contrast maps + develop at full resolution
-    let developed = develop_full(img, &req.params, &lut);
-    let mut developed = pipeline::mirror_pass(&developed, img.width, img.height, &req.params.mirror);
+    let mut developed = develop_full(img, &req.params, &lut);
     let wmp = &req.params.watermark;
     if wmp.enabled && !wmp.path.is_empty() {
         let wm = pipeline::WatermarkImage::load(Path::new(&wmp.path))?;
@@ -56,10 +55,13 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
         }
     }
 
-    // 3. output sharpening
+    // 3. output sharpening, then the display-space Motion Trails effect. This
+    // mirrors the preview wrapper: trails are created from the finished image,
+    // not by changing scene content or inventing pixels.
     let (w, h) = (buf.width() as usize, buf.height() as usize);
     let mut data = buf.into_raw();
     pipeline::sharpen(&mut data, w, h, req.params.sharpen);
+    data = motion_trail_pass(&data, w, h, &req.params.mirror);
 
     // 4. quantise + encode
     let out = Path::new(&req.out_path);
@@ -117,6 +119,96 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
         None
     };
     pipeline::develop_buffer(&denoised, img.width, maps.as_ref(), params, lut)
+}
+
+/// Motion Trails uses the legacy `Mirror` storage shape for sidecar
+/// compatibility. The current semantic mapping is documented in src/types.ts:
+/// cx=copies/10, rx=blur, ry=amount, feather=fade, length=distance.
+///
+/// The blend is intentionally deterministic and non-generative. Each echo is
+/// a translated sample of the already-developed image, combined with a Screen
+/// blend so black/dark background areas do not stamp over the original.
+fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mirror) -> Vec<f32> {
+    if !m.enabled || m.opacity <= 0.0 || width == 0 || height == 0 {
+        return img.to_vec();
+    }
+
+    let copies = ((m.cx * 10.0).round() as i32).clamp(1, 8) as usize;
+    let amount = m.ry.clamp(0.0, 1.0);
+    let opacity = (m.opacity / 100.0).clamp(0.0, 1.0);
+    if amount <= 0.0 || opacity <= 0.0 {
+        return img.to_vec();
+    }
+    let fade = (m.feather / 100.0).clamp(0.0, 1.0);
+    let fade_retention = 0.2 + fade * 0.78;
+    let long = width.max(height) as f32;
+    let distance = m.length.clamp(0.0, 0.7) * long;
+    let angle = m.direction.to_radians();
+    let dx = angle.cos();
+    let dy = angle.sin();
+    let blur_spread = m.rx.clamp(0.0, 1.0) * (long * 0.006).clamp(2.0, 32.0);
+
+    let mut out = img.to_vec();
+    out.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
+        for x in 0..width {
+            let mut base = [img[(y * width + x) * 3], img[(y * width + x) * 3 + 1], img[(y * width + x) * 3 + 2]];
+
+            // Far echoes first, matching the preview compositor.
+            for i in (1..=copies).rev() {
+                let t = i as f32 / copies as f32;
+                let alpha = opacity * amount * fade_retention.powi(i as i32 - 1) * 0.72;
+                if alpha <= 0.002 {
+                    continue;
+                }
+                let sx = x as f32 - dx * distance * t;
+                let sy = y as f32 - dy * distance * t;
+                let spread = blur_spread * (0.35 + t * 0.65);
+
+                let s0 = sample_rgb(img, width, height, sx, sy);
+                let sm = if spread > 0.2 {
+                    let a = sample_rgb(img, width, height, sx - dx * spread, sy - dy * spread);
+                    let b = sample_rgb(img, width, height, sx + dx * spread, sy + dy * spread);
+                    [
+                        (a[0] + s0[0] + b[0]) / 3.0,
+                        (a[1] + s0[1] + b[1]) / 3.0,
+                        (a[2] + s0[2] + b[2]) / 3.0,
+                    ]
+                } else {
+                    s0
+                };
+
+                for c in 0..3 {
+                    let d = base[c].clamp(0.0, 1.0);
+                    let s = (sm[c].clamp(0.0, 1.0) * alpha).clamp(0.0, 1.0);
+                    base[c] = 1.0 - (1.0 - d) * (1.0 - s);
+                }
+            }
+
+            row[x * 3..x * 3 + 3].copy_from_slice(&base);
+        }
+    });
+    out
+}
+
+#[inline]
+fn sample_rgb(img: &[f32], width: usize, height: usize, x: f32, y: f32) -> [f32; 3] {
+    if x < 0.0 || y < 0.0 || x > (width.saturating_sub(1)) as f32 || y > (height.saturating_sub(1)) as f32 {
+        return [0.0; 3];
+    }
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let get = |xx: usize, yy: usize, c: usize| img[(yy * width + xx) * 3 + c];
+    let mut out = [0.0; 3];
+    for (c, o) in out.iter_mut().enumerate() {
+        let a = get(x0, y0, c) * (1.0 - tx) + get(x1, y0, c) * tx;
+        let b = get(x0, y1, c) * (1.0 - tx) + get(x1, y1, c) * tx;
+        *o = a * (1.0 - ty) + b * ty;
+    }
+    out
 }
 
 fn to_u8(data: &[f32]) -> Vec<u8> {
