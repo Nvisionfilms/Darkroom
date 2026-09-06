@@ -32,6 +32,7 @@ export function Viewer(props: Props) {
   const maskedSourceRef = useRef<HTMLCanvasElement | null>(null);
   const sourceCacheValidRef = useRef(false);
   const [comparePosition, setComparePosition] = useState(50);
+  const lastSplitPositionRef = useRef(50);
   const [zoomLabel, setZoomLabel] = useState("Fit");
   const trail = props.mirror ?? props.params.mirror;
 
@@ -49,7 +50,10 @@ export function Viewer(props: Props) {
     sourceCacheValidRef.current = false;
     // Every newly loaded image starts with the visible 50/50 comparison. The
     // previous implementation could remain collapsed after a zoom/pan.
-    if (props.image) setComparePosition(50);
+    if (props.image) {
+      setComparePosition(50);
+      lastSplitPositionRef.current = 50;
+    }
   }, [props.image]);
 
   useEffect(() => {
@@ -256,7 +260,9 @@ export function Viewer(props: Props) {
   const updateCompare = (clientX: number) => {
     const rect = wrapRef.current?.getBoundingClientRect();
     if (!rect || rect.width <= 0) return;
-    setComparePosition(clamp(((clientX - rect.left) / rect.width) * 100, 0, 100));
+    const next = clamp(((clientX - rect.left) / rect.width) * 100, 0, 100);
+    setComparePosition(next);
+    if (next > 0 && next < 100) lastSplitPositionRef.current = next;
   };
 
   const onDividerDown = (e: React.PointerEvent<HTMLDivElement>) => {
@@ -281,6 +287,7 @@ export function Viewer(props: Props) {
     // after reopening. Collapse only after a real user zoom/pan reports N%.
     const actualManualZoom = /^\d+%$/.test(label.trim());
     if (actualManualZoom && comparePosition > 0 && comparePosition < 100) {
+      lastSplitPositionRef.current = comparePosition;
       setComparePosition(0);
     }
   };
@@ -288,6 +295,10 @@ export function Viewer(props: Props) {
   const requestZoom = (mode: "fit" | "100") => {
     window.dispatchEvent(new CustomEvent("darkroom:zoom", { detail: mode }));
   };
+
+  const showBefore = () => setComparePosition(100);
+  const showAfter = () => setComparePosition(0);
+  const showSplit = () => setComparePosition(clamp(lastSplitPositionRef.current, 1, 99));
 
   // Crop and comparison are both direct-manipulation overlays. Letting both sit
   // on top of the photo at once makes the crop handles disappear under the
@@ -325,11 +336,18 @@ export function Viewer(props: Props) {
       {props.image && (
         <>
           {comparisonActive && (
-            <div className="compare-tabs" aria-label="Before and after comparison">
-              <button type="button" className={comparePosition === 100 ? "active" : ""} onClick={() => setComparePosition(100)}>
+            <div className="compare-tabs" aria-label="Before, split, and after comparison">
+              <button type="button" className={comparePosition === 100 ? "active" : ""} onClick={showBefore}>
                 Before
               </button>
-              <button type="button" className={comparePosition === 0 ? "active" : ""} onClick={() => setComparePosition(0)}>
+              <button
+                type="button"
+                className={comparePosition > 0 && comparePosition < 100 ? "active" : ""}
+                onClick={showSplit}
+              >
+                Split
+              </button>
+              <button type="button" className={comparePosition === 0 ? "active" : ""} onClick={showAfter}>
                 After
               </button>
             </div>
