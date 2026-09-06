@@ -14,7 +14,11 @@ use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
 use tauri::State;
 
-const PREVIEW_MAX_EDGE: usize = 2560;
+// RAW previews stay bounded because the WebGL develop pipeline keeps several
+// float render targets alive at once. Already-developed bitmap files can use a
+// somewhat larger preview so common 2K/3K JPEGs are not needlessly softened.
+const RAW_PREVIEW_MAX_EDGE: usize = 2560;
+const BITMAP_PREVIEW_MAX_EDGE: usize = 3200;
 const THUMB_MAX_EDGE: usize = 240;
 
 pub struct Loaded {
@@ -57,7 +61,7 @@ async fn open_watermark(path: String, state: State<'_, AppState>) -> Result<Wate
     Ok(info)
 }
 
-/// RGBA8 pixels of the watermark loaded with `open_watermark`.
+/// RGBA8 pixels of the watermark loaded with `openWatermark`.
 #[tauri::command]
 fn get_watermark_pixels(state: State<'_, AppState>) -> Result<Response, String> {
     let guard = state.watermark.lock().unwrap();
@@ -89,9 +93,14 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
     let p = path.clone();
     let (loaded, meta, thumb) = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<_> {
         let t0 = std::time::Instant::now();
+        let preview_max = if decode::is_raw(Path::new(&p)) {
+            RAW_PREVIEW_MAX_EDGE
+        } else {
+            BITMAP_PREVIEW_MAX_EDGE
+        };
         let (image, meta) = decode::load(Path::new(&p))?;
         let t1 = t0.elapsed();
-        let preview = decode::downsample(&image, PREVIEW_MAX_EDGE);
+        let preview = decode::downsample(&image, preview_max);
         let t2 = t0.elapsed();
         let thumb = export::thumbnail_data_url(&preview, THUMB_MAX_EDGE)?;
         let t3 = t0.elapsed();

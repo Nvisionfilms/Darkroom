@@ -123,7 +123,8 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
 
 /// Motion Trails uses the legacy `Mirror` storage shape for sidecar
 /// compatibility. The current semantic mapping is documented in src/types.ts:
-/// cx=copies/10, rx=blur, ry=amount, feather=fade, length=distance.
+/// cx=copies/10, rx=blur, ry=amount, feather=fade, offset=edge feather,
+/// length=distance.
 ///
 /// The blend is intentionally deterministic and non-generative. Each echo is
 /// a translated sample of the already-developed image, combined with a Screen
@@ -141,6 +142,7 @@ fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mir
     }
     let fade = (m.feather / 100.0).clamp(0.0, 1.0);
     let fade_retention = 0.2 + fade * 0.78;
+    let edge_feather = m.offset.clamp(0.0, 0.25);
     let long = width.max(height) as f32;
     let distance = m.length.clamp(0.0, 0.7) * long;
     let angle = m.direction.to_radians();
@@ -156,12 +158,17 @@ fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mir
             // Far echoes first, matching the preview compositor.
             for i in (1..=copies).rev() {
                 let t = i as f32 / copies as f32;
-                let alpha = opacity * amount * fade_retention.powi(i as i32 - 1) * 0.72;
-                if alpha <= 0.002 {
+                let base_alpha = opacity * amount * fade_retention.powi(i as i32 - 1) * 0.72;
+                if base_alpha <= 0.002 {
                     continue;
                 }
                 let sx = x as f32 - dx * distance * t;
                 let sy = y as f32 - dy * distance * t;
+                let edge_alpha = source_edge_alpha(sx, sy, width, height, edge_feather);
+                let alpha = base_alpha * edge_alpha;
+                if alpha <= 0.002 {
+                    continue;
+                }
                 let spread = blur_spread * (0.35 + t * 0.65);
 
                 let s0 = sample_rgb(img, width, height, sx, sy);
@@ -188,6 +195,27 @@ fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mir
         }
     });
     out
+}
+
+#[inline]
+fn source_edge_alpha(x: f32, y: f32, width: usize, height: usize, feather: f32) -> f32 {
+    if x < 0.0 || y < 0.0 || x > (width.saturating_sub(1)) as f32 || y > (height.saturating_sub(1)) as f32 {
+        return 0.0;
+    }
+    if feather <= 0.0001 {
+        return 1.0;
+    }
+    let nx = if width > 1 { x / (width - 1) as f32 } else { 0.5 };
+    let ny = if height > 1 { y / (height - 1) as f32 } else { 0.5 };
+    let dx = nx.min(1.0 - nx);
+    let dy = ny.min(1.0 - ny);
+    smoothstep01(dx / feather) * smoothstep01(dy / feather)
+}
+
+#[inline]
+fn smoothstep01(v: f32) -> f32 {
+    let x = v.clamp(0.0, 1.0);
+    x * x * (3.0 - 2.0 * x)
 }
 
 #[inline]

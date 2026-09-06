@@ -10,7 +10,8 @@ interface Props {
  * Motion Trails keeps the legacy `mirror` wire shape so old sidecars continue
  * to load. The old geometry fields are intentionally repurposed:
  *   cx -> copies / 10, rx -> blur / 100, ry -> amount / 100,
- *   feather -> fade, length -> distance, direction/opacity keep their meaning.
+ *   feather -> fade, offset -> image-edge feather, length -> distance,
+ *   direction/opacity keep their meaning.
  */
 export function MirrorPanel({ mirror, onChange }: Props) {
   const set = <K extends keyof Mirror>(key: K) => (v: Mirror[K]) => onChange({ ...mirror, [key]: v });
@@ -19,8 +20,9 @@ export function MirrorPanel({ mirror, onChange }: Props) {
   return (
     <div className={"mirror-panel" + (mirror.enabled ? "" : " disabled")}>
       <div className="hint">
-        Repeats the developed photo in one direction like a long-exposure motion echo. Current source: full image. A
-        subject/region mask is a separate targeted-trails mode; this effect does not use generative AI.
+        Repeats the developed photo in one direction like a long-exposure motion echo. Edge Feather removes the hard
+        rectangular frame line from translated copies. Current source is still the full image; true person/object trails
+        need a subject segmentation mask rather than generative AI.
       </div>
       <Slider
         label="Amount"
@@ -56,6 +58,14 @@ export function MirrorPanel({ mirror, onChange }: Props) {
         onChange={(v) => set("cx")(Math.round(v) / 10)}
       />
       <Slider label="Fade" value={mirror.feather} min={0} max={100} defaultValue={65} onChange={set("feather")} />
+      <Slider
+        label="Edge Feather"
+        value={mirror.offset * 100}
+        min={0}
+        max={25}
+        defaultValue={8}
+        onChange={(v) => set("offset")(v / 100)}
+      />
       <Slider
         label="Blur"
         value={mirror.rx * 100}

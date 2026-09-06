@@ -33,12 +33,13 @@ export interface Grading {
  * - rx: blur amount 0..1
  * - ry: trail amount 0..1
  * - feather: fade 0..100
+ * - offset: source image edge feather 0..0.25
  * - direction: degrees (0 = right, 90 = down)
  * - length: distance as a fraction of the long edge
  * - opacity: 0..100
  *
- * cy, rotation and offset remain on the wire for backwards compatibility but
- * are not used by the motion-trail renderer.
+ * cy and rotation remain on the wire for backwards compatibility but are not
+ * used by the motion-trail renderer.
  */
 export interface Mirror {
   enabled: boolean;
@@ -184,7 +185,7 @@ export function defaultMirror(): Mirror {
     rotation: 0, // legacy / unused
     feather: 65, // fade
     direction: -35,
-    offset: 0, // legacy / unused
+    offset: 0.08, // source-frame edge feather
     length: 0.16, // distance
     opacity: 65,
   };
