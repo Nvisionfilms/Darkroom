@@ -12,20 +12,34 @@ type InspectorSectionProps = {
 export function InspectorSection({ title, open, onToggle, shortcut, note, children }: InspectorSectionProps) {
   const sectionRef = useRef<HTMLElement>(null);
 
-  // The left-rail Effects button opens Motion Trails/Watermark in App.tsx. It
-  // previously looked like a dead button when the inspector was scrolled above
-  // those sections. Keep the rail lightweight but make that navigation visible.
   useEffect(() => {
-    if (title !== "Motion Trails") return;
-    const effectsButton = document.querySelector(".toolrail button:nth-of-type(4)");
-    if (!effectsButton) return;
-    const jumpToEffects = () => {
+    const jump = () => {
       window.requestAnimationFrame(() => {
         sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
       });
     };
-    effectsButton.addEventListener("click", jumpToEffects);
-    return () => effectsButton.removeEventListener("click", jumpToEffects);
+
+    // Make the left rail behave like real workspace navigation instead of a
+    // decorative button. Develop returns to the Tone section and exits Crop if
+    // crop mode is active. Effects jumps directly to Motion Trails.
+    if (title === "Tone") {
+      const developButton = document.querySelector(".toolrail button:nth-of-type(2)");
+      if (!developButton) return;
+      const onDevelop = () => {
+        const cropButton = document.querySelector(".toolrail button:nth-of-type(3)") as HTMLButtonElement | null;
+        if (cropButton?.classList.contains("active")) cropButton.click();
+        jump();
+      };
+      developButton.addEventListener("click", onDevelop);
+      return () => developButton.removeEventListener("click", onDevelop);
+    }
+
+    if (title === "Motion Trails") {
+      const effectsButton = document.querySelector(".toolrail button:nth-of-type(4)");
+      if (!effectsButton) return;
+      effectsButton.addEventListener("click", jump);
+      return () => effectsButton.removeEventListener("click", jump);
+    }
   }, [title]);
 
   return (
