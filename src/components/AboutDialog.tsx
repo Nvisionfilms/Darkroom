@@ -8,14 +8,14 @@ interface Props {
   onClose: () => void;
 }
 
-const REPO = "https://github.com/Nvisionfilms/Darkroom";
+const UPDATE_CHANNEL = "updates.nvisionfilms.com";
 
 export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Props) {
   const busy = status.kind === "checking" || status.kind === "installing";
   let line: string;
   switch (status.kind) {
     case "checking":
-      line = "Checking GitHub for a newer version…";
+      line = "Checking for a newer version…";
       break;
     case "latest":
       line = `You're on the latest version (${status.version}).`;
@@ -30,7 +30,7 @@ export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Pr
       line = `Update check failed: ${status.message}`;
       break;
     default:
-      line = "Updates are downloaded from the GitHub releases page.";
+      line = "Updates are delivered through the secure Darkroom update channel.";
   }
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
@@ -43,8 +43,8 @@ export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Pr
             <span className="update-bar" style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }} />
           </span>
         )}
-        <div className="about-repo" title={REPO}>
-          {REPO}
+        <div className="about-repo" title="Darkroom update channel">
+          {UPDATE_CHANNEL}
         </div>
         <div className="modal-actions">
           <button onClick={onClose} disabled={busy}>

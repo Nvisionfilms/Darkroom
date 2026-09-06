@@ -1,7 +1,10 @@
 # Builds signed release bundles for macOS (Apple silicon + Intel) and Windows
 # whenever a version tag is pushed or a versioned release branch is created.
-# Publishes them as a GitHub Release together with latest.json, which installed
-# apps poll for updates.
+#
+# Source and GitHub Release assets remain private in Nvisionfilms/Darkroom.
+# Installed apps never receive the GitHub URL directly: they poll the custom
+# update proxy at updates.nvisionfilms.com, which authenticates to GitHub on
+# the server side and streams only the updater JSON / requested binaries.
 #
 # API-driven release convention:
 #   1. bump the version on main
@@ -12,6 +15,7 @@
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
 #   TAURI_SIGNING_PRIVATE_KEY_PASSWORD  its password (empty string if none)
+#
 # Optional, for a notarised Mac build instead of ad-hoc signing:
 #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
 #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
@@ -50,8 +54,8 @@ jobs:
           - platform: macos-latest
             args: --target x86_64-apple-darwin
           - platform: windows-latest
-            # Publish one obvious Windows installer instead of both WiX MSI
-            # and NSIS. NSIS current-user mode avoids requiring elevation.
+            # Publish one obvious Windows installer. perMachine mode is set in
+            # tauri.conf.json so legacy Program Files installs can be upgraded.
             args: --bundles nsis
     runs-on: ${{ matrix.platform }}
     steps:
@@ -94,7 +98,7 @@ jobs:
         with:
           tagName: ${{ steps.release.outputs.tag }}
           releaseName: Darkroom ${{ steps.release.outputs.tag }}
-          releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update themselves.
+          releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update through the Darkroom update channel.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true

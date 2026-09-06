@@ -19,8 +19,8 @@ export function MirrorPanel({ mirror, onChange }: Props) {
   return (
     <div className={"mirror-panel" + (mirror.enabled ? "" : " disabled")}>
       <div className="hint">
-        Creates repeated ghosted frames in one direction, like a long-exposure motion echo. It is a normal image
-        effect — no generative AI or content replacement.
+        Repeats the developed photo in one direction like a long-exposure motion echo. Current source: full image. A
+        subject/region mask is a separate targeted-trails mode; this effect does not use generative AI.
       </div>
       <Slider
         label="Amount"

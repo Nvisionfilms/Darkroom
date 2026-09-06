@@ -6,6 +6,9 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
 jobs:
   verify-windows:
     runs-on: windows-latest
@@ -25,3 +28,46 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: cargo check --manifest-path src-tauri/Cargo.toml
+
+      # Build the same NSIS package shipped to Windows users. This catches
+      # installer regressions that TypeScript/Rust compile checks cannot see.
+      - name: Build Windows NSIS installer
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: bun run tauri build --bundles nsis
+
+      # v0.2.3 was also distributed as an MSI and can live under Program Files.
+      # Reproduce that real upgrade path before accepting a Windows release.
+      - name: Verify upgrade from v0.2.3 MSI
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $legacyDir = Join-Path $env:RUNNER_TEMP "darkroom-v023"
+          New-Item -ItemType Directory -Force -Path $legacyDir | Out-Null
+
+          gh release download v0.2.3 --repo "${{ github.repository }}" --pattern "Darkroom_0.2.3_x64_en-US.msi" --dir $legacyDir
+          $legacyMsi = Get-ChildItem -Path $legacyDir -Filter "*.msi" | Select-Object -First 1
+          if (-not $legacyMsi) {
+            throw "Could not download the v0.2.3 MSI used by existing Windows installations."
+          }
+
+          Write-Host "Installing legacy package: $($legacyMsi.FullName)"
+          $legacyInstall = Start-Process -FilePath "msiexec.exe" -ArgumentList "/i `"$($legacyMsi.FullName)`" /qn /norestart" -Wait -PassThru
+          if ($legacyInstall.ExitCode -notin @(0, 3010)) {
+            throw "v0.2.3 MSI install failed with exit code $($legacyInstall.ExitCode)."
+          }
+
+          $installer = Get-ChildItem -Path "src-tauri/target/release/bundle/nsis" -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $installer) {
+            throw "The new NSIS installer was not produced."
+          }
+
+          Write-Host "Testing legacy upgrade with: $($installer.FullName)"
+          $upgrade = Start-Process -FilePath $installer.FullName -ArgumentList "/S /UPDATE" -Wait -PassThru
+          if ($upgrade.ExitCode -ne 0) {
+            throw "Legacy Windows upgrade failed with exit code $($upgrade.ExitCode)."
+          }
+
+          Write-Host "Legacy MSI -> NSIS upgrade completed successfully."
