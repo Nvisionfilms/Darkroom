@@ -1,7 +1,10 @@
-# Builds signed release bundles for macOS (Apple silicon + Intel) and Windows
-# whenever a version tag is pushed (v0.2.0, v1.0.0, ...), publishes them as a
-# GitHub Release together with latest.json, which installed apps poll for
-# updates. Cut a release with `bun run release <version>`.
+# Builds signed release bundles for macOS (Apple silicon + Intel) and Windows.
+#
+# Normal releases still run when a version tag is pushed (v0.2.4, v1.0.0, ...).
+# A release/vX.Y.Z branch can also trigger the same pipeline. That branch path is
+# useful when cutting a release through the GitHub API instead of a local git
+# checkout. The Tauri action creates/publishes the matching GitHub Release and
+# latest.json, which installed apps poll for updates.
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
@@ -20,7 +23,14 @@ on:
   push:
     tags:
       - "v*"
+    branches:
+      - "release/v*"
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release, for example 0.2.4. Leave blank to use package.json."
+        required: false
+        type: string
 
 jobs:
   build:
@@ -41,6 +51,23 @@ jobs:
     runs-on: ${{ matrix.platform }}
     steps:
       - uses: actions/checkout@v4
+
+      - name: Resolve release tag
+        id: release_meta
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            tag="$GITHUB_REF_NAME"
+          elif [[ "$GITHUB_REF" == refs/heads/release/v* ]]; then
+            tag="${GITHUB_REF#refs/heads/release/}"
+          elif [[ -n "${{ inputs.version }}" ]]; then
+            tag="v${{ inputs.version }}"
+          else
+            version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf8')).version)")
+            tag="v${version}"
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Resolved release tag: $tag"
 
       - uses: oven-sh/setup-bun@v2
         with:
@@ -68,8 +95,8 @@ jobs:
           #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
           #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: Darkroom ${{ github.ref_name }}
+          tagName: ${{ steps.release_meta.outputs.tag }}
+          releaseName: Darkroom ${{ steps.release_meta.outputs.tag }}
           releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update themselves.
           releaseDraft: false
           prerelease: false
