@@ -52,6 +52,8 @@ Motion Trails creates repeated, semi-transparent directional echoes from the alr
 
 The effect is deterministic and uses only pixels already present in the photo. It does not hallucinate or synthesize new subject content.
 
+The current preview disables the old mirror shader and composites directional copies of the finished viewer canvas. Full-resolution export applies a CPU Motion Trails pass after normal develop/sharpen processing. Both paths use the same user-facing parameters and the same repeated-echo model.
+
 For backward compatibility, the current `.drk.json` wire format still stores Motion Trails under the legacy `mirror` key. This should remain an implementation detail; the UI and documentation should call the feature Motion Trails.
 
 ## Current product gaps, in priority order
@@ -135,7 +137,7 @@ The same develop math exists in Rust and WebGL shaders. This supports preview/ex
 
 Add golden-image tests that render a fixed input through both paths and compare within a small tolerance. Centralize shared constants and transfer-function parameters where practical.
 
-Motion Trails is intentionally a separate post-develop stage. Preview currently composites repeated frames on a canvas while export performs a deterministic CPU equivalent. Those paths should receive their own parity tests before the effect is considered final.
+Motion Trails is intentionally a separate post-develop stage. Preview currently composites repeated frames on a canvas while export performs a deterministic CPU equivalent. Those paths should receive their own visual parity tests before the effect is considered final.
 
 ### 4. Legacy `mirror` storage is technical debt
 
@@ -189,6 +191,6 @@ The workspace direction is:
 8. Add user presets.
 9. Add lens/geometry corrections and dehaze.
 10. Add local adjustment tools.
-11. Add CPU/preview parity tests for Motion Trails and the develop pipeline.
+11. Add CPU/preview visual parity tests for Motion Trails and golden-image tests for the develop pipeline.
 
 Darkroom does not need generative image manipulation to be useful or differentiated. Its competitive value can come from speed, clean workflow, strong color/develop tools, practical automation, and creative effects that remain under the photographer's control.
