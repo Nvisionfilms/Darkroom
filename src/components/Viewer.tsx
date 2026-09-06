@@ -12,6 +12,8 @@ type Props = ComponentProps<typeof CoreViewer> & {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+type PhotoRect = { x: number; y: number; w: number; h: number };
+
 /**
  * Viewer shell for two UI-only features:
  * 1) a persistent display-space Motion Trails preview, stored in the legacy
@@ -124,10 +126,34 @@ export function Viewer(props: Props) {
       }
       if (!sourceCacheValidRef.current) return;
 
-      // Feather the source-frame boundaries before translating copies. This
-      // removes the obvious rectangular seam that showed up when a full image
-      // was shifted over itself. It is not a subject mask: background content
-      // can still repeat until subject segmentation is added.
+      const W = source.width;
+      const H = source.height;
+
+      // At Fit zoom the WebGL canvas is larger than many portrait/landscape
+      // photos, so its black workspace margins are NOT the photo boundaries.
+      // Calculate the actual displayed photo rectangle and use those bounds for
+      // both trail clipping and edge feathering. This is what removes the hard
+      // left/right seam on portrait images as well as the top/bottom seam.
+      let photoRect: PhotoRect | null = null;
+      if (zoomLabel.startsWith("Fit") && props.image) {
+        let iw = props.image.width;
+        let ih = props.image.height;
+        if (props.crop?.enabled && !props.cropMode && !cropIsIdentity(props.crop)) {
+          iw *= Math.max(0.01, props.crop.w);
+          ih *= Math.max(0.01, props.crop.h);
+        }
+        if (((props.rotation % 360) + 360) % 360 === 90 || ((props.rotation % 360) + 360) % 360 === 270) {
+          [iw, ih] = [ih, iw];
+        }
+        const fit = Math.min(W / Math.max(1, iw), H / Math.max(1, ih));
+        const dw = iw * fit;
+        const dh = ih * fit;
+        photoRect = { x: (W - dw) / 2, y: (H - dh) / 2, w: dw, h: dh };
+      }
+
+      // Feather the source-frame boundaries before translating copies. When
+      // fitted, feather the actual photo rectangle rather than the full viewer
+      // canvas; otherwise portrait images still showed hard left/right seams.
       let trailSource: HTMLCanvasElement = cache;
       const edgeFeather = clamp(trail.offset, 0, 0.25);
       if (edgeFeather > 0.001) {
@@ -142,8 +168,8 @@ export function Viewer(props: Props) {
         }
         const mctx = masked.getContext("2d");
         if (mctx) {
-          const W = masked.width;
-          const H = masked.height;
+          const bounds = photoRect ?? { x: 0, y: 0, w: W, h: H };
+          const f = Math.min(edgeFeather, 0.49);
           mctx.clearRect(0, 0, W, H);
           mctx.globalCompositeOperation = "source-over";
           mctx.globalAlpha = 1;
@@ -151,21 +177,21 @@ export function Viewer(props: Props) {
           mctx.drawImage(cache, 0, 0);
           mctx.globalCompositeOperation = "destination-in";
 
-          const gx = mctx.createLinearGradient(0, 0, W, 0);
+          const gx = mctx.createLinearGradient(bounds.x, 0, bounds.x + bounds.w, 0);
           gx.addColorStop(0, "rgba(255,255,255,0)");
-          gx.addColorStop(edgeFeather, "rgba(255,255,255,1)");
-          gx.addColorStop(1 - edgeFeather, "rgba(255,255,255,1)");
+          gx.addColorStop(f, "rgba(255,255,255,1)");
+          gx.addColorStop(1 - f, "rgba(255,255,255,1)");
           gx.addColorStop(1, "rgba(255,255,255,0)");
           mctx.fillStyle = gx;
-          mctx.fillRect(0, 0, W, H);
+          mctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
 
-          const gy = mctx.createLinearGradient(0, 0, 0, H);
+          const gy = mctx.createLinearGradient(0, bounds.y, 0, bounds.y + bounds.h);
           gy.addColorStop(0, "rgba(255,255,255,0)");
-          gy.addColorStop(edgeFeather, "rgba(255,255,255,1)");
-          gy.addColorStop(1 - edgeFeather, "rgba(255,255,255,1)");
+          gy.addColorStop(f, "rgba(255,255,255,1)");
+          gy.addColorStop(1 - f, "rgba(255,255,255,1)");
           gy.addColorStop(1, "rgba(255,255,255,0)");
           mctx.fillStyle = gy;
-          mctx.fillRect(0, 0, W, H);
+          mctx.fillRect(bounds.x, bounds.y, bounds.w, bounds.h);
           mctx.globalCompositeOperation = "source-over";
           trailSource = masked;
         }
@@ -173,8 +199,6 @@ export function Viewer(props: Props) {
 
       const ctx = overlay.getContext("2d");
       if (!ctx) return;
-      const W = source.width;
-      const H = source.height;
       const long = Math.max(W, H);
       const copies = Math.round(clamp(trail.cx * 10, 1, 8));
       const amount = clamp(trail.ry, 0, 1);
@@ -191,23 +215,9 @@ export function Viewer(props: Props) {
       ctx.clearRect(0, 0, W, H);
       ctx.save();
 
-      // At Fit zoom, keep the repeated copies inside the actual photo rectangle
-      // instead of allowing the image to ghost into the surrounding workspace.
-      if (zoomLabel.startsWith("Fit") && props.image) {
-        let iw = props.image.width;
-        let ih = props.image.height;
-        if (props.crop?.enabled && !props.cropMode && !cropIsIdentity(props.crop)) {
-          iw *= Math.max(0.01, props.crop.w);
-          ih *= Math.max(0.01, props.crop.h);
-        }
-        if (((props.rotation % 360) + 360) % 360 === 90 || ((props.rotation % 360) + 360) % 360 === 270) {
-          [iw, ih] = [ih, iw];
-        }
-        const fit = Math.min(W / Math.max(1, iw), H / Math.max(1, ih));
-        const dw = iw * fit;
-        const dh = ih * fit;
+      if (photoRect) {
         ctx.beginPath();
-        ctx.rect((W - dw) / 2, (H - dh) / 2, dw, dh);
+        ctx.rect(photoRect.x, photoRect.y, photoRect.w, photoRect.h);
         ctx.clip();
       }
 
