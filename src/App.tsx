@@ -40,6 +40,8 @@ type InspectorKey =
   | "mirror"
   | "watermark";
 
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
 }
@@ -73,6 +75,29 @@ function placeholder(path: string): ImageInfo {
   };
 }
 
+/**
+ * Auto Edit is deliberately a simple deterministic develop recipe. It only
+ * changes normal Darkroom sliders; it does not generate, replace, mask, or
+ * invent image content.
+ */
+function applyAutoEdit(p: EditParams, noiseSigma: number): EditParams {
+  const autoLuma = Math.round(clamp(8 + noiseSigma * 850, 8, 35));
+  return {
+    ...p,
+    contrast: Math.max(p.contrast, 12),
+    highlights: Math.min(p.highlights, -10),
+    shadows: Math.max(p.shadows, 10),
+    vibrance: Math.max(p.vibrance, 14),
+    saturation: Math.max(p.saturation, 5),
+    texture: Math.max(p.texture, 8),
+    clarity: Math.max(p.clarity, 12),
+    sharpen: Math.max(p.sharpen, 45),
+    denoiseLuma: Math.max(p.denoiseLuma, autoLuma),
+    denoiseChroma: Math.max(p.denoiseChroma, 30),
+    denoiseDetail: Math.max(p.denoiseDetail, 55),
+  };
+}
+
 export default function App() {
   const [extensions, setExtensions] = useState<string[]>([]);
   const [files, setFiles] = useState<ImageInfo[]>([]);
@@ -102,11 +127,12 @@ export default function App() {
     watermark: false,
   });
   const updater = useUpdater(version);
+  const saveTimer = useRef<number | null>(null);
+  const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("dev"));
   }, []);
-  const saveTimer = useRef<number | null>(null);
 
   useEffect(() => {
     supportedExtensions()
@@ -120,8 +146,7 @@ export default function App() {
   const shownParams = before ? defaults : params;
   const shownLut = before ? defaultLut : lut;
 
-  // autosave edits to the sidecar (debounced); a pending save is flushed on close
-  const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
+  // Non-destructive sidecar autosave, debounced while sliders are moving.
   useEffect(() => {
     if (!current) return;
     if (saveTimer.current !== null) window.clearTimeout(saveTimer.current);
@@ -143,10 +168,9 @@ export default function App() {
   useEffect(() => {
     const flush = () => {
       const p = pendingSave.current;
-      if (p) {
-        pendingSave.current = null;
-        void saveEdits(p.path, p.params);
-      }
+      if (!p) return;
+      pendingSave.current = null;
+      void saveEdits(p.path, p.params);
     };
     const onVisibility = () => {
       if (document.visibilityState === "hidden") flush();
@@ -161,7 +185,6 @@ export default function App() {
     };
   }, []);
 
-  // remember which photos are open so the next launch restores them
   useEffect(() => {
     if (!files.length) return;
     const t = window.setTimeout(() => {
@@ -210,6 +233,12 @@ export default function App() {
   }, [extensions, load]);
 
   const reset = useCallback(() => setParams(defaultParams()), []);
+  const autoEdit = useCallback(() => {
+    if (!current) return;
+    setParams((p) => applyAutoEdit(p, current.noiseSigma));
+    setOpenSections((prev) => ({ ...prev, tone: true, color: true, detail: true, denoise: true }));
+  }, [current]);
+
   const rotate = useCallback(
     (deg: number) => setParams((p) => ({ ...p, rotation: (((p.rotation + deg) % 360) + 360) % 360 })),
     [],
@@ -243,12 +272,10 @@ export default function App() {
     if (cropMode) revealSection("crop");
   }, [cropMode, revealSection]);
 
-  // dev hook for automation: window.__darkroom.load(path)
   useEffect(() => {
-    (window as unknown as { __darkroom?: unknown }).__darkroom = { load };
-  }, [load]);
+    (window as unknown as { __darkroom?: unknown }).__darkroom = { load, autoEdit };
+  }, [load, autoEdit]);
 
-  // open a file passed on the command line (once; StrictMode runs effects twice in dev)
   const startedRef = useRef(false);
   useEffect(() => {
     if (startedRef.current) return;
@@ -260,7 +287,6 @@ export default function App() {
           void load(p);
           return;
         }
-        // no file given: restore the last session
         const s = await loadSession();
         if (!s.files.length) return;
         setFiles((prev) => {
@@ -273,7 +299,6 @@ export default function App() {
       .catch(() => {});
   }, [load]);
 
-  // keyboard shortcuts
   useEffect(() => {
     const down = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
@@ -324,9 +349,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">
-            ◢
-          </span>
+          <span className="brand-mark" aria-hidden="true">◢</span>
           <span className="brand-copy">
             <strong>Darkroom</strong>
             <small>RAW Photography. Deeper.</small>
@@ -340,12 +363,8 @@ export default function App() {
 
         <div className="top-actions">
           <span className="zoom-pill">{zoom || "Fit"}</span>
-          <button className="icon-button" onClick={() => rotate(-90)} disabled={!current} title="Rotate left">
-            ↶
-          </button>
-          <button className="icon-button" onClick={() => rotate(90)} disabled={!current} title="Rotate right">
-            ↷
-          </button>
+          <button className="icon-button" onClick={() => rotate(-90)} disabled={!current} title="Rotate left">↶</button>
+          <button className="icon-button" onClick={() => rotate(90)} disabled={!current} title="Rotate right">↷</button>
           <button
             className={"quiet-button" + (before ? " active" : "")}
             onPointerDown={() => setBefore(true)}
@@ -356,6 +375,14 @@ export default function App() {
           >
             Original
           </button>
+          <button
+            className="quiet-button auto-edit-button"
+            onClick={autoEdit}
+            disabled={!current}
+            title="Quick deterministic adjustment recipe: clarity, denoise, sharpening, contrast and saturation. No generative AI."
+          >
+            ✦ Auto Edit
+          </button>
           <button className="primary export-button" onClick={() => setShowExport(true)} disabled={!current}>
             Export
           </button>
@@ -365,16 +392,13 @@ export default function App() {
       <div className="main">
         <nav className="toolrail" aria-label="Workspace tools">
           <button type="button" onClick={openFiles} title="Open photos">
-            <span className="tool-glyph">▧</span>
-            <span>Browse</span>
+            <span className="tool-glyph">▧</span><span>Browse</span>
           </button>
           <button type="button" className={!cropMode ? "active" : ""} onClick={() => revealSection("tone")}>
-            <span className="tool-glyph">☷</span>
-            <span>Develop</span>
+            <span className="tool-glyph">☷</span><span>Develop</span>
           </button>
           <button type="button" className={cropMode ? "active" : ""} onClick={toggleCropMode} disabled={!current}>
-            <span className="tool-glyph">⌗</span>
-            <span>Crop</span>
+            <span className="tool-glyph">⌗</span><span>Crop</span>
           </button>
           <button
             type="button"
@@ -384,17 +408,14 @@ export default function App() {
             }}
             disabled={!current}
           >
-            <span className="tool-glyph">✦</span>
-            <span>Effects</span>
+            <span className="tool-glyph">✦</span><span>Effects</span>
           </button>
           <button type="button" onClick={() => setShowExport(true)} disabled={!current}>
-            <span className="tool-glyph">⇧</span>
-            <span>Export</span>
+            <span className="tool-glyph">⇧</span><span>Export</span>
           </button>
           <span className="toolrail-spacer" />
           <button type="button" onClick={() => setShowAbout(true)}>
-            <span className="tool-glyph">⚙</span>
-            <span>Settings</span>
+            <span className="tool-glyph">⚙</span><span>Settings</span>
           </button>
         </nav>
 
@@ -413,9 +434,7 @@ export default function App() {
               <span className="viewer-hint">\\</span>
             </div>
             <div className="viewer-toolbar-group">
-              <button onClick={reset} disabled={!current}>
-                Reset edit
-              </button>
+              <button onClick={reset} disabled={!current}>Reset edit</button>
               <span className="viewer-zoom">{zoom}</span>
             </div>
           </div>
@@ -444,9 +463,7 @@ export default function App() {
               <strong>Edit</strong>
               <span>Non-destructive develop</span>
             </div>
-            <button onClick={reset} disabled={!current}>
-              Reset all
-            </button>
+            <button onClick={reset} disabled={!current}>Reset all</button>
           </div>
 
           <div className="histogram-card">
@@ -513,14 +530,7 @@ export default function App() {
           <InspectorSection title="Detail" shortcut="D" open={openSections.detail} onToggle={() => toggleSection("detail")}>
             <Slider label="Texture" value={params.texture} min={-100} max={100} onChange={set("texture")} />
             <Slider label="Clarity" value={params.clarity} min={-100} max={100} onChange={set("clarity")} />
-            <Slider
-              label="Sharpening"
-              value={params.sharpen}
-              min={0}
-              max={150}
-              defaultValue={25}
-              onChange={set("sharpen")}
-            />
+            <Slider label="Sharpening" value={params.sharpen} min={0} max={150} defaultValue={25} onChange={set("sharpen")} />
           </InspectorSection>
 
           <InspectorSection
@@ -528,29 +538,11 @@ export default function App() {
             shortcut="N"
             open={openSections.denoise}
             onToggle={() => toggleSection("denoise")}
-            note={
-              current && current.noiseSigma > 0 ? (
-                <span className="section-note">{(current.noiseSigma * 100).toFixed(2)}</span>
-              ) : undefined
-            }
+            note={current && current.noiseSigma > 0 ? <span className="section-note">{(current.noiseSigma * 100).toFixed(2)}</span> : undefined}
           >
             <Slider label="Luminance" value={params.denoiseLuma} min={0} max={100} onChange={set("denoiseLuma")} />
-            <Slider
-              label="Color"
-              value={params.denoiseChroma}
-              min={0}
-              max={100}
-              defaultValue={25}
-              onChange={set("denoiseChroma")}
-            />
-            <Slider
-              label="Detail"
-              value={params.denoiseDetail}
-              min={0}
-              max={100}
-              defaultValue={50}
-              onChange={set("denoiseDetail")}
-            />
+            <Slider label="Color" value={params.denoiseChroma} min={0} max={100} defaultValue={25} onChange={set("denoiseChroma")} />
+            <Slider label="Detail" value={params.denoiseDetail} min={0} max={100} defaultValue={50} onChange={set("denoiseDetail")} />
             <div className="hint">Judge fine noise at 1:1 or in the exported file.</div>
           </InspectorSection>
 
@@ -567,11 +559,11 @@ export default function App() {
             />
           </InspectorSection>
 
-          <InspectorSection title="Mirror Window" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>
+          <InspectorSection title="Motion Trails" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>
             <label className="feature-toggle">
               <span>
-                <strong>Enable mirror</strong>
-                <small>Reflect an elliptical window into a fading tail.</small>
+                <strong>Enable trails</strong>
+                <small>Directional ghost echoes from the existing image. No AI manipulation.</small>
               </span>
               <input
                 type="checkbox"
@@ -582,11 +574,11 @@ export default function App() {
             <MirrorPanel mirror={params.mirror} onChange={set("mirror")} />
           </InspectorSection>
 
-          <InspectorSection title="Watermark" shortcut="W" open={openSections.watermark} onToggle={() => toggleSection("watermark")}>
+          <InspectorSection title="Watermark" open={openSections.watermark} onToggle={() => toggleSection("watermark")}>
             <label className="feature-toggle">
               <span>
                 <strong>Enable watermark</strong>
-                <small>Position and size an image watermark on canvas.</small>
+                <small>Place your image mark on the exported photo.</small>
               </span>
               <input
                 type="checkbox"
