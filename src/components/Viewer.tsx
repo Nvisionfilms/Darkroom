@@ -1,11 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { buildLut } from "../curve";
-import { cropIsIdentity, defaultParams } from "../types";
+import { cropIsIdentity, defaultParams, type EditParams } from "../types";
 import { Viewer as CoreViewer } from "./ViewerCore";
 import "./MotionTrail.css";
 
-type Props = ComponentProps<typeof CoreViewer>;
+type Props = ComponentProps<typeof CoreViewer> & {
+  /** Neutral/source defaults used by the Before side of the comparison. */
+  beforeParams?: EditParams;
+};
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -16,13 +19,15 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
  * 2) the draggable Before / After split from the Darkroom workspace mockup.
  *
  * Motion Trails intentionally repeats the whole developed image today. A
- * subject/region mask is a separate feature; the current effect does not use
- * segmentation or generative AI.
+ * subject/region segmentation mask is the next step for person/object-only
+ * trails; this effect does not use generative AI.
  */
 export function Viewer(props: Props) {
+  const { beforeParams: beforeOverride, ...coreProps } = props;
   const wrapRef = useRef<HTMLDivElement>(null);
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const sourceCacheRef = useRef<HTMLCanvasElement | null>(null);
+  const maskedSourceRef = useRef<HTMLCanvasElement | null>(null);
   const sourceCacheValidRef = useRef(false);
   const [comparePosition, setComparePosition] = useState(50);
   const [zoomLabel, setZoomLabel] = useState("Fit");
@@ -34,11 +39,15 @@ export function Viewer(props: Props) {
     ? { ...props.params, mirror: { ...props.params.mirror, enabled: false } }
     : props.params;
 
-  const beforeParams = useMemo(() => defaultParams(), []);
+  const fallbackBefore = useMemo(() => defaultParams(), []);
+  const beforeParams = beforeOverride ?? fallbackBefore;
   const beforeLut = useMemo(() => buildLut(beforeParams.curves), [beforeParams]);
 
   useEffect(() => {
     sourceCacheValidRef.current = false;
+    // Every newly loaded image starts with the visible 50/50 comparison. The
+    // previous implementation could remain collapsed after a zoom/pan.
+    if (props.image) setComparePosition(50);
   }, [props.image]);
 
   useEffect(() => {
@@ -115,6 +124,53 @@ export function Viewer(props: Props) {
       }
       if (!sourceCacheValidRef.current) return;
 
+      // Feather the source-frame boundaries before translating copies. This
+      // removes the obvious rectangular seam that showed up when a full image
+      // was shifted over itself. It is not a subject mask: background content
+      // can still repeat until subject segmentation is added.
+      let trailSource: HTMLCanvasElement = cache;
+      const edgeFeather = clamp(trail.offset, 0, 0.25);
+      if (edgeFeather > 0.001) {
+        let masked = maskedSourceRef.current;
+        if (!masked) {
+          masked = document.createElement("canvas");
+          maskedSourceRef.current = masked;
+        }
+        if (masked.width !== source.width || masked.height !== source.height) {
+          masked.width = source.width;
+          masked.height = source.height;
+        }
+        const mctx = masked.getContext("2d");
+        if (mctx) {
+          const W = masked.width;
+          const H = masked.height;
+          mctx.clearRect(0, 0, W, H);
+          mctx.globalCompositeOperation = "source-over";
+          mctx.globalAlpha = 1;
+          mctx.filter = "none";
+          mctx.drawImage(cache, 0, 0);
+          mctx.globalCompositeOperation = "destination-in";
+
+          const gx = mctx.createLinearGradient(0, 0, W, 0);
+          gx.addColorStop(0, "rgba(255,255,255,0)");
+          gx.addColorStop(edgeFeather, "rgba(255,255,255,1)");
+          gx.addColorStop(1 - edgeFeather, "rgba(255,255,255,1)");
+          gx.addColorStop(1, "rgba(255,255,255,0)");
+          mctx.fillStyle = gx;
+          mctx.fillRect(0, 0, W, H);
+
+          const gy = mctx.createLinearGradient(0, 0, 0, H);
+          gy.addColorStop(0, "rgba(255,255,255,0)");
+          gy.addColorStop(edgeFeather, "rgba(255,255,255,1)");
+          gy.addColorStop(1 - edgeFeather, "rgba(255,255,255,1)");
+          gy.addColorStop(1, "rgba(255,255,255,0)");
+          mctx.fillStyle = gy;
+          mctx.fillRect(0, 0, W, H);
+          mctx.globalCompositeOperation = "source-over";
+          trailSource = masked;
+        }
+      }
+
       const ctx = overlay.getContext("2d");
       if (!ctx) return;
       const W = source.width;
@@ -163,7 +219,7 @@ export function Viewer(props: Props) {
         if (alpha <= 0.002) continue;
         ctx.globalAlpha = alpha;
         ctx.filter = blurPx > 0.1 ? `blur(${(blurPx * (0.35 + t * 0.65)).toFixed(2)}px)` : "none";
-        ctx.drawImage(cache, dx * distance * t, dy * distance * t);
+        ctx.drawImage(trailSource, dx * distance * t, dy * distance * t);
       }
       ctx.restore();
     };
@@ -178,6 +234,7 @@ export function Viewer(props: Props) {
     trail.length,
     trail.direction,
     trail.feather,
+    trail.offset,
     trail.opacity,
     props.image,
     props.crop,
@@ -209,18 +266,23 @@ export function Viewer(props: Props) {
   const handleZoom = (label: string) => {
     setZoomLabel(label || "Fit");
     props.onZoom(label);
-    // The two preview canvases are guaranteed pixel-aligned at Fit. If the user
-    // starts panning/zooming, collapse to After rather than show a misleading
-    // misaligned comparison.
-    if (label && !label.startsWith("Fit") && comparePosition > 0 && comparePosition < 100) {
+    // Do not collapse the comparison while the GPU is preparing. That message
+    // was the reason the divider disappeared on first launch and only appeared
+    // after reopening. Collapse only after a real user zoom/pan reports N%.
+    const actualManualZoom = /^\d+%$/.test(label.trim());
+    if (actualManualZoom && comparePosition > 0 && comparePosition < 100) {
       setComparePosition(0);
     }
+  };
+
+  const requestZoom = (mode: "fit" | "100") => {
+    window.dispatchEvent(new CustomEvent("darkroom:zoom", { detail: mode }));
   };
 
   return (
     <div className="motion-trail-viewer compare-viewer" ref={wrapRef}>
       <div className="motion-trail-edited">
-        <CoreViewer {...props} params={coreParams} mirror={null} onMirrorChange={undefined} onZoom={handleZoom} />
+        <CoreViewer {...coreProps} params={coreParams} mirror={null} onMirrorChange={undefined} onZoom={handleZoom} />
       </div>
 
       <canvas ref={overlayRef} className="motion-trail-preview" aria-hidden="true" />
@@ -228,7 +290,7 @@ export function Viewer(props: Props) {
       {props.image && comparePosition > 0 && (
         <div className="compare-before-layer" style={{ clipPath: `inset(0 ${100 - comparePosition}% 0 0)` }}>
           <CoreViewer
-            {...props}
+            {...coreProps}
             params={beforeParams}
             lut={beforeLut}
             mirror={null}
@@ -251,6 +313,10 @@ export function Viewer(props: Props) {
             <button type="button" className={comparePosition === 0 ? "active" : ""} onClick={() => setComparePosition(0)}>
               After
             </button>
+          </div>
+          <div className="compare-zoom-actions" aria-label="Viewer zoom">
+            <button type="button" onClick={() => requestZoom("fit")}>Fit</button>
+            <button type="button" onClick={() => requestZoom("100")}>100%</button>
           </div>
           {comparePosition > 0 && comparePosition < 100 && (
             <div
