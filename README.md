@@ -31,7 +31,7 @@ Edits are stored in a sidecar `<image>.drk.json` next to the source and re-appli
 - Color grading: shadow / midtone / highlight tints with balance (split toning)
 - **Motion Trails:** repeated semi-transparent directional echoes made from the existing developed image. Controls: Amount, Direction, Distance, Copies, Fade, Blur and Opacity.
 - Watermark: any PNG/JPEG placed anywhere on the photo, dragged to move, corner-dragged to resize, with opacity; baked into exports
-- **Auto Edit:** a one-click deterministic develop recipe that adjusts normal controls such as contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise and sharpening. It is not generative AI and does not add/remove/replace image content.
+- **Auto Edit:** a one-click deterministic develop recipe that adjusts normal controls such as contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise and sharpening. Every result remains editable. It is not generative AI and does not add/remove/replace image content.
 
 For backwards compatibility, Motion Trails are still serialized under the legacy `mirror` key in `.drk.json` sidecars. The UI no longer exposes the old mirror-window behavior.
 
