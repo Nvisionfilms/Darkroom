@@ -15,6 +15,7 @@ import { ExportDialog } from "./components/ExportDialog";
 import { Histogram } from "./components/Histogram";
 import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
+import { InspectorSection } from "./components/InspectorSection";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
@@ -26,6 +27,18 @@ import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
 import { defaultParams, type EditParams, type Histogram as Hist, type ImageInfo, type PreviewImage } from "./types";
 import "./App.css";
+
+type InspectorKey =
+  | "tone"
+  | "color"
+  | "curves"
+  | "hsl"
+  | "grading"
+  | "detail"
+  | "denoise"
+  | "crop"
+  | "mirror"
+  | "watermark";
 
 function fileName(path: string): string {
   return path.split(/[\\/]/).pop() ?? path;
@@ -76,7 +89,20 @@ export default function App() {
   const [aspectKey, setAspectKey] = useState("free");
   const [showAbout, setShowAbout] = useState(false);
   const [version, setVersion] = useState("");
+  const [openSections, setOpenSections] = useState<Record<InspectorKey, boolean>>({
+    tone: true,
+    color: false,
+    curves: false,
+    hsl: false,
+    grading: false,
+    detail: false,
+    denoise: false,
+    crop: false,
+    mirror: false,
+    watermark: false,
+  });
   const updater = useUpdater(version);
+
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("dev"));
   }, []);
@@ -206,6 +232,17 @@ export default function App() {
     [current],
   );
 
+  const toggleSection = useCallback((key: InspectorKey) => {
+    setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  }, []);
+  const revealSection = useCallback((key: InspectorKey) => {
+    setOpenSections((prev) => ({ ...prev, [key]: true }));
+  }, []);
+
+  useEffect(() => {
+    if (cropMode) revealSection("crop");
+  }, [cropMode, revealSection]);
+
   // dev hook for automation: window.__darkroom.load(path)
   useEffect(() => {
     (window as unknown as { __darkroom?: unknown }).__darkroom = { load };
@@ -241,25 +278,26 @@ export default function App() {
     const down = (e: KeyboardEvent) => {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
+      const command = e.ctrlKey || e.metaKey;
       if (e.key === "\\") {
         setBefore(true);
         e.preventDefault();
       } else if ((e.key === "Escape" || e.key === "Enter") && cropMode) {
         e.preventDefault();
         setCropMode(false);
-      } else if (e.key.toLowerCase() === "c" && !e.ctrlKey && !e.metaKey && current) {
+      } else if (e.key.toLowerCase() === "c" && !command && current) {
         e.preventDefault();
         toggleCropMode();
-      } else if (e.ctrlKey && e.key.toLowerCase() === "o") {
+      } else if (command && e.key.toLowerCase() === "o") {
         e.preventDefault();
         void openFiles();
-      } else if (e.ctrlKey && e.key.toLowerCase() === "e" && current) {
+      } else if (command && e.key.toLowerCase() === "e" && current) {
         e.preventDefault();
         setShowExport(true);
-      } else if (e.ctrlKey && e.key === "[" && current) {
+      } else if (command && e.key === "[" && current) {
         e.preventDefault();
         rotate(-90);
-      } else if (e.ctrlKey && e.key === "]" && current) {
+      } else if (command && e.key === "]" && current) {
         e.preventDefault();
         rotate(90);
       }
@@ -280,85 +318,146 @@ export default function App() {
     (v: EditParams[K]) =>
       setParams((p) => ({ ...p, [key]: v }));
 
+  const currentIndex = current ? files.findIndex((f) => f.path === current.path) : -1;
+
   return (
     <div className="app">
       <header className="topbar">
-        <span className="brand">Darkroom</span>
-        <button onClick={openFiles}>Open…</button>
-        <button onClick={() => setShowExport(true)} disabled={!current}>
-          Export…
-        </button>
-        <button onClick={reset} disabled={!current}>
-          Reset
-        </button>
-        <span className="sep" />
-        <button onClick={() => rotate(-90)} disabled={!current} title="Rotate left (Ctrl+[)">
-          ⟲ Rotate
-        </button>
-        <button onClick={() => rotate(90)} disabled={!current} title="Rotate right (Ctrl+])">
-          ⟳ Rotate
-        </button>
-        <button className={cropMode ? "active" : ""} onClick={toggleCropMode} disabled={!current} title="Crop (C)">
-          {cropMode ? "Done" : "Crop"}
-        </button>
-        <button
-          className={before ? "active" : ""}
-          onPointerDown={() => setBefore(true)}
-          onPointerUp={() => setBefore(false)}
-          onPointerLeave={() => setBefore(false)}
-          disabled={!current}
-          title="Hold to see the original (or hold \)"
-        >
-          Before
-        </button>
-        <span className="spacer" />
-        <button onClick={() => setShowAbout(true)} title="Version and updates">
-          About
-        </button>
-        {loading && <span className="status">Loading {loading}…</span>}
-        {current && !loading && <span className="status meta">{metaLine(current)}</span>}
-        <span className="status zoom">{zoom}</span>
+        <div className="brand-lockup">
+          <span className="brand-mark" aria-hidden="true">
+            ◢
+          </span>
+          <span className="brand-copy">
+            <strong>Darkroom</strong>
+            <small>RAW Photography. Deeper.</small>
+          </span>
+        </div>
+
+        <div className="file-context">
+          <strong>{current ? fileName(current.path) : "No photo selected"}</strong>
+          <span>{loading ? `Loading ${loading}…` : current ? metaLine(current) : "Open a RAW or bitmap image to begin"}</span>
+        </div>
+
+        <div className="top-actions">
+          <span className="zoom-pill">{zoom || "Fit"}</span>
+          <button className="icon-button" onClick={() => rotate(-90)} disabled={!current} title="Rotate left">
+            ↶
+          </button>
+          <button className="icon-button" onClick={() => rotate(90)} disabled={!current} title="Rotate right">
+            ↷
+          </button>
+          <button
+            className={"quiet-button" + (before ? " active" : "")}
+            onPointerDown={() => setBefore(true)}
+            onPointerUp={() => setBefore(false)}
+            onPointerLeave={() => setBefore(false)}
+            disabled={!current}
+            title="Hold to show original (or hold \\)"
+          >
+            Original
+          </button>
+          <button className="primary export-button" onClick={() => setShowExport(true)} disabled={!current}>
+            Export
+          </button>
+        </div>
       </header>
 
       <div className="main">
-        <Viewer
-          image={preview}
-          params={shownParams}
-          lut={shownLut}
-          rotation={params.rotation}
-          mirror={params.mirror}
-          onMirrorChange={set("mirror")}
-          watermark={params.watermark}
-          onWatermarkChange={set("watermark")}
-          crop={params.crop}
-          cropMode={cropMode}
-          cropAspect={cropAspect}
-          onCropChange={set("crop")}
-          onHistogram={setHist}
-          onZoom={setZoom}
-        />
+        <nav className="toolrail" aria-label="Workspace tools">
+          <button type="button" onClick={openFiles} title="Open photos">
+            <span className="tool-glyph">▧</span>
+            <span>Browse</span>
+          </button>
+          <button type="button" className={!cropMode ? "active" : ""} onClick={() => revealSection("tone")}>
+            <span className="tool-glyph">☷</span>
+            <span>Develop</span>
+          </button>
+          <button type="button" className={cropMode ? "active" : ""} onClick={toggleCropMode} disabled={!current}>
+            <span className="tool-glyph">⌗</span>
+            <span>Crop</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              revealSection("mirror");
+              revealSection("watermark");
+            }}
+            disabled={!current}
+          >
+            <span className="tool-glyph">✦</span>
+            <span>Effects</span>
+          </button>
+          <button type="button" onClick={() => setShowExport(true)} disabled={!current}>
+            <span className="tool-glyph">⇧</span>
+            <span>Export</span>
+          </button>
+          <span className="toolrail-spacer" />
+          <button type="button" onClick={() => setShowAbout(true)}>
+            <span className="tool-glyph">⚙</span>
+            <span>Settings</span>
+          </button>
+        </nav>
+
+        <div className="viewer-shell">
+          <div className="viewer-toolbar">
+            <div className="viewer-toolbar-group">
+              <button
+                className={before ? "active" : ""}
+                onPointerDown={() => setBefore(true)}
+                onPointerUp={() => setBefore(false)}
+                onPointerLeave={() => setBefore(false)}
+                disabled={!current}
+              >
+                Hold Original
+              </button>
+              <span className="viewer-hint">\\</span>
+            </div>
+            <div className="viewer-toolbar-group">
+              <button onClick={reset} disabled={!current}>
+                Reset edit
+              </button>
+              <span className="viewer-zoom">{zoom}</span>
+            </div>
+          </div>
+
+          <Viewer
+            image={preview}
+            params={shownParams}
+            lut={shownLut}
+            rotation={params.rotation}
+            mirror={params.mirror}
+            onMirrorChange={set("mirror")}
+            watermark={params.watermark}
+            onWatermarkChange={set("watermark")}
+            crop={params.crop}
+            cropMode={cropMode}
+            cropAspect={cropAspect}
+            onCropChange={set("crop")}
+            onHistogram={setHist}
+            onZoom={setZoom}
+          />
+        </div>
 
         <aside className="panel">
-          <section>
+          <div className="inspector-top">
+            <div>
+              <strong>Edit</strong>
+              <span>Non-destructive develop</span>
+            </div>
+            <button onClick={reset} disabled={!current}>
+              Reset all
+            </button>
+          </div>
+
+          <div className="histogram-card">
+            <div className="histogram-head">
+              <span>Histogram</span>
+              <span>{current?.metadata.iso ? `ISO ${current.metadata.iso}` : "RGB"}</span>
+            </div>
             <Histogram hist={hist} />
-          </section>
+          </div>
 
-          <section>
-            <h3>Crop &amp; Straighten</h3>
-            <CropPanel
-              crop={params.crop}
-              cropMode={cropMode}
-              aspectKey={aspectKey}
-              imageWidth={current?.width ?? 1}
-              imageHeight={current?.height ?? 1}
-              onChange={set("crop")}
-              onAspect={chooseAspect}
-              onToggleMode={toggleCropMode}
-            />
-          </section>
-
-          <section>
-            <h3>Basic</h3>
+          <InspectorSection title="Tone" shortcut="L" open={openSections.tone} onToggle={() => toggleSection("tone")}>
             <label className="field">
               <span>Profile</span>
               <select
@@ -369,12 +468,21 @@ export default function App() {
                 <option value="linear">Linear (flat)</option>
               </select>
             </label>
+            <Slider label="Exposure" value={params.exposure} min={-5} max={5} step={0.05} onChange={set("exposure")} />
+            <Slider label="Contrast" value={params.contrast} min={-100} max={100} onChange={set("contrast")} />
+            <Slider label="Highlights" value={params.highlights} min={-100} max={100} onChange={set("highlights")} />
+            <Slider label="Shadows" value={params.shadows} min={-100} max={100} onChange={set("shadows")} />
+            <Slider label="Whites" value={params.whites} min={-100} max={100} onChange={set("whites")} />
+            <Slider label="Blacks" value={params.blacks} min={-100} max={100} onChange={set("blacks")} />
+          </InspectorSection>
+
+          <InspectorSection title="Color" shortcut="C" open={openSections.color} onToggle={() => toggleSection("color")}>
             <Slider
               label="Temperature"
               value={params.temperature}
               min={-100}
               max={100}
-              track="linear-gradient(90deg,#3e7be8,#888 50%,#f5b12b)"
+              track="linear-gradient(90deg,#3e7be8,#777 50%,#f5b12b)"
               onChange={set("temperature")}
             />
             <Slider
@@ -382,69 +490,27 @@ export default function App() {
               value={params.tint}
               min={-100}
               max={100}
-              track="linear-gradient(90deg,#46a758,#888 50%,#d6409f)"
+              track="linear-gradient(90deg,#46a758,#777 50%,#d6409f)"
               onChange={set("tint")}
             />
             <div className="divider" />
-            <Slider label="Exposure" value={params.exposure} min={-5} max={5} step={0.05} onChange={set("exposure")} />
-            <Slider label="Contrast" value={params.contrast} min={-100} max={100} onChange={set("contrast")} />
-            <Slider label="Highlights" value={params.highlights} min={-100} max={100} onChange={set("highlights")} />
-            <Slider label="Shadows" value={params.shadows} min={-100} max={100} onChange={set("shadows")} />
-            <Slider label="Whites" value={params.whites} min={-100} max={100} onChange={set("whites")} />
-            <Slider label="Blacks" value={params.blacks} min={-100} max={100} onChange={set("blacks")} />
-            <div className="divider" />
             <Slider label="Vibrance" value={params.vibrance} min={-100} max={100} onChange={set("vibrance")} />
             <Slider label="Saturation" value={params.saturation} min={-100} max={100} onChange={set("saturation")} />
-          </section>
+          </InspectorSection>
 
-          <section>
-            <h3>Tone Curve</h3>
+          <InspectorSection title="Curves" shortcut="V" open={openSections.curves} onToggle={() => toggleSection("curves")}>
             <CurveEditor curves={params.curves} onChange={set("curves")} />
-          </section>
+          </InspectorSection>
 
-          <section>
-            <h3>Color (HSL)</h3>
+          <InspectorSection title="HSL" shortcut="H" open={openSections.hsl} onToggle={() => toggleSection("hsl")}>
             <HslPanel hsl={params.hsl} onChange={set("hsl")} />
-          </section>
+          </InspectorSection>
 
-          <section>
-            <h3>Color Grading</h3>
+          <InspectorSection title="Color Grading" shortcut="G" open={openSections.grading} onToggle={() => toggleSection("grading")}>
             <GradingPanel grading={params.grading} onChange={set("grading")} />
-          </section>
+          </InspectorSection>
 
-          <section>
-            <h3>
-              Mirror Window
-              <label className="h3-toggle">
-                <input
-                  type="checkbox"
-                  checked={params.mirror.enabled}
-                  onChange={(e) => set("mirror")({ ...params.mirror, enabled: e.target.checked })}
-                />
-                on
-              </label>
-            </h3>
-            <MirrorPanel mirror={params.mirror} onChange={set("mirror")} />
-          </section>
-
-          <section>
-            <h3>
-              Watermark
-              <label className="h3-toggle">
-                <input
-                  type="checkbox"
-                  checked={params.watermark.enabled}
-                  disabled={!params.watermark.path}
-                  onChange={(e) => set("watermark")({ ...params.watermark, enabled: e.target.checked })}
-                />
-                on
-              </label>
-            </h3>
-            <WatermarkPanel watermark={params.watermark} onChange={set("watermark")} onError={setError} />
-          </section>
-
-          <section>
-            <h3>Detail</h3>
+          <InspectorSection title="Detail" shortcut="D" open={openSections.detail} onToggle={() => toggleSection("detail")}>
             <Slider label="Texture" value={params.texture} min={-100} max={100} onChange={set("texture")} />
             <Slider label="Clarity" value={params.clarity} min={-100} max={100} onChange={set("clarity")} />
             <Slider
@@ -455,17 +521,19 @@ export default function App() {
               defaultValue={25}
               onChange={set("sharpen")}
             />
-          </section>
+          </InspectorSection>
 
-          <section>
-            <h3>
-              Noise Reduction
-              {current && current.noiseSigma > 0 && (
-                <span className="h3-note" title="Estimated sensor noise (sigma in the sqrt-luma domain)">
-                  noise {(current.noiseSigma * 100).toFixed(2)}
-                </span>
-              )}
-            </h3>
+          <InspectorSection
+            title="Noise Reduction"
+            shortcut="N"
+            open={openSections.denoise}
+            onToggle={() => toggleSection("denoise")}
+            note={
+              current && current.noiseSigma > 0 ? (
+                <span className="section-note">{(current.noiseSigma * 100).toFixed(2)}</span>
+              ) : undefined
+            }
+          >
             <Slider label="Luminance" value={params.denoiseLuma} min={0} max={100} onChange={set("denoiseLuma")} />
             <Slider
               label="Color"
@@ -483,24 +551,78 @@ export default function App() {
               defaultValue={50}
               onChange={set("denoiseDetail")}
             />
-            <div className="hint">Preview is downsampled; judge noise at 1:1 (double-click) or in the export.</div>
-          </section>
+            <div className="hint">Judge fine noise at 1:1 or in the exported file.</div>
+          </InspectorSection>
+
+          <InspectorSection title="Crop & Straighten" shortcut="C" open={openSections.crop} onToggle={() => toggleSection("crop")}>
+            <CropPanel
+              crop={params.crop}
+              cropMode={cropMode}
+              aspectKey={aspectKey}
+              imageWidth={current?.width ?? 1}
+              imageHeight={current?.height ?? 1}
+              onChange={set("crop")}
+              onAspect={chooseAspect}
+              onToggleMode={toggleCropMode}
+            />
+          </InspectorSection>
+
+          <InspectorSection title="Mirror Window" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>
+            <label className="feature-toggle">
+              <span>
+                <strong>Enable mirror</strong>
+                <small>Reflect an elliptical window into a fading tail.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={params.mirror.enabled}
+                onChange={(e) => set("mirror")({ ...params.mirror, enabled: e.target.checked })}
+              />
+            </label>
+            <MirrorPanel mirror={params.mirror} onChange={set("mirror")} />
+          </InspectorSection>
+
+          <InspectorSection title="Watermark" shortcut="W" open={openSections.watermark} onToggle={() => toggleSection("watermark")}>
+            <label className="feature-toggle">
+              <span>
+                <strong>Enable watermark</strong>
+                <small>Position and size an image watermark on canvas.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={params.watermark.enabled}
+                disabled={!params.watermark.path}
+                onChange={(e) => set("watermark")({ ...params.watermark, enabled: e.target.checked })}
+              />
+            </label>
+            <WatermarkPanel watermark={params.watermark} onChange={set("watermark")} onError={setError} />
+          </InspectorSection>
         </aside>
       </div>
 
       <footer className="filmstrip">
-        {files.length === 0 && <span className="hint">Opened images appear here.</span>}
-        {files.map((f) => (
-          <button
-            key={f.path}
-            className={"thumb" + (current?.path === f.path ? " active" : "")}
-            title={f.path}
-            onClick={() => current?.path !== f.path && load(f.path)}
-          >
-            {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
-            <span className="thumb-name">{fileName(f.path)}</span>
-          </button>
-        ))}
+        <div className="filmstrip-summary">
+          <span className="filmstrip-grid">▦</span>
+          <span>
+            {files.length === 0
+              ? "No photos open"
+              : `${currentIndex >= 0 ? currentIndex + 1 : 0} of ${files.length} photo${files.length === 1 ? "" : "s"}`}
+          </span>
+        </div>
+        <div className="filmstrip-track">
+          {files.length === 0 && <span className="hint">Browse to open RAW, JPEG, PNG, or TIFF images.</span>}
+          {files.map((f) => (
+            <button
+              key={f.path}
+              className={"thumb" + (current?.path === f.path ? " active" : "")}
+              title={f.path}
+              onClick={() => current?.path !== f.path && load(f.path)}
+            >
+              {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
+              <span className="thumb-name">{fileName(f.path)}</span>
+            </button>
+          ))}
+        </div>
       </footer>
 
       {!showAbout && <UpdateBanner status={updater.status} onInstall={updater.install} onDismiss={updater.dismiss} />}
