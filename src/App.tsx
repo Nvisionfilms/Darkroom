@@ -76,6 +76,21 @@ function placeholder(path: string): ImageInfo {
 }
 
 /**
+ * RAW files start with Darkroom's Standard develop profile. Already-developed
+ * bitmap files should not silently receive a second contrast curve, sharpening
+ * pass, or colour denoise just by being opened.
+ */
+function defaultParamsForImage(info: ImageInfo | null): EditParams {
+  const p = defaultParams();
+  if (info && info.metadata.kind !== "raw") {
+    p.baseContrast = 0;
+    p.sharpen = 0;
+    p.denoiseChroma = 0;
+  }
+  return p;
+}
+
+/**
  * Auto Edit is deliberately a simple deterministic develop recipe. It only
  * changes normal Darkroom sliders; it does not generate, replace, mask, or
  * invent image content.
@@ -141,7 +156,7 @@ export default function App() {
   }, []);
 
   const lut = useMemo(() => buildLut(params.curves), [params.curves]);
-  const defaults = useMemo(() => defaultParams(), []);
+  const defaults = useMemo(() => defaultParamsForImage(current), [current?.metadata.kind]);
   const defaultLut = useMemo(() => buildLut(defaults.curves), [defaults]);
   const shownParams = before ? defaults : params;
   const shownLut = before ? defaultLut : lut;
@@ -206,7 +221,7 @@ export default function App() {
       setCurrent(info);
       setPreview(pv);
       setCropMode(false);
-      setParams(info.edits ?? defaultParams());
+      setParams(info.edits ?? defaultParamsForImage(info));
       setFiles((prev) => {
         const i = prev.findIndex((f) => f.path === info.path);
         if (i === -1) return [...prev, info];
@@ -232,7 +247,7 @@ export default function App() {
     await load(paths[0]);
   }, [extensions, load]);
 
-  const reset = useCallback(() => setParams(defaultParams()), []);
+  const reset = useCallback(() => setParams(defaultParamsForImage(current)), [current]);
   const autoEdit = useCallback(() => {
     if (!current) return;
     setParams((p) => applyAutoEdit(p, current.noiseSigma));
@@ -313,6 +328,12 @@ export default function App() {
       } else if (e.key.toLowerCase() === "c" && !command && current) {
         e.preventDefault();
         toggleCropMode();
+      } else if (e.key === "1" && !command && current) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("darkroom:zoom", { detail: "100" }));
+      } else if (e.key === "0" && !command && current) {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent("darkroom:zoom", { detail: "fit" }));
       } else if (command && e.key.toLowerCase() === "o") {
         e.preventDefault();
         void openFiles();
@@ -442,6 +463,7 @@ export default function App() {
           <Viewer
             image={preview}
             params={shownParams}
+            beforeParams={defaults}
             lut={shownLut}
             rotation={params.rotation}
             mirror={params.mirror}
