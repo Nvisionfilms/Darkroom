@@ -13,33 +13,50 @@ export function InspectorSection({ title, open, onToggle, shortcut, note, childr
   const sectionRef = useRef<HTMLElement>(null);
 
   useEffect(() => {
-    const jump = () => {
-      window.requestAnimationFrame(() => {
-        sectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      });
+    const scrollSectionIntoPanel = () => {
+      const section = sectionRef.current;
+      const panel = section?.closest(".panel") as HTMLElement | null;
+      if (!section || !panel) return;
+
+      const panelRect = panel.getBoundingClientRect();
+      const sectionRect = section.getBoundingClientRect();
+      const top = panel.scrollTop + sectionRect.top - panelRect.top - 8;
+      panel.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
     };
 
-    // Make the left rail behave like real workspace navigation instead of a
-    // decorative button. Develop returns to the Tone section and exits Crop if
-    // crop mode is active. Effects jumps directly to Motion Trails.
-    if (title === "Tone") {
-      const developButton = document.querySelector(".toolrail button:nth-of-type(2)");
-      if (!developButton) return;
-      const onDevelop = () => {
+    const jump = () => {
+      // React may be opening this section from the same rail click. Wait for the
+      // state commit/layout before calculating the panel scroll position. The
+      // delayed retry also covers sections that were already open, where there
+      // is no state change to trigger a second render.
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(scrollSectionIntoPanel);
+      });
+      window.setTimeout(scrollSectionIntoPanel, 90);
+    };
+
+    let buttonIndex: number | null = null;
+    if (title === "Tone") buttonIndex = 2; // Develop
+    else if (title === "Crop & Straighten") buttonIndex = 3; // Crop
+    else if (title === "Motion Trails") buttonIndex = 4; // Effects
+    if (buttonIndex === null) return;
+
+    const railButton = document.querySelector(`.toolrail button:nth-of-type(${buttonIndex})`) as HTMLButtonElement | null;
+    if (!railButton) return;
+
+    const onRailClick = () => {
+      // Develop should return to the normal develop workspace even if the crop
+      // workspace is active. App.tsx owns crop state, so use its existing Crop
+      // button to exit that mode rather than duplicating state here.
+      if (title === "Tone") {
         const cropButton = document.querySelector(".toolrail button:nth-of-type(3)") as HTMLButtonElement | null;
         if (cropButton?.classList.contains("active")) cropButton.click();
-        jump();
-      };
-      developButton.addEventListener("click", onDevelop);
-      return () => developButton.removeEventListener("click", onDevelop);
-    }
+      }
+      jump();
+    };
 
-    if (title === "Motion Trails") {
-      const effectsButton = document.querySelector(".toolrail button:nth-of-type(4)");
-      if (!effectsButton) return;
-      effectsButton.addEventListener("click", jump);
-      return () => effectsButton.removeEventListener("click", jump);
-    }
+    railButton.addEventListener("click", onRailClick);
+    return () => railButton.removeEventListener("click", onRailClick);
   }, [title]);
 
   return (
