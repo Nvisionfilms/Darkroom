@@ -3,11 +3,11 @@
 # Publishes them as a GitHub Release together with latest.json, which installed
 # apps poll for updates.
 #
-# Release convention for API-driven releases:
+# API-driven release convention:
 #   1. bump the version on main
 #   2. create release/vX.Y.Z from main exactly once
-#   3. do not add an extra trigger commit to that branch; branch creation itself
-#      starts the release workflow
+#   3. branch creation starts the release; later commits to that release branch
+#      are intentionally ignored so duplicate asset uploads cannot race
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
@@ -32,6 +32,13 @@ on:
 
 jobs:
   build:
+    # For release/v* branches, only the branch-creation push should publish.
+    # Subsequent commits on that branch would otherwise start another matrix
+    # and race to overwrite the same GitHub Release assets.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      startsWith(github.ref, 'refs/tags/') ||
+      (startsWith(github.ref, 'refs/heads/release/v') && github.event.before == '0000000000000000000000000000000000000000')
     permissions:
       contents: write
     strategy:
