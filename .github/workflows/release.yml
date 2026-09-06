@@ -1,10 +1,13 @@
-# Builds signed release bundles for macOS (Apple silicon + Intel) and Windows.
+# Builds signed release bundles for macOS (Apple silicon + Intel) and Windows
+# whenever a version tag is pushed or a versioned release branch is created.
+# Publishes them as a GitHub Release together with latest.json, which installed
+# apps poll for updates.
 #
-# Normal releases still run when a version tag is pushed (v0.2.4, v1.0.0, ...).
-# A release/vX.Y.Z branch can also trigger the same pipeline. That branch path is
-# useful when cutting a release through the GitHub API instead of a local git
-# checkout. The Tauri action creates/publishes the matching GitHub Release and
-# latest.json, which installed apps poll for updates.
+# Release convention for API-driven releases:
+#   1. bump the version on main
+#   2. create release/vX.Y.Z from main exactly once
+#   3. do not add an extra trigger commit to that branch; branch creation itself
+#      starts the release workflow
 #
 # Required repository secrets (Settings -> Secrets and variables -> Actions):
 #   TAURI_SIGNING_PRIVATE_KEY           contents of the updater private key
@@ -26,11 +29,6 @@ on:
     branches:
       - "release/v*"
   workflow_dispatch:
-    inputs:
-      version:
-        description: "Version to release, for example 0.2.4. Leave blank to use package.json."
-        required: false
-        type: string
 
 jobs:
   build:
@@ -53,15 +51,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Resolve release tag
-        id: release_meta
+        id: release
         shell: bash
         run: |
           if [[ "$GITHUB_REF" == refs/tags/* ]]; then
             tag="$GITHUB_REF_NAME"
           elif [[ "$GITHUB_REF" == refs/heads/release/v* ]]; then
             tag="${GITHUB_REF#refs/heads/release/}"
-          elif [[ -n "${{ inputs.version }}" ]]; then
-            tag="v${{ inputs.version }}"
           else
             version=$(node -e "console.log(JSON.parse(require('fs').readFileSync('package.json','utf8')).version)")
             tag="v${version}"
@@ -88,15 +84,9 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-          # To notarise the Mac build with an Apple Developer certificate, add
-          # these lines back and set the matching repository secrets. Passing
-          # them while the secrets are unset makes the bundler try to import an
-          # empty certificate and fail.
-          #   APPLE_CERTIFICATE, APPLE_CERTIFICATE_PASSWORD, APPLE_SIGNING_IDENTITY,
-          #   APPLE_ID, APPLE_PASSWORD, APPLE_TEAM_ID
         with:
-          tagName: ${{ steps.release_meta.outputs.tag }}
-          releaseName: Darkroom ${{ steps.release_meta.outputs.tag }}
+          tagName: ${{ steps.release.outputs.tag }}
+          releaseName: Darkroom ${{ steps.release.outputs.tag }}
           releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update themselves.
           releaseDraft: false
           prerelease: false
