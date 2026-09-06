@@ -111,6 +111,22 @@ export function Viewer({
     else v.y = Math.min(0, Math.max(c.height - h, v.y));
   }, []);
 
+  const zoom100 = useCallback(() => {
+    const r = rendererRef.current;
+    const c = canvasRef.current;
+    if (!r || !c || !r.imgW) return;
+    const v = viewRef.current;
+    const ns = dpr(); // one preview image pixel per CSS pixel
+    const mx = c.width / 2;
+    const my = c.height / 2;
+    const kk = ns / Math.max(1e-6, v.scale);
+    v.x = mx - (mx - v.x) * kk;
+    v.y = my - (my - v.y) * kk;
+    v.scale = ns;
+    fitRef.current = false;
+    clampView();
+  }, [clampView]);
+
   // The render closure captures the latest props, but is reached through a
   // ref so that requestRender (and every effect that depends on it) stays
   // stable across slider changes. Otherwise the image/rotation effects would
@@ -265,6 +281,20 @@ export function Viewer({
     requestRender();
   }, [rotation, fit, requestRender]);
 
+  // Controls outside the WebGL canvas (the mockup-style Fit / 100% buttons)
+  // use one event so both Before and After canvases stay aligned.
+  useEffect(() => {
+    const onZoomRequest = (event: Event) => {
+      const mode = (event as CustomEvent<"fit" | "100">).detail;
+      if (mode === "fit") fit();
+      else if (mode === "100") zoom100();
+      else return;
+      requestRender();
+    };
+    window.addEventListener("darkroom:zoom", onZoomRequest as EventListener);
+    return () => window.removeEventListener("darkroom:zoom", onZoomRequest as EventListener);
+  }, [fit, zoom100, requestRender]);
+
   const onWheel = (e: React.WheelEvent) => {
     const r = rendererRef.current;
     const c = canvasRef.current;
@@ -306,26 +336,9 @@ export function Viewer({
   const onPointerUp = () => {
     dragging.current = null;
   };
-  const onDoubleClick = (e: React.MouseEvent) => {
-    const r = rendererRef.current;
-    const c = canvasRef.current;
-    if (!r || !c || !r.imgW) return;
-    if (fitRef.current) {
-      const rect = c.getBoundingClientRect();
-      const d = dpr();
-      const mx = (e.clientX - rect.left) * d;
-      const my = (e.clientY - rect.top) * d;
-      const v = viewRef.current;
-      const ns = d; // 1 preview pixel per device pixel
-      const kk = ns / v.scale;
-      v.x = mx - (mx - v.x) * kk;
-      v.y = my - (my - v.y) * kk;
-      v.scale = ns;
-      fitRef.current = false;
-      clampView();
-    } else {
-      fit();
-    }
+  const onDoubleClick = () => {
+    if (fitRef.current) zoom100();
+    else fit();
     requestRender();
   };
 
