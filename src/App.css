@@ -980,3 +980,254 @@ input[type="number"] {
   color: #5fd37a;
   text-shadow: 0 0 8px rgba(95, 211, 122, 0.6);
 }
+
+/* ---- masks (local adjustments) ---- */
+.mask-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.mask-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mask-show {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mask-show kbd {
+  font-size: 10px;
+  color: var(--muted-2);
+}
+.mask-add {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mask-add-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+  padding: 6px 8px;
+}
+.mask-add-item strong {
+  display: block;
+  font-weight: 600;
+}
+.mask-add-item small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+.mask-glyph {
+  width: 18px;
+  text-align: center;
+  color: var(--accent);
+  flex: none;
+}
+.mask-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.mask-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid transparent;
+  cursor: pointer;
+}
+.mask-row:hover {
+  background: var(--panel-2);
+}
+.mask-row.selected {
+  background: var(--panel-3);
+  border-color: var(--accent);
+}
+.mask-row.off .mask-name {
+  color: var(--muted-2);
+  text-decoration: line-through;
+}
+.mask-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.mask-delete {
+  padding: 0 6px;
+  line-height: 1.2;
+  background: transparent;
+  border-color: transparent;
+  color: var(--muted);
+}
+.mask-delete:hover {
+  color: #f77;
+}
+.mask-edit {
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+.mask-edit-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.mask-rename {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--text);
+  padding: 2px 6px;
+  font: inherit;
+}
+.mask-rename:hover,
+.mask-rename:focus {
+  background: #141414;
+  border-color: var(--border);
+  outline: none;
+}
+.mask-invert {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  cursor: pointer;
+}
+.mask-brush .field {
+  gap: 6px;
+}
+
+/* on-canvas mask handles */
+.mk-edge {
+  stroke: #fff;
+  stroke-width: 1.5;
+  opacity: 0.9;
+}
+.mk-edge.dashed {
+  stroke-dasharray: 6 4;
+  opacity: 0.6;
+}
+.mk-axis {
+  stroke: #4f8cff;
+  stroke-width: 1.5;
+}
+.mk-grab {
+  stroke: transparent;
+  stroke-width: 16;
+  pointer-events: all;
+  cursor: move;
+}
+.mk-ellipse {
+  fill: none;
+  stroke: #fff;
+  stroke-width: 1.5;
+}
+.mk-ellipse.dashed {
+  stroke-dasharray: 6 4;
+  opacity: 0.6;
+}
+.mk-grab-area {
+  fill: rgba(79, 140, 255, 0.06);
+  stroke: none;
+  pointer-events: all;
+  cursor: move;
+}
+.mo-handle.mk-start {
+  fill: #4f8cff;
+}
+.mo-handle.mk-center {
+  fill: #4f8cff;
+}
+.mo-handle.mk-rot {
+  fill: #ffd24f;
+  cursor: alias;
+}
+.brush-overlay {
+  pointer-events: all;
+  cursor: none;
+}
+.brush-surface {
+  fill: transparent;
+  pointer-events: all;
+}
+.brush-cursor {
+  fill: rgba(79, 140, 255, 0.12);
+  stroke: #fff;
+  stroke-width: 1.2;
+  pointer-events: none;
+}
+.brush-cursor.erase {
+  fill: rgba(255, 80, 80, 0.12);
+  stroke: #f66;
+}
+.wb-overlay {
+  pointer-events: all;
+  cursor: crosshair;
+}
+.wb-surface {
+  fill: transparent;
+  pointer-events: all;
+}
+
+/* crop guides */
+.crop-guides line,
+.crop-guides polygon,
+.crop-guides path {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1;
+  fill: none;
+  pointer-events: none;
+}
+.crop-guides .fine {
+  stroke: rgba(255, 255, 255, 0.22);
+}
+.crop-guides .spiral {
+  stroke: rgba(255, 255, 255, 0.85);
+  stroke-width: 1.5;
+}
+.eyedropper {
+  padding: 2px 7px;
+  line-height: 1.2;
+}
+.eyedropper.active {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.slider-with-tool {
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+}
+.slider-with-tool .slider {
+  flex: 1;
+}
+.nr-auto {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.nr-auto label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  cursor: pointer;
+}

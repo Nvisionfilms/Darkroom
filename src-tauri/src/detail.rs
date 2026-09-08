@@ -20,8 +20,18 @@ pub struct DetailMaps {
     pub b2: Vec<f32>,
     /// quarter resolution
     pub b3: Vec<f32>,
+    /// quarter resolution: min(r, g, b) of the source blurred with the b3
+    /// radius, the haze "veil" estimate used by dehaze
+    pub dark: Vec<f32>,
     pub qw: usize,
     pub qh: usize,
+}
+
+/// Dark channel (min of r, g, b), clamped to 0..1.
+pub fn dark_channel(rgb: &[f32]) -> Vec<f32> {
+    rgb.par_chunks_exact(3)
+        .map(|p| p[0].min(p[1]).min(p[2]).clamp(0.0, 1.0))
+        .collect()
 }
 
 pub const REF_LONG_EDGE: f32 = 2560.0;
@@ -124,6 +134,9 @@ pub fn build(rgb: &[f32], width: usize, height: usize) -> DetailMaps {
     let b2 = gaussian(&lg, width, height, s2);
     let (q, qw, qh) = downsample4(&lg, width, height);
     let b3 = gaussian(&q, qw, qh, s3 / 4.0);
+    let dk = dark_channel(rgb);
+    let (dq, _, _) = downsample4(&dk, width, height);
+    let dark = gaussian(&dq, qw, qh, s3 / 4.0);
     DetailMaps {
         width,
         height,
@@ -131,6 +144,7 @@ pub fn build(rgb: &[f32], width: usize, height: usize) -> DetailMaps {
         b1,
         b2,
         b3,
+        dark,
         qw,
         qh,
     }

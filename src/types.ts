@@ -112,6 +112,145 @@ export interface Crop {
   angle: number;
 }
 
+/** Per-mask adjustment deltas, same units as the global sliders (exposure in EV). */
+export interface MaskAdjust {
+  exposure: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  whites: number;
+  blacks: number;
+  temperature: number;
+  tint: number;
+  saturation: number;
+  texture: number;
+  clarity: number;
+  dehaze: number;
+}
+
+/** Order matters: it is the layout of the shader's uMaskAdj array and of pipeline.rs Tone::add. */
+export const MASK_ADJUST_KEYS: (keyof MaskAdjust)[] = [
+  "exposure",
+  "contrast",
+  "highlights",
+  "shadows",
+  "whites",
+  "blacks",
+  "temperature",
+  "tint",
+  "saturation",
+  "texture",
+  "clarity",
+  "dehaze",
+];
+
+export interface Stroke {
+  /** normalised image coords */
+  x: number[];
+  y: number[];
+  /** diameter as a fraction of the long edge */
+  size: number;
+  /** 0..100 */
+  feather: number;
+  /** 0..100 */
+  flow: number;
+  erase: boolean;
+}
+
+export type MaskKind = "linear" | "radial" | "brush" | "luminance" | "subject";
+
+/**
+ * A local adjustment ("overlay"). Geometry in normalised image coordinates;
+ * see src-tauri/src/mask.rs for the exact meaning of each field.
+ */
+export interface Mask {
+  id: string;
+  name: string;
+  enabled: boolean;
+  invert: boolean;
+  kind: MaskKind;
+  /** 0..100 */
+  amount: number;
+  x0: number;
+  y0: number;
+  x1: number;
+  y1: number;
+  cx: number;
+  cy: number;
+  rx: number;
+  ry: number;
+  rotation: number;
+  /** 0..100 radial edge softness */
+  feather: number;
+  strokes: Stroke[];
+  lumLo: number;
+  lumHi: number;
+  lumFeather: number;
+  /** subject: grayscale PNG data URL */
+  raster: string | null;
+  adjust: MaskAdjust;
+}
+
+export function defaultMaskAdjust(): MaskAdjust {
+  return {
+    exposure: 0,
+    contrast: 0,
+    highlights: 0,
+    shadows: 0,
+    whites: 0,
+    blacks: 0,
+    temperature: 0,
+    tint: 0,
+    saturation: 0,
+    texture: 0,
+    clarity: 0,
+    dehaze: 0,
+  };
+}
+
+export function maskAdjustIsZero(a: MaskAdjust): boolean {
+  return MASK_ADJUST_KEYS.every((k) => a[k] === 0);
+}
+
+export const MASK_KIND_LABEL: Record<MaskKind, string> = {
+  linear: "Linear gradient",
+  radial: "Radial gradient",
+  brush: "Brush",
+  luminance: "Luminance range",
+  subject: "Subject",
+};
+
+let maskCounter = 0;
+
+export function newMask(kind: MaskKind, existing: Mask[]): Mask {
+  const n = existing.filter((m) => m.kind === kind).length + 1;
+  maskCounter += 1;
+  return {
+    id: `${kind}-${Date.now().toString(36)}-${maskCounter}`,
+    name: `${MASK_KIND_LABEL[kind]} ${n}`,
+    enabled: true,
+    invert: false,
+    kind,
+    amount: 100,
+    x0: 0.5,
+    y0: 0.05,
+    x1: 0.5,
+    y1: 0.55,
+    cx: 0.5,
+    cy: 0.5,
+    rx: 0.3,
+    ry: 0.2,
+    rotation: 0,
+    feather: 50,
+    strokes: [],
+    lumLo: 0,
+    lumHi: 0.35,
+    lumFeather: 0.15,
+    raster: null,
+    adjust: defaultMaskAdjust(),
+  };
+}
+
 export interface EditParams {
   exposure: number;
   contrast: number;
@@ -142,6 +281,10 @@ export interface EditParams {
   mirror: Mirror;
   watermark: Watermark;
   crop: Crop;
+  /** -100..100: positive removes haze, negative adds it */
+  dehaze: number;
+  /** local adjustments */
+  masks: Mask[];
   hsl: HslParams;
   curves: Curves;
 }
@@ -263,6 +406,8 @@ export function defaultParams(): EditParams {
     mirror: defaultMirror(),
     watermark: defaultWatermark(),
     crop: defaultCrop(),
+    dehaze: 0,
+    masks: [],
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),

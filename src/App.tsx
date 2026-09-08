@@ -21,7 +21,11 @@ import {
 } from "./api";
 import { MonitorPanel } from "./components/MonitorPanel";
 import { TetherPanel } from "./components/TetherPanel";
-import type { CaptureFn } from "./components/ViewerCore";
+import { MaskPanel } from "./components/MaskPanel";
+import { nextGuide, type GuideKind } from "./components/CropGuides";
+import type { CaptureFn, MaskApi } from "./components/ViewerCore";
+import { encodeRaster, whiteBalanceFor, type BrushSettings } from "./mask";
+import { detectSubject } from "./subject";
 import { aspectRatio, CropPanel, fitAspect } from "./components/CropPanel";
 import { CurveEditor } from "./components/CurveEditor";
 import { ExportDialog } from "./components/ExportDialog";
@@ -40,9 +44,12 @@ import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
 import {
   defaultParams,
+  newMask,
   type EditParams,
   type Histogram as Hist,
   type ImageInfo,
+  type Mask,
+  type MaskKind,
   type MonitorInfo,
   type PreviewImage,
   type TetherStatus,
@@ -61,9 +68,40 @@ type InspectorKey =
   | "mirror"
   | "watermark"
   | "tether"
-  | "monitor";
+  | "monitor"
+  | "masks";
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
+const GUIDE_KEY = "darkroom.guide";
+const AUTO_NR_KEY = "darkroom.autoNr";
+
+/**
+ * Noise-reduction sliders from the measured noise level. Deterministic: the
+ * same photo always gets the same values.
+ */
+function autoNoise(sigma: number): Pick<EditParams, "denoiseLuma" | "denoiseChroma" | "denoiseDetail"> {
+  return {
+    denoiseLuma: Math.max(0, Math.min(70, Math.round(sigma * 1100))),
+    denoiseChroma: Math.max(20, Math.min(80, Math.round(20 + sigma * 1500))),
+    denoiseDetail: 50,
+  };
+}
+
+function readPref(key: string, fallback: string): string {
+  try {
+    return localStorage.getItem(key) ?? fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writePref(key: string, value: string): void {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    /* private mode etc. */
+  }
+}
 /** how many filmstrip thumbnails the phone page receives */
 const MONITOR_STRIP = 60;
 
@@ -169,6 +207,7 @@ export default function App() {
     watermark: false,
     tether: false,
     monitor: false,
+    masks: false,
   });
   const updater = useUpdater(version);
   const saveTimer = useRef<number | null>(null);
@@ -192,6 +231,19 @@ export default function App() {
   /** newest tethered shot that arrived while another one was still loading */
   const tetherQueue = useRef<string | null>(null);
   const loadRef = useRef<(path: string) => Promise<void>>(async () => {});
+
+  // masks, eyedropper, guides, auto noise reduction
+  const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
+  const [showMask, setShowMask] = useState(false);
+  const [brush, setBrush] = useState<BrushSettings>({ size: 0.08, feather: 50, flow: 100, erase: false });
+  const [detecting, setDetecting] = useState(false);
+  const maskApiRef = useRef<MaskApi | null>(null);
+  const [wbPick, setWbPick] = useState(false);
+  const [guide, setGuide] = useState<GuideKind>(() => readPref(GUIDE_KEY, "thirds") as GuideKind);
+  const [guideFlip, setGuideFlip] = useState(0);
+  const [autoNr, setAutoNr] = useState(() => readPref(AUTO_NR_KEY, "0") === "1");
+  const autoNrRef = useRef(autoNr);
+  autoNrRef.current = autoNr;
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("dev"));
@@ -270,7 +322,11 @@ export default function App() {
       setCurrent(info);
       setPreview(pv);
       setCropMode(false);
-      setParams(info.edits ?? defaultParamsForImage(info));
+      setSelectedMaskId(null);
+      setWbPick(false);
+      let p = info.edits ?? defaultParamsForImage(info);
+      if (!info.edits && autoNrRef.current && info.metadata.kind === "raw") p = { ...p, ...autoNoise(info.noiseSigma) };
+      setParams(p);
       setFiles((prev) => {
         const i = prev.findIndex((f) => f.path === info.path);
         if (i === -1) return [...prev, info];
@@ -394,6 +450,82 @@ export default function App() {
   }, [extensions, load]);
 
   const reset = useCallback(() => setParams(defaultParamsForImage(current)), [current]);
+
+  // ---- masks ----
+  const selectedMask = selectedMaskId ? (params.masks.find((m) => m.id === selectedMaskId) ?? null) : null;
+
+  const changeMask = useCallback(
+    (m: Mask) => {
+      setParams((p) => {
+        const prev = p.masks.find((x) => x.id === m.id);
+        // touching a slider hides the red overlay so the effect is visible
+        if (prev && prev.adjust !== m.adjust) setShowMask(false);
+        return { ...p, masks: p.masks.map((x) => (x.id === m.id ? m : x)) };
+      });
+    },
+    [],
+  );
+
+  const deleteMask = useCallback((id: string) => {
+    setParams((p) => ({ ...p, masks: p.masks.filter((x) => x.id !== id) }));
+    setSelectedMaskId((s) => (s === id ? null : s));
+  }, []);
+
+  const runDetectSubject = useCallback(
+    async (id: string) => {
+      const api = maskApiRef.current;
+      const capture = captureRef.current;
+      if (!api || !capture) return;
+      setDetecting(true);
+      try {
+        const blob = await capture({ full: true });
+        if (!blob) throw new Error("no picture to analyse");
+        const { w, h } = api.size();
+        const raster = await detectSubject(blob, w, h);
+        const key = encodeRaster(raster, w, h);
+        api.setRaster(id, raster, key);
+        setParams((p) => ({ ...p, masks: p.masks.map((x) => (x.id === id ? { ...x, raster: key } : x)) }));
+      } catch (e) {
+        setError(`Subject detection failed: ${String(e)}`);
+      } finally {
+        setDetecting(false);
+      }
+    },
+    [],
+  );
+
+  const addMask = useCallback(
+    (kind: MaskKind) => {
+      const m = newMask(kind, params.masks);
+      setParams((p) => ({ ...p, masks: [...p.masks, m] }));
+      setSelectedMaskId(m.id);
+      setShowMask(kind !== "linear" && kind !== "radial");
+      revealSection("masks");
+      if (kind === "subject") void runDetectSubject(m.id);
+    },
+    [params.masks, runDetectSubject],
+  );
+
+  // ---- white balance eyedropper ----
+  const pickWb = useCallback((rgb: [number, number, number]) => {
+    const wb = whiteBalanceFor(rgb[0], rgb[1], rgb[2]);
+    setParams((p) => ({ ...p, temperature: wb.temperature, tint: wb.tint }));
+    setWbPick(false);
+  }, []);
+
+  // ---- crop guides / auto NR prefs ----
+  const changeGuide = useCallback((g: GuideKind) => {
+    setGuide(g);
+    writePref(GUIDE_KEY, g);
+  }, []);
+  const changeAutoNr = useCallback((v: boolean) => {
+    setAutoNr(v);
+    writePref(AUTO_NR_KEY, v ? "1" : "0");
+  }, []);
+  const applyAutoNr = useCallback(() => {
+    if (!current) return;
+    setParams((p) => ({ ...p, ...autoNoise(current.noiseSigma) }));
+  }, [current]);
   const autoEdit = useCallback(() => {
     if (!current) return;
     setParams((p) => applyAutoEdit(p, current.noiseSigma));
@@ -468,6 +600,25 @@ export default function App() {
       if (e.key === "\\") {
         setBefore(true);
         e.preventDefault();
+      } else if (e.key === "Escape" && wbPick) {
+        e.preventDefault();
+        setWbPick(false);
+      } else if (e.key === "Escape" && selectedMaskId && !cropMode) {
+        e.preventDefault();
+        setSelectedMaskId(null);
+      } else if (e.key.toLowerCase() === "m" && !command && selectedMaskId) {
+        e.preventDefault();
+        setShowMask((v) => !v);
+      } else if (e.key === "o" && !command && cropMode) {
+        e.preventDefault();
+        changeGuide(nextGuide(guide));
+      } else if (e.key === "O" && !command && cropMode) {
+        e.preventDefault();
+        setGuideFlip((f) => (f + 1) % 4);
+      } else if ((e.key === "[" || e.key === "]") && !command && selectedMask?.kind === "brush") {
+        e.preventDefault();
+        const k = e.key === "]" ? 1.25 : 0.8;
+        setBrush((b) => ({ ...b, size: clamp(b.size * k, 0.005, 0.4) }));
       } else if ((e.key === "Escape" || e.key === "Enter") && cropMode) {
         e.preventDefault();
         setCropMode(false);
@@ -503,7 +654,7 @@ export default function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [openFiles, current, rotate, cropMode, toggleCropMode]);
+  }, [openFiles, current, rotate, cropMode, toggleCropMode, wbPick, selectedMaskId, selectedMask?.kind, guide, changeGuide]);
 
   const set =
     <K extends keyof EditParams>(key: K) =>
@@ -595,6 +746,15 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={selectedMaskId ? "active" : ""}
+            onClick={() => revealSection("masks")}
+            disabled={!current}
+            title="Local adjustments: gradients, brush, luminance range, subject"
+          >
+            <span className="tool-glyph">◐</span><span>Masks</span>
+          </button>
+          <button
+            type="button"
             onClick={() => {
               revealSection("mirror");
               revealSection("watermark");
@@ -649,6 +809,15 @@ export default function App() {
             beforeParams={defaults}
             lut={shownLut}
             captureRef={captureRef}
+            maskApiRef={maskApiRef}
+            selectedMaskId={selectedMaskId}
+            showMask={showMask}
+            brush={brush}
+            onMaskChange={changeMask}
+            wbPick={wbPick}
+            onPickWb={pickWb}
+            guide={guide}
+            guideFlip={guideFlip}
             rotation={params.rotation}
             mirror={params.mirror}
             onMirrorChange={set("mirror")}
@@ -700,14 +869,24 @@ export default function App() {
           </InspectorSection>
 
           <InspectorSection title="Color" shortcut="C" open={openSections.color} onToggle={() => toggleSection("color")}>
-            <Slider
-              label="Temperature"
-              value={params.temperature}
-              min={-100}
-              max={100}
-              track="linear-gradient(90deg,#3e7be8,#777 50%,#f5b12b)"
-              onChange={set("temperature")}
-            />
+            <div className="slider-with-tool">
+              <Slider
+                label="Temperature"
+                value={params.temperature}
+                min={-100}
+                max={100}
+                track="linear-gradient(90deg,#3e7be8,#777 50%,#f5b12b)"
+                onChange={set("temperature")}
+              />
+              <button
+                className={"eyedropper" + (wbPick ? " active" : "")}
+                title="White balance eyedropper: click something neutral in the photo"
+                disabled={!current}
+                onClick={() => setWbPick((v) => !v)}
+              >
+                ✎
+              </button>
+            </div>
             <Slider
               label="Tint"
               value={params.tint}
@@ -736,6 +915,7 @@ export default function App() {
           <InspectorSection title="Detail" shortcut="D" open={openSections.detail} onToggle={() => toggleSection("detail")}>
             <Slider label="Texture" value={params.texture} min={-100} max={100} onChange={set("texture")} />
             <Slider label="Clarity" value={params.clarity} min={-100} max={100} onChange={set("clarity")} />
+            <Slider label="Dehaze" value={params.dehaze} min={-100} max={100} onChange={set("dehaze")} />
             <Slider label="Sharpening" value={params.sharpen} min={0} max={150} defaultValue={25} onChange={set("sharpen")} />
           </InspectorSection>
 
@@ -746,6 +926,15 @@ export default function App() {
             onToggle={() => toggleSection("denoise")}
             note={current && current.noiseSigma > 0 ? <span className="section-note">{(current.noiseSigma * 100).toFixed(2)}</span> : undefined}
           >
+            <div className="nr-auto">
+              <button onClick={applyAutoNr} disabled={!current} title="Set the sliders from the measured noise of this photo">
+                Auto
+              </button>
+              <label>
+                <input type="checkbox" checked={autoNr} onChange={(e) => changeAutoNr(e.target.checked)} />
+                Apply to new RAW photos
+              </label>
+            </div>
             <Slider label="Luminance" value={params.denoiseLuma} min={0} max={100} onChange={set("denoiseLuma")} />
             <Slider label="Color" value={params.denoiseChroma} min={0} max={100} defaultValue={25} onChange={set("denoiseChroma")} />
             <Slider label="Detail" value={params.denoiseDetail} min={0} max={100} defaultValue={50} onChange={set("denoiseDetail")} />
@@ -762,6 +951,34 @@ export default function App() {
               onChange={set("crop")}
               onAspect={chooseAspect}
               onToggleMode={toggleCropMode}
+              guide={guide}
+              onGuide={changeGuide}
+            />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Masks"
+            shortcut="K"
+            open={openSections.masks}
+            onToggle={() => {
+              if (openSections.masks) setSelectedMaskId(null);
+              toggleSection("masks");
+            }}
+            note={params.masks.length ? <span className="section-note">{params.masks.length}</span> : undefined}
+          >
+            <MaskPanel
+              masks={params.masks}
+              selectedId={selectedMaskId}
+              showMask={showMask}
+              brush={brush}
+              detecting={detecting}
+              onSelect={setSelectedMaskId}
+              onAdd={addMask}
+              onChange={changeMask}
+              onDelete={deleteMask}
+              onShowMask={setShowMask}
+              onBrush={setBrush}
+              onDetectSubject={(id) => void runDetectSubject(id)}
             />
           </InspectorSection>
 

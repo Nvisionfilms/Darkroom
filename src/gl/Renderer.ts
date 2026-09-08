@@ -1,20 +1,42 @@
-import { cropIsIdentity, type Crop, type EditParams, type Histogram, type Mirror, type PreviewImage } from "../types";
+import {
+  cropIsIdentity,
+  MASK_ADJUST_KEYS,
+  maskAdjustIsZero,
+  type Crop,
+  type EditParams,
+  type Histogram,
+  type Mask,
+  type Mirror,
+  type PreviewImage,
+} from "../types";
+import { maskKindCode, type Rect } from "../mask";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
   COPY_FRAG,
+  DARK_FRAG,
   DENOISE_FRAG,
   DEVELOP_FRAG,
   DOWN2_FRAG,
   DOWNSAMPLE_FRAG,
   IDENTITY3,
   LOGLUMA_FRAG,
+  MASK_ADJ_STRIDE,
+  MAX_MASKS,
   MIRROR_FRAG,
   PREP_FRAG,
   PRESENT_FRAG,
   VERTEX,
   WATERMARK_FRAG,
 } from "./shaders";
+
+/** A mask raster kept on the JS side, mirrored into a slot texture when the mask is in use. */
+interface RasterEntry {
+  data: Uint8Array;
+  w: number;
+  h: number;
+  version: number;
+}
 
 export interface View {
   /** screen (device) pixels per preview pixel */
@@ -191,6 +213,7 @@ export class Renderer {
       down2: link(gl, VERTEX, DOWN2_FRAG),
       combine: link(gl, VERTEX, COMBINE_FRAG),
       logluma: link(gl, VERTEX, LOGLUMA_FRAG),
+      dark: link(gl, VERTEX, DARK_FRAG),
       blur: link(gl, VERTEX, BLUR_FRAG),
       down: link(gl, VERTEX, DOWNSAMPLE_FRAG),
       develop: link(gl, VERTEX, DEVELOP_FRAG),
@@ -325,6 +348,18 @@ export class Renderer {
     this.makeTex("LgQ", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
     this.makeTex("tmpQ", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
     this.makeTex("B3", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
+    // haze veil: dark channel, quarter res, blurred with the clarity radius
+    this.makeTex("Dk", gl.R16F, gl.RED, gl.HALF_FLOAT, W, H, gl.NEAREST);
+    this.makeTex("DkQ", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
+    this.makeTex("V", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
+    // globally developed picture, sampled by luminance-range masks
+    this.makeTex("devG", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR);
+    // mask rasters (brush, subject) live at half resolution
+    this.mw = Math.max(1, Math.ceil(W / 2));
+    this.mh = Math.max(1, Math.ceil(H / 2));
+    for (let i = 0; i < MAX_MASKS; i++) this.makeTex(`M${i}`, gl.R8, gl.RED, gl.UNSIGNED_BYTE, this.mw, this.mh, gl.LINEAR);
+    this.slotContent = new Array(MAX_MASKS).fill("");
+    this.rasters.clear();
     this.makeTex("dev", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.makeTex("fx", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.makeTex("fx2", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
@@ -442,9 +477,182 @@ export class Renderer {
       gl.uniform2f(this.loc(this.prog.down, "uTexel"), 1 / W, 1 / H);
     });
     this.blur(T.LgQ, T.tmpQ, T.B3, s3 / 4);
+    // haze veil (twin of detail.rs: dark channel -> downsample4 -> gaussian s3/4)
+    this.pass(this.prog.dark, T.Dk, () => {
+      this.bindTex(0, T.D.tex);
+      gl.uniform1i(this.loc(this.prog.dark, "uSrc"), 0);
+    });
+    this.pass(this.prog.down, T.DkQ, () => {
+      this.bindTex(0, T.Dk.tex);
+      gl.uniform1i(this.loc(this.prog.down, "uSrc"), 0);
+      gl.uniform2f(this.loc(this.prog.down, "uTexel"), 1 / W, 1 / H);
+    });
+    this.blur(T.DkQ, T.tmpQ, T.V, s3 / 4);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.prepKey = key;
     return true;
+  }
+
+  // ---- masks ----
+
+  private mw = 1;
+  private mh = 1;
+  private rasters = new Map<string, RasterEntry>();
+  /** which raster (id:version) each slot texture currently holds */
+  private slotContent: string[] = [];
+
+  /** Resolution of brush/subject rasters for the current image. */
+  maskSize(): { w: number; h: number } {
+    return { w: this.mw, h: this.mh };
+  }
+
+  hasRaster(id: string): boolean {
+    return this.rasters.has(id);
+  }
+
+  /** The live raster buffer of a mask (painting writes into it, then calls updateMaskRaster). */
+  getRaster(id: string): Uint8Array | null {
+    const r = this.rasters.get(id);
+    return r && r.w === this.mw && r.h === this.mh ? r.data : null;
+  }
+
+  /** Register (or replace) the raster of a brush/subject mask. Size must equal maskSize(). */
+  setMaskRaster(id: string, data: Uint8Array): void {
+    const prev = this.rasters.get(id);
+    this.rasters.set(id, { data, w: this.mw, h: this.mh, version: (prev?.version ?? 0) + 1 });
+  }
+
+  dropMaskRaster(id: string): void {
+    this.rasters.delete(id);
+  }
+
+  /** The raster changed in place (painting): upload just the dirty rectangle if it is on a slot. */
+  updateMaskRaster(id: string, rect: Rect): void {
+    const r = this.rasters.get(id);
+    if (!r) return;
+    r.version += 1;
+    const slot = this.slotContent.findIndex((c) => c.startsWith(id + ":"));
+    if (slot < 0) return;
+    const gl = this.gl;
+    const x = Math.max(0, Math.floor(rect.x));
+    const y = Math.max(0, Math.floor(rect.y));
+    const w = Math.min(r.w - x, Math.ceil(rect.w));
+    const h = Math.min(r.h - y, Math.ceil(rect.h));
+    if (w <= 0 || h <= 0) return;
+    gl.bindTexture(gl.TEXTURE_2D, this.t[`M${slot}`].tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, r.w);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
+    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RED, gl.UNSIGNED_BYTE, r.data);
+    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
+    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    this.slotContent[slot] = `${id}:${r.version}`;
+  }
+
+  private uploadSlot(slot: number, id: string): void {
+    const r = this.rasters.get(id);
+    const key = r ? `${id}:${r.version}` : "";
+    if (this.slotContent[slot] === key) return;
+    const gl = this.gl;
+    gl.bindTexture(gl.TEXTURE_2D, this.t[`M${slot}`].tex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+    if (r && r.w === this.mw && r.h === this.mh) {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.mw, this.mh, 0, gl.RED, gl.UNSIGNED_BYTE, r.data);
+    } else {
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.mw, this.mh, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    }
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    this.slotContent[slot] = key;
+  }
+
+  /**
+   * Masks the shader evaluates: enabled masks with a non-zero adjustment,
+   * plus the one being shown/edited (so its overlay is visible even before
+   * it has any adjustment). At most MAX_MASKS, in stack order.
+   */
+  private maskList(p: EditParams, showId: string | null): { list: Mask[]; show: number; useLuma: boolean } {
+    const list: Mask[] = [];
+    for (const m of p.masks) {
+      if (!m.enabled) continue;
+      const active = m.amount > 0 && !maskAdjustIsZero(m.adjust);
+      if (!active && m.id !== showId) continue;
+      if (list.length >= MAX_MASKS) break;
+      list.push(m);
+    }
+    return {
+      list,
+      show: showId ? list.findIndex((m) => m.id === showId) : -1,
+      useLuma: list.some((m) => m.kind === "luminance"),
+    };
+  }
+
+  private setMaskUniforms(list: Mask[], show: number, useLuma: boolean): void {
+    const gl = this.gl;
+    const d = this.prog.develop;
+    const n = list.length;
+    const kind = new Int32Array(MAX_MASKS);
+    const invert = new Int32Array(MAX_MASKS);
+    const amount = new Float32Array(MAX_MASKS);
+    const p0 = new Float32Array(MAX_MASKS * 4);
+    const p1 = new Float32Array(MAX_MASKS * 4);
+    const adj = new Float32Array(MAX_MASKS * MASK_ADJ_STRIDE);
+    const W = this.imgW;
+    const H = this.imgH;
+    const long = Math.max(W, H);
+    for (let i = 0; i < n; i++) {
+      const m = list[i];
+      kind[i] = maskKindCode(m.kind);
+      invert[i] = m.invert ? 1 : 0;
+      amount[i] = Math.max(0, Math.min(1, m.amount / 100));
+      const o = i * 4;
+      switch (m.kind) {
+        case "linear": {
+          const ax = m.x0 * W;
+          const ay = m.y0 * H;
+          p0[o] = ax;
+          p0[o + 1] = ay;
+          p0[o + 2] = m.x1 * W - ax;
+          p0[o + 3] = m.y1 * H - ay;
+          break;
+        }
+        case "radial": {
+          const rot = (m.rotation * Math.PI) / 180;
+          p0[o] = m.cx * W;
+          p0[o + 1] = m.cy * H;
+          p0[o + 2] = Math.max(1, m.rx * long);
+          p0[o + 3] = Math.max(1, m.ry * long);
+          p1[o] = Math.cos(rot);
+          p1[o + 1] = Math.sin(rot);
+          p1[o + 2] = Math.max(0.01, Math.min(1, m.feather / 100));
+          break;
+        }
+        case "luminance":
+          p0[o] = m.lumLo;
+          p0[o + 1] = m.lumHi;
+          p0[o + 2] = m.lumFeather;
+          break;
+        default:
+          p0[o] = i; // raster slot == list index
+          this.uploadSlot(i, m.id);
+      }
+      for (let k = 0; k < MASK_ADJUST_KEYS.length; k++) adj[i * MASK_ADJ_STRIDE + k] = m.adjust[MASK_ADJUST_KEYS[k]];
+    }
+    gl.uniform1i(this.loc(d, "uNumMasks"), n);
+    gl.uniform1i(this.loc(d, "uUseLumaG"), useLuma ? 1 : 0);
+    gl.uniform1i(this.loc(d, "uShowMask"), show);
+    gl.uniform1iv(this.loc(d, "uMaskKind[0]"), kind);
+    gl.uniform1iv(this.loc(d, "uMaskInvert[0]"), invert);
+    gl.uniform1fv(this.loc(d, "uMaskAmount[0]"), amount);
+    gl.uniform4fv(this.loc(d, "uMaskP0[0]"), p0);
+    gl.uniform4fv(this.loc(d, "uMaskP1[0]"), p1);
+    gl.uniform1fv(this.loc(d, "uMaskAdj[0]"), adj);
+    for (let i = 0; i < MAX_MASKS; i++) {
+      this.bindTex(8 + i, this.t[`M${i}`].tex);
+      gl.uniform1i(this.loc(d, `uMask${i}`), 8 + i);
+    }
   }
 
   private setDevelopUniforms(p: EditParams): void {
@@ -465,6 +673,8 @@ export class Renderer {
     f("uBaseContrast", Math.max(0, Math.min(1, p.baseContrast)));
     f("uTexture", n(p.texture));
     f("uClarity", n(p.clarity));
+    f("uDehaze", n(p.dehaze));
+    gl.uniform2f(this.loc(d, "uSize"), this.imgW, this.imgH);
     gl.uniform1fv(this.loc(d, "uHslHue[0]"), Float32Array.from(p.hsl.hue, n));
     gl.uniform1fv(this.loc(d, "uHslSat[0]"), Float32Array.from(p.hsl.saturation, n));
     gl.uniform1fv(this.loc(d, "uHslLum[0]"), Float32Array.from(p.hsl.luminance, n));
@@ -481,24 +691,44 @@ export class Renderer {
     this.bindTex(3, T.B1.tex);
     this.bindTex(4, T.B2.tex);
     this.bindTex(5, T.B3.tex);
+    this.bindTex(6, T.V.tex);
+    this.bindTex(7, T.devG.tex);
     gl.uniform1i(this.loc(d, "uImage"), 0);
     gl.uniform1i(this.loc(d, "uLut"), 1);
     gl.uniform1i(this.loc(d, "uLg"), 2);
     gl.uniform1i(this.loc(d, "uB1"), 3);
     gl.uniform1i(this.loc(d, "uB2"), 4);
     gl.uniform1i(this.loc(d, "uB3"), 5);
+    gl.uniform1i(this.loc(d, "uDark"), 6);
+    gl.uniform1i(this.loc(d, "uLumaG"), 7);
     gl.uniform1i(this.loc(d, "uUseMaps"), 1);
   }
 
-  /** Pass: run the per-pixel pipeline into the preview-sized framebuffer and the histogram framebuffer. */
-  runDevelop(p: EditParams): void {
+  /**
+   * Pass: run the per-pixel pipeline into the preview-sized framebuffer and
+   * the histogram framebuffer. `showMaskId` paints that mask's weight in red
+   * on top of the picture (and keeps it evaluated even with no adjustment).
+   */
+  runDevelop(p: EditParams, showMaskId: string | null = null): void {
     if (!this.imgW) return;
     const gl = this.gl;
     const t0 = performance.now();
     const prepared = this.prepare(p);
     if (prepared) performance.measure("gl.prepare", { start: t0 });
-    this.pass(this.prog.develop, this.t.dev, () => this.setDevelopUniforms(p));
-    this.pass(this.prog.develop, this.t.hist, () => this.setDevelopUniforms(p));
+    const { list, show, useLuma } = this.maskList(p, showMaskId);
+    if (useLuma) {
+      // luminance-range masks read the picture developed with global settings only
+      this.pass(this.prog.develop, this.t.devG, () => {
+        this.setDevelopUniforms(p);
+        this.setMaskUniforms([], -1, false);
+      });
+    }
+    const setup = () => {
+      this.setDevelopUniforms(p);
+      this.setMaskUniforms(list, show, useLuma);
+    };
+    this.pass(this.prog.develop, this.t.dev, setup);
+    this.pass(this.prog.develop, this.t.hist, setup);
     // dev uses mipmap filtering; it must be mip-complete before the mirror
     // pass samples it (and before display when no mirror is applied)
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);

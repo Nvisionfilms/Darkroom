@@ -38,8 +38,9 @@ export function InspectorSection({ title, open, onToggle, shortcut, note, childr
     let buttonIndex: number | null = null;
     if (title === "Tone") buttonIndex = 2; // Develop
     else if (title === "Crop & Straighten") buttonIndex = 3; // Crop
-    else if (title === "Motion Trails") buttonIndex = 4; // Effects
-    else if (title === "Tethered Capture") buttonIndex = 5; // Tether
+    else if (title === "Masks") buttonIndex = 4; // Masks
+    else if (title === "Motion Trails") buttonIndex = 5; // Effects
+    else if (title === "Tethered Capture") buttonIndex = 6; // Tether
     if (buttonIndex === null) return;
 
     const railButton = document.querySelector(`.toolrail button:nth-of-type(${buttonIndex})`) as HTMLButtonElement | null;

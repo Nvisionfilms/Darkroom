@@ -16,6 +16,11 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 
 - **Motion Trails**: repeated semi-transparent directional echoes from the existing developed photo, with Amount, Direction, Distance, Copies, Fade, Blur, and Opacity controls.
 - **Auto Edit**: a deterministic one-click recipe over normal develop sliders (contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise, sharpening). Every result remains editable. It is not generative AI and never adds, removes, or replaces image content.
+- **Masks (local adjustments)**: linear and radial gradients, a brush, a luminance range, and an on-device **Subject** mask (a small salient-object model runs locally; nothing is uploaded and no pixels are generated). Each mask carries its own Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temperature, Tint, Saturation, Texture, Clarity and Dehaze, can be inverted, and shows as a red overlay (M). Masks are stored in the sidecar and applied identically on export.
+- **Dehaze**: dark-channel haze removal (or added haze with negative values), globally and per mask.
+- **White balance eyedropper**: click something neutral in the photo to set Temperature and Tint.
+- **Auto noise reduction**: sets the noise sliders from the measured noise level, optionally for every new RAW file.
+- **Crop guides**: Thirds, Grid, Golden Ratio, Golden Spiral, Golden Triangle and Diagonal (O cycles, Shift+O flips).
 - **Tethered Capture**: Darkroom watches the folder your camera software saves into (EOS Utility, Imaging Edge Desktop, a camera Wi‑Fi/FTP push, or a card reader) and opens each shot as it finishes writing. USB and Wi‑Fi both work because the vendor app does the transfer. Tether → Tethered Capture → choose the folder → Start watching.
 - **Phone Monitor**: the app serves a live page on the local network (QR code in Tether → Phone Monitor). The phone shows the developed picture as you edit it plus the recent filmstrip. Nothing leaves the LAN and nothing is uploaded.
 - Motion Trails retain the legacy `mirror` sidecar key only for backwards compatibility with existing `.drk.json` edits.

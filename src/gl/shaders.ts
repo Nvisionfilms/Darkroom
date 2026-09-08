@@ -1,4 +1,4 @@
-// GPU twin of src-tauri/src/pipeline.rs, denoise.rs and detail.rs.
+// GPU twin of src-tauri/src/pipeline.rs, denoise.rs, detail.rs and mask.rs.
 // Keep the math identical to the Rust code.
 
 export const VERTEX = `#version 300 es
@@ -150,6 +150,18 @@ void main() {
   outColor = vec4(log2(max(lumaProxy(texture(uSrc, vUv).rgb), 1e-5)), 0.0, 0.0, 1.0);
 }`;
 
+/** Dark channel min(r, g, b) clamped to 0..1: the haze veil input. Twin of detail.rs dark_channel. */
+export const DARK_FRAG = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uSrc;
+void main() {
+  vec3 c = texture(uSrc, vUv).rgb;
+  outColor = vec4(clamp(min(c.r, min(c.g, c.b)), 0.0, 1.0), 0.0, 0.0, 1.0);
+}`;
+
 /** Separable Gaussian, one direction per pass. */
 export const BLUR_FRAG = `#version 300 es
 precision highp float;
@@ -186,6 +198,17 @@ void main() {
   outColor = vec4(acc / 16.0, 0.0, 0.0, 1.0);
 }`;
 
+/** Maximum number of masks the develop shader evaluates per pixel. */
+export const MAX_MASKS = 8;
+/** Floats per mask in uMaskAdj (same order as pipeline.rs Tone::add). */
+export const MASK_ADJ_STRIDE = 12;
+
+/** Mask kinds as the shader sees them (see mask.ts maskKindCode). */
+export const MASK_KIND_RASTER = 0;
+export const MASK_KIND_LUMINANCE = 1;
+export const MASK_KIND_LINEAR = 2;
+export const MASK_KIND_RADIAL = 3;
+
 export const DEVELOP_FRAG = `#version 300 es
 precision highp float;
 precision highp sampler2D;
@@ -198,7 +221,19 @@ uniform sampler2D uLg;      // log2 luma
 uniform sampler2D uB1;      // blur sigma ~1
 uniform sampler2D uB2;      // blur sigma ~4
 uniform sampler2D uB3;      // blur sigma ~2% long edge (quarter res)
+uniform sampler2D uDark;    // blurred dark channel (quarter res), haze veil
+uniform sampler2D uLumaG;   // globally developed picture (for luminance masks)
+uniform sampler2D uMask0;
+uniform sampler2D uMask1;
+uniform sampler2D uMask2;
+uniform sampler2D uMask3;
+uniform sampler2D uMask4;
+uniform sampler2D uMask5;
+uniform sampler2D uMask6;
+uniform sampler2D uMask7;
 uniform int uUseMaps;
+uniform vec2 uSize;         // image size in px
+// global tone
 uniform float uExposure;
 uniform float uContrast;
 uniform float uHighlights;
@@ -207,11 +242,13 @@ uniform float uWhites;
 uniform float uBlacks;
 uniform float uTemp;
 uniform float uTint;
-uniform float uVibrance;
 uniform float uSaturation;
-uniform float uBaseContrast;
 uniform float uTexture;
 uniform float uClarity;
+uniform float uDehaze;
+// global only
+uniform float uVibrance;
+uniform float uBaseContrast;
 uniform float uHslHue[8];
 uniform float uHslSat[8];
 uniform float uHslLum[8];
@@ -220,6 +257,16 @@ uniform vec3 uTintM;
 uniform vec3 uTintH;
 uniform float uBalance;
 uniform int uGradingOn;
+// masks
+uniform int uNumMasks;
+uniform int uUseLumaG;
+uniform int uShowMask;        // index of the mask to paint red, or -1
+uniform int uMaskKind[8];     // 0 raster, 1 luminance, 2 linear, 3 radial
+uniform int uMaskInvert[8];
+uniform float uMaskAmount[8]; // 0..1
+uniform vec4 uMaskP0[8];      // linear: ax ay dx dy (px); radial: cx cy rx ry (px); lum: lo hi feather; raster: slot
+uniform vec4 uMaskP1[8];      // radial: cos sin feather
+uniform float uMaskAdj[96];   // 12 per mask: exposure contrast highlights shadows whites blacks temp tint sat texture clarity dehaze
 
 ${COMMON}
 const float CENTERS[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 310.0);
@@ -230,6 +277,10 @@ const mat3 DWG_TO_SRGB = mat3(
  -0.792176183,  1.488975754, -0.315675853,
  -0.106438716, -0.320026968,  1.437215014);
 
+struct Tone {
+  float exposure, contrast, highlights, shadows, whites, blacks, temp, tint, saturation, texture, clarity, dehaze;
+};
+
 float srgbEnc(float x) {
   return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
 }
@@ -239,17 +290,26 @@ float shoulder(float x) {
   return x <= K ? x : K + (1.0 - K) * (1.0 - exp(-(x - K) / (1.0 - K)));
 }
 float softclip(float x) { return 1.5 * tanh(x / 1.5); }
-float toneLog(float l) {
+float toneLog(float l, Tone t) {
   float ws = smooth01(-l / 5.0);
   float wh = smooth01(l / 3.0);
   float wb = smooth01((-l - 2.0) / 5.0);
   float ww = smooth01((l - 1.0) / 3.0);
-  l += uShadows * 1.5 * ws;
-  l += uHighlights * 1.5 * wh;
-  l += uBlacks * 1.5 * wb;
-  l += uWhites * 1.5 * ww;
-  l *= 1.0 + uContrast * 0.6;
+  l += t.shadows * 1.5 * ws;
+  l += t.highlights * 1.5 * wh;
+  l += t.blacks * 1.5 * wb;
+  l += t.whites * 1.5 * ww;
+  l *= 1.0 + t.contrast * 0.6;
   return l;
+}
+// Twin of pipeline.rs dehaze()
+vec3 dehaze(vec3 c, float veil, float k) {
+  if (k > 0.0) {
+    float t = max(1.0 - 0.85 * k * clamp(veil, 0.0, 1.0), 0.2);
+    return max((c - (1.0 - t)) / t, 0.0);
+  }
+  float t = 1.0 + 0.5 * k;
+  return c * t + 0.6 * (1.0 - t);
 }
 float baseCurve(float x, float k) {
   return clamp(x + k * 0.5 * x * (1.0 - x) * (x - 0.5) * 4.0, 0.0, 1.0);
@@ -301,27 +361,32 @@ vec3 hsv2rgb(vec3 h) {
   return vec3(v, p, q);
 }
 
-vec3 developPixel(vec3 rgb) {
+vec3 developPixel(vec3 rgb, Tone t) {
   // 1. white balance
-  vec3 c = rgb * vec3(1.0 + 0.4 * uTemp, 1.0 - 0.25 * uTint, 1.0 - 0.4 * uTemp);
+  vec3 c = rgb * vec3(1.0 + 0.4 * t.temp, 1.0 - 0.25 * t.tint, 1.0 - 0.4 * t.temp);
   // 2. exposure
-  c = max(c * exp2(uExposure), 0.0);
-  // 3. local contrast
-  if (uUseMaps == 1 && (uTexture != 0.0 || uClarity != 0.0)) {
-    float lg = texture(uLg, vUv).r;
-    float b1 = texture(uB1, vUv).r;
-    float b2 = texture(uB2, vUv).r;
-    float b3 = texture(uB3, vUv).r;
-    float dist = abs(lg + uExposure - LOG_MID);
-    float wmid = 1.0 - smooth01((dist - 1.5) / 3.0);
-    float dt = uTexture * 1.5 * (b1 - b2);
-    float dc = uClarity * 1.2 * wmid * softclip(b1 - b3);
-    c *= exp2(dt + dc);
+  float ev = exp2(t.exposure);
+  c = max(c * ev, 0.0);
+  if (uUseMaps == 1) {
+    // 2b. dehaze
+    if (t.dehaze != 0.0) c = dehaze(c, texture(uDark, vUv).r * ev, t.dehaze);
+    // 3. local contrast
+    if (t.texture != 0.0 || t.clarity != 0.0) {
+      float lg = texture(uLg, vUv).r;
+      float b1 = texture(uB1, vUv).r;
+      float b2 = texture(uB2, vUv).r;
+      float b3 = texture(uB3, vUv).r;
+      float dist = abs(lg + t.exposure - LOG_MID);
+      float wmid = 1.0 - smooth01((dist - 1.5) / 3.0);
+      float dt = t.texture * 1.5 * (b1 - b2);
+      float dc = t.clarity * 1.2 * wmid * softclip(b1 - b3);
+      c *= exp2(dt + dc);
+    }
   }
   // 4. tone in log-luminance
   float y = max(lumaProxy(c), 1e-6);
   float l = log2(y / 0.18);
-  float y2 = 0.18 * exp2(toneLog(l));
+  float y2 = 0.18 * exp2(toneLog(l, t));
   c *= y2 / y;
   // 5. display transform
   vec3 s = gamutCompress(DWG_TO_SRGB * c);
@@ -336,7 +401,7 @@ vec3 developPixel(vec3 rgb) {
   float mn = min(g.r, min(g.g, g.b));
   float sat0 = mx > 1e-5 ? (mx - mn) / mx : 0.0;
   float lum = dot(g, LUMA_709);
-  float amt = max(1.0 + uSaturation + uVibrance * (1.0 - sat0), 0.0);
+  float amt = max(1.0 + t.saturation + uVibrance * (1.0 - sat0), 0.0);
   g = clamp(lum + (g - lum) * amt, 0.0, 1.0);
   // 7b. colour grading (split toning) by tonal range
   if (uGradingOn == 1) {
@@ -367,9 +432,105 @@ vec3 developPixel(vec3 rgb) {
   return hsv2rgb(hsv);
 }
 
+float maskRaster(int slot, vec2 uv) {
+  if (slot == 0) return texture(uMask0, uv).r;
+  if (slot == 1) return texture(uMask1, uv).r;
+  if (slot == 2) return texture(uMask2, uv).r;
+  if (slot == 3) return texture(uMask3, uv).r;
+  if (slot == 4) return texture(uMask4, uv).r;
+  if (slot == 5) return texture(uMask5, uv).r;
+  if (slot == 6) return texture(uMask6, uv).r;
+  return texture(uMask7, uv).r;
+}
+
+// Twin of mask.rs Prepared::weight. Pixel centres: uv * size == x + 0.5.
+float maskWeight(int i, vec2 uv, float luma) {
+  int kind = uMaskKind[i];
+  vec4 p0 = uMaskP0[i];
+  vec4 p1 = uMaskP1[i];
+  float raw;
+  if (kind == 2) {
+    vec2 p = uv * uSize;
+    float len2 = dot(p0.zw, p0.zw);
+    raw = len2 < 1e-6 ? 1.0 : 1.0 - smooth01(dot(p - p0.xy, p0.zw) / len2);
+  } else if (kind == 3) {
+    vec2 d = uv * uSize - p0.xy;
+    float lx = d.x * p1.x + d.y * p1.y;
+    float ly = -d.x * p1.y + d.y * p1.x;
+    float e = length(vec2(lx / p0.z, ly / p0.w));
+    float f = max(p1.z, 0.01);
+    raw = 1.0 - smooth01((e - (1.0 - f)) / f);
+  } else if (kind == 1) {
+    float f = max(p0.z, 0.005);
+    raw = clamp(smooth01((luma - (p0.x - f)) / f) * (1.0 - smooth01((luma - p0.y) / f)), 0.0, 1.0);
+  } else {
+    raw = maskRaster(int(p0.x + 0.5), uv);
+  }
+  float v = uMaskInvert[i] == 1 ? 1.0 - raw : raw;
+  return v * uMaskAmount[i];
+}
+
+Tone globalTone() {
+  Tone t;
+  t.exposure = uExposure; t.contrast = uContrast; t.highlights = uHighlights; t.shadows = uShadows;
+  t.whites = uWhites; t.blacks = uBlacks; t.temp = uTemp; t.tint = uTint; t.saturation = uSaturation;
+  t.texture = uTexture; t.clarity = uClarity; t.dehaze = uDehaze;
+  return t;
+}
+
+// Twin of pipeline.rs Tone::add (deltas are raw slider units, exposure in EV)
+Tone addMask(Tone t, int i, float w) {
+  if (w <= 0.0) return t;
+  float k = w / 100.0;
+  int b = i * 12;
+  t.exposure += uMaskAdj[b] * w;
+  t.contrast += uMaskAdj[b + 1] * k;
+  t.highlights += uMaskAdj[b + 2] * k;
+  t.shadows += uMaskAdj[b + 3] * k;
+  t.whites += uMaskAdj[b + 4] * k;
+  t.blacks += uMaskAdj[b + 5] * k;
+  t.temp += uMaskAdj[b + 6] * k;
+  t.tint += uMaskAdj[b + 7] * k;
+  t.saturation += uMaskAdj[b + 8] * k;
+  t.texture += uMaskAdj[b + 9] * k;
+  t.clarity += uMaskAdj[b + 10] * k;
+  t.dehaze += uMaskAdj[b + 11] * k;
+  return t;
+}
+
+Tone finishTone(Tone t) {
+  t.exposure = clamp(t.exposure, -10.0, 10.0);
+  t.contrast = clamp(t.contrast, -1.0, 1.0);
+  t.highlights = clamp(t.highlights, -1.0, 1.0);
+  t.shadows = clamp(t.shadows, -1.0, 1.0);
+  t.whites = clamp(t.whites, -1.0, 1.0);
+  t.blacks = clamp(t.blacks, -1.0, 1.0);
+  t.temp = clamp(t.temp, -1.0, 1.0);
+  t.tint = clamp(t.tint, -1.0, 1.0);
+  t.saturation = clamp(t.saturation, -1.0, 1.0);
+  t.texture = clamp(t.texture, -1.0, 1.0);
+  t.clarity = clamp(t.clarity, -1.0, 1.0);
+  t.dehaze = clamp(t.dehaze, -1.0, 1.0);
+  return t;
+}
+
 void main() {
   vec3 rgb = texture(uImage, vUv).rgb;
-  outColor = vec4(developPixel(rgb), 1.0);
+  Tone t = globalTone();
+  float show = 0.0;
+  if (uNumMasks > 0) {
+    float luma = uUseLumaG == 1 ? dot(texture(uLumaG, vUv).rgb, LUMA_709) : 0.0;
+    for (int i = 0; i < 8; i++) {
+      if (i >= uNumMasks) break;
+      float w = maskWeight(i, vUv, luma);
+      if (i == uShowMask) show = w;
+      t = addMask(t, i, w);
+    }
+    t = finishTone(t);
+  }
+  vec3 c = developPixel(rgb, t);
+  if (uShowMask >= 0) c = mix(c, vec3(1.0, 0.12, 0.12), 0.6 * show);
+  outColor = vec4(c, 1.0);
 }`;
 
 /** Mirror power window on the developed image. Twin of pipeline.rs MirrorGeom. */

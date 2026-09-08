@@ -1,4 +1,5 @@
 import { defaultCrop, type Crop } from "../types";
+import { GUIDES, type GuideKind } from "./CropGuides";
 import { Slider } from "./Slider";
 
 export const ASPECTS: { key: string; label: string; ratio: number | null }[] = [
@@ -24,6 +25,8 @@ interface Props {
   onChange: (c: Crop) => void;
   onAspect: (key: string) => void;
   onToggleMode: () => void;
+  guide: GuideKind;
+  onGuide: (g: GuideKind) => void;
 }
 
 /** Resolve an aspect key to a pixel width/height ratio for this image. */
@@ -56,7 +59,18 @@ export function fitAspect(ratio: number | null, imageWidth: number, imageHeight:
   return { ...base, x, y, w: nw, h: nh };
 }
 
-export function CropPanel({ crop, cropMode, aspectKey, imageWidth, imageHeight, onChange, onAspect, onToggleMode }: Props) {
+export function CropPanel({
+  crop,
+  cropMode,
+  aspectKey,
+  imageWidth,
+  imageHeight,
+  onChange,
+  onAspect,
+  onToggleMode,
+  guide,
+  onGuide,
+}: Props) {
   const outW = Math.round(crop.w * imageWidth);
   const outH = Math.round(crop.h * imageHeight);
   return (
@@ -78,6 +92,17 @@ export function CropPanel({ crop, cropMode, aspectKey, imageWidth, imageHeight, 
             </option>
           ))}
         </select>
+      </label>
+      <label className="field">
+        <span>Guide</span>
+        <select value={guide} onChange={(e) => onGuide(e.target.value as GuideKind)}>
+          {GUIDES.map((g) => (
+            <option key={g.key} value={g.key}>
+              {g.label}
+            </option>
+          ))}
+        </select>
+        <em title="O cycles guides, Shift+O flips the spiral or triangle">O</em>
       </label>
       <Slider
         label="Straighten"

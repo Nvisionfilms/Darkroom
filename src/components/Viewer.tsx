@@ -320,6 +320,9 @@ export function Viewer(props: Props) {
           <CoreViewer
             {...coreProps}
             captureRef={undefined}
+            maskApiRef={undefined}
+            selectedMaskId={null}
+            wbPick={false}
             params={beforeParams}
             lut={beforeLut}
             mirror={null}

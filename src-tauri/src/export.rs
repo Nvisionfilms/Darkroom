@@ -113,7 +113,7 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
         log::info!("export denoise sigma={sigma:.5}");
         std::borrow::Cow::Owned(denoise::denoise_image(&img.data, img.width, img.height, sigma, &np))
     };
-    let maps = if params.texture != 0.0 || params.clarity != 0.0 {
+    let maps = if params.needs_maps() {
         Some(detail::build(&denoised, img.width, img.height))
     } else {
         None

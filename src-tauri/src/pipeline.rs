@@ -10,6 +10,7 @@
 
 use crate::color::{dot3, mul3, DWG_TO_SRGB, LUMA_709, LUMA_PROXY};
 use crate::detail::{sample_q, DetailMaps};
+use crate::mask::{self, Mask};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -74,8 +75,26 @@ pub struct EditParams {
     pub watermark: Watermark,
     #[serde(default)]
     pub crop: Crop,
+    /// -100..100: positive removes atmospheric haze, negative adds it
+    #[serde(default)]
+    pub dehaze: f32,
+    /// local adjustments ("overlays")
+    #[serde(default)]
+    pub masks: Vec<Mask>,
     pub hsl: HslParams,
     pub curves: Curves,
+}
+
+impl EditParams {
+    /// Local-contrast / haze maps are needed when any global or local slider uses them.
+    pub fn needs_maps(&self) -> bool {
+        self.texture != 0.0
+            || self.clarity != 0.0
+            || self.dehaze != 0.0
+            || self.masks.iter().any(|m| {
+                m.is_active() && (m.adjust.texture != 0.0 || m.adjust.clarity != 0.0 || m.adjust.dehaze != 0.0)
+            })
+    }
 }
 
 /// Split toning / colour grading: a luminance-neutral tint per tonal range.
@@ -371,6 +390,8 @@ impl Default for EditParams {
             mirror: Mirror::default(),
             watermark: Watermark::default(),
             crop: Crop::default(),
+            dehaze: 0.0,
+            masks: Vec::new(),
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],
@@ -386,21 +407,71 @@ impl Default for EditParams {
     }
 }
 
+/// The develop parameters that masks can change per pixel, normalised the
+/// same way the GLSL `Tone` struct is (sliders / 100, exposure in EV).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Tone {
+    pub exposure: f32,
+    pub contrast: f32,
+    pub highlights: f32,
+    pub shadows: f32,
+    pub whites: f32,
+    pub blacks: f32,
+    pub temp: f32,
+    pub tint: f32,
+    pub saturation: f32,
+    pub texture: f32,
+    pub clarity: f32,
+    pub dehaze: f32,
+}
+
+impl Tone {
+    /// Add `w` times a mask's deltas. Clamping happens once in `finish`.
+    #[inline]
+    pub fn add(&mut self, a: &mask::MaskAdjust, w: f32) {
+        if w <= 0.0 {
+            return;
+        }
+        let k = w / 100.0;
+        self.exposure += a.exposure * w;
+        self.contrast += a.contrast * k;
+        self.highlights += a.highlights * k;
+        self.shadows += a.shadows * k;
+        self.whites += a.whites * k;
+        self.blacks += a.blacks * k;
+        self.temp += a.temperature * k;
+        self.tint += a.tint * k;
+        self.saturation += a.saturation * k;
+        self.texture += a.texture * k;
+        self.clarity += a.clarity * k;
+        self.dehaze += a.dehaze * k;
+    }
+
+    #[inline]
+    pub fn finish(mut self) -> Self {
+        let c = |v: f32| v.clamp(-1.0, 1.0);
+        self.exposure = self.exposure.clamp(-10.0, 10.0);
+        self.contrast = c(self.contrast);
+        self.highlights = c(self.highlights);
+        self.shadows = c(self.shadows);
+        self.whites = c(self.whites);
+        self.blacks = c(self.blacks);
+        self.temp = c(self.temp);
+        self.tint = c(self.tint);
+        self.saturation = c(self.saturation);
+        self.texture = c(self.texture);
+        self.clarity = c(self.clarity);
+        self.dehaze = c(self.dehaze);
+        self
+    }
+}
+
 /// Normalised uniforms, identical to what the GLSL receives.
 pub struct Uniforms {
-    exposure: f32,
-    contrast: f32,
-    highlights: f32,
-    shadows: f32,
-    whites: f32,
-    blacks: f32,
-    temp: f32,
-    tint: f32,
+    /// global tone; masks derive per-pixel variants from it
+    pub tone: Tone,
     vibrance: f32,
-    saturation: f32,
     base_contrast: f32,
-    texture: f32,
-    clarity: f32,
     hsl_hue: [f32; 8],
     hsl_sat: [f32; 8],
     hsl_lum: [f32; 8],
@@ -432,19 +503,22 @@ impl Uniforms {
             o
         };
         Self {
-            exposure: p.exposure.clamp(-10.0, 10.0),
-            contrast: n(p.contrast),
-            highlights: n(p.highlights),
-            shadows: n(p.shadows),
-            whites: n(p.whites),
-            blacks: n(p.blacks),
-            temp: n(p.temperature),
-            tint: n(p.tint),
+            tone: Tone {
+                exposure: p.exposure.clamp(-10.0, 10.0),
+                contrast: n(p.contrast),
+                highlights: n(p.highlights),
+                shadows: n(p.shadows),
+                whites: n(p.whites),
+                blacks: n(p.blacks),
+                temp: n(p.temperature),
+                tint: n(p.tint),
+                saturation: n(p.saturation),
+                texture: n(p.texture),
+                clarity: n(p.clarity),
+                dehaze: n(p.dehaze),
+            },
             vibrance: n(p.vibrance),
-            saturation: n(p.saturation),
             base_contrast: p.base_contrast.clamp(0.0, 1.0),
-            texture: n(p.texture),
-            clarity: n(p.clarity),
             hsl_hue: n8(&p.hsl.hue),
             hsl_sat: n8(&p.hsl.saturation),
             hsl_lum: n8(&p.hsl.luminance),
@@ -486,18 +560,47 @@ fn shoulder(x: f32) -> f32 {
 }
 
 #[inline]
-fn tone_log(l: f32, u: &Uniforms) -> f32 {
+fn tone_log(l: f32, t: &Tone) -> f32 {
     let ws = smooth01(-l / 5.0);
     let wh = smooth01(l / 3.0);
     let wb = smooth01((-l - 2.0) / 5.0);
     let ww = smooth01((l - 1.0) / 3.0);
     let mut l = l;
-    l += u.shadows * 1.5 * ws;
-    l += u.highlights * 1.5 * wh;
-    l += u.blacks * 1.5 * wb;
-    l += u.whites * 1.5 * ww;
-    l *= 1.0 + u.contrast * 0.6;
+    l += t.shadows * 1.5 * ws;
+    l += t.highlights * 1.5 * wh;
+    l += t.blacks * 1.5 * wb;
+    l += t.whites * 1.5 * ww;
+    l *= 1.0 + t.contrast * 0.6;
     l
+}
+
+/// Dehaze on exposure-adjusted linear RGB. `veil` is the blurred dark channel
+/// of the source scaled to the current exposure (0..1). Positive amounts
+/// subtract the estimated airlight and stretch what is left (dark channel
+/// prior with a white airlight); negative amounts blend a light veil in.
+/// Shared with the shader.
+#[inline]
+fn dehaze(c: [f32; 3], veil: f32, k: f32) -> [f32; 3] {
+    if k == 0.0 {
+        return c;
+    }
+    if k > 0.0 {
+        let t = (1.0 - 0.85 * k * veil.clamp(0.0, 1.0)).max(0.2);
+        let a = 1.0 - t;
+        [
+            ((c[0] - a) / t).max(0.0),
+            ((c[1] - a) / t).max(0.0),
+            ((c[2] - a) / t).max(0.0),
+        ]
+    } else {
+        let t = 1.0 + 0.5 * k;
+        const HAZE: f32 = 0.6;
+        [
+            c[0] * t + HAZE * (1.0 - t),
+            c[1] * t + HAZE * (1.0 - t),
+            c[2] * t + HAZE * (1.0 - t),
+        ]
+    }
 }
 
 #[inline]
@@ -575,37 +678,44 @@ fn gamut_compress(s: [f32; 3]) -> [f32; 3] {
     [y + (s[0] - y) * k, y + (s[1] - y) * k, y + (s[2] - y) * k]
 }
 
-/// Local-contrast inputs for one pixel: log2 luma and its three blurs.
+/// Local-contrast inputs for one pixel: log2 luma, its three blurs and the
+/// blurred dark channel (haze veil) of the source.
 #[derive(Clone, Copy)]
 pub struct LocalMaps {
     pub lg: f32,
     pub b1: f32,
     pub b2: f32,
     pub b3: f32,
+    pub dark: f32,
 }
 
 /// Develop one linear DWG pixel into a gamma-encoded sRGB display pixel in 0..1.
-/// Mirrors `developPixel` in the shader.
+/// Mirrors `developPixel` in the shader. `t` is the (possibly mask-adjusted)
+/// tone for this pixel; `u` holds the global-only settings.
 #[inline]
-pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
+pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
     // 1. white balance
     let mut c = [
-        rgb[0] * (1.0 + 0.4 * u.temp),
-        rgb[1] * (1.0 - 0.25 * u.tint),
-        rgb[2] * (1.0 - 0.4 * u.temp),
+        rgb[0] * (1.0 + 0.4 * t.temp),
+        rgb[1] * (1.0 - 0.25 * t.tint),
+        rgb[2] * (1.0 - 0.4 * t.temp),
     ];
     // 2. exposure
-    let ev = 2f32.powf(u.exposure);
+    let ev = 2f32.powf(t.exposure);
     for v in c.iter_mut() {
         *v = (*v * ev).max(0.0);
     }
-    // 3. local contrast
     if let Some(m) = maps {
-        if u.texture != 0.0 || u.clarity != 0.0 {
-            let dist = (m.lg + u.exposure - LOG_MID).abs();
+        // 2b. dehaze
+        if t.dehaze != 0.0 {
+            c = dehaze(c, m.dark * ev, t.dehaze);
+        }
+        // 3. local contrast
+        if t.texture != 0.0 || t.clarity != 0.0 {
+            let dist = (m.lg + t.exposure - LOG_MID).abs();
             let wmid = 1.0 - smooth01((dist - 1.5) / 3.0);
-            let dt = u.texture * 1.5 * (m.b1 - m.b2);
-            let dc = u.clarity * 1.2 * wmid * softclip(m.b1 - m.b3);
+            let dt = t.texture * 1.5 * (m.b1 - m.b2);
+            let dc = t.clarity * 1.2 * wmid * softclip(m.b1 - m.b3);
             let g = 2f32.powf(dt + dc);
             for v in c.iter_mut() {
                 *v *= g;
@@ -615,7 +725,7 @@ pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, u: &Uniforms, lut: 
     // 4. tone in log-luminance (proxy luma, always positive)
     let y = dot3(c, LUMA_PROXY).max(1e-6);
     let l = (y / 0.18).log2();
-    let y2 = 0.18 * 2f32.powf(tone_log(l, u));
+    let y2 = 0.18 * 2f32.powf(tone_log(l, t));
     let ratio = y2 / y;
     for v in c.iter_mut() {
         *v *= ratio;
@@ -641,7 +751,7 @@ pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, u: &Uniforms, lut: 
     let mn = g[0].min(g[1]).min(g[2]);
     let sat0 = if mx > 1e-5 { (mx - mn) / mx } else { 0.0 };
     let lum = dot3(g, LUMA_709);
-    let amt = (1.0 + u.saturation + u.vibrance * (1.0 - sat0)).max(0.0);
+    let amt = (1.0 + t.saturation + u.vibrance * (1.0 - sat0)).max(0.0);
     for v in g.iter_mut() {
         *v = (lum + (*v - lum) * amt).clamp(0.0, 1.0);
     }
@@ -691,6 +801,9 @@ pub fn develop_buffer(
     lut: &[f32],
 ) -> Vec<f32> {
     let u = Uniforms::from_params(params);
+    let height = src.len() / 3 / width.max(1);
+    let masks = mask::prepare(&params.masks, width, height);
+    let needs_luma = masks.iter().any(|m| m.needs_luma());
     let row_len = width * 3;
     let mut out = vec![0.0f32; src.len()];
     out.par_chunks_mut(row_len)
@@ -705,9 +818,26 @@ pub fn develop_buffer(
                         b1: m.b1[i],
                         b2: m.b2[i],
                         b3: sample_q(&m.b3, m.qw, m.qh, x, y),
+                        dark: sample_q(&m.dark, m.qw, m.qh, x, y),
                     }
                 });
-                let o = develop_pixel([p[0], p[1], p[2]], m, &u, lut);
+                let rgb = [p[0], p[1], p[2]];
+                let o = if masks.is_empty() {
+                    develop_pixel(rgb, m, &u.tone, &u, lut)
+                } else {
+                    // luminance masks look at the globally developed picture
+                    let luma = if needs_luma {
+                        dot3(develop_pixel(rgb, m, &u.tone, &u, lut), LUMA_709)
+                    } else {
+                        0.0
+                    };
+                    let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
+                    let mut t = u.tone;
+                    for pm in &masks {
+                        t.add(&pm.mask.adjust, pm.weight(px, py, luma));
+                    }
+                    develop_pixel(rgb, m, &t.finish(), &u, lut)
+                };
                 d[0] = o[0];
                 d[1] = o[1];
                 d[2] = o[2];

@@ -1,5 +1,6 @@
 import { useRef } from "react";
 import type { Crop } from "../types";
+import { CropGuides, type GuideKind } from "./CropGuides";
 import type { Mapper } from "./MirrorOverlay";
 
 interface Props {
@@ -7,6 +8,8 @@ interface Props {
   /** locked aspect as width/height in pixels, or null for free */
   aspect: number | null;
   mapper: Mapper;
+  guide?: GuideKind;
+  guideFlip?: number;
   onChange: (c: Crop) => void;
 }
 
@@ -14,7 +17,7 @@ type Handle = "move" | "n" | "s" | "e" | "w" | "nw" | "ne" | "sw" | "se";
 const MIN = 0.02;
 
 /** Crop rectangle with move/resize handles, drawn on the straightened canvas. */
-export function CropOverlay({ crop, aspect, mapper, onChange }: Props) {
+export function CropOverlay({ crop, aspect, mapper, guide = "thirds", guideFlip = 0, onChange }: Props) {
   const drag = useRef<{ handle: Handle; sx: number; sy: number; start: Crop } | null>(null);
   const { width: W, height: H } = mapper;
   const x0 = crop.x * W;
@@ -156,12 +159,6 @@ export function CropOverlay({ crop, aspect, mapper, onChange }: Props) {
     />
   );
 
-  // thirds guides
-  const third = (t: number) => ({
-    v: [P(x0 + (x1 - x0) * t, y0), P(x0 + (x1 - x0) * t, y1)],
-    h: [P(x0, y0 + (y1 - y0) * t), P(x1, y0 + (y1 - y0) * t)],
-  });
-
   return (
     <svg className="mirror-overlay">
       {/* darken everything outside the crop */}
@@ -171,15 +168,7 @@ export function CropOverlay({ crop, aspect, mapper, onChange }: Props) {
         className="crop-mask"
       />
       <polygon points={poly([c00, c10, c11, c01])} className="crop-frame" {...hp("move")} />
-      {[1 / 3, 2 / 3].map((t) => {
-        const g = third(t);
-        return (
-          <g key={t} className="crop-thirds">
-            <line x1={g.v[0][0]} y1={g.v[0][1]} x2={g.v[1][0]} y2={g.v[1][1]} />
-            <line x1={g.h[0][0]} y1={g.h[0][1]} x2={g.h[1][0]} y2={g.h[1][1]} />
-          </g>
-        );
-      })}
+      <CropGuides kind={guide} flip={guideFlip} x0={x0} y0={y0} x1={x1} y1={y1} mapper={mapper} />
       {handle(mid(c00, c10), "n", "ns-resize")}
       {handle(mid(c01, c11), "s", "ns-resize")}
       {handle(mid(c00, c01), "w", "ew-resize")}

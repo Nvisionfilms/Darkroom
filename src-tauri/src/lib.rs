@@ -3,6 +3,7 @@ pub mod decode;
 pub mod denoise;
 pub mod detail;
 pub mod export;
+pub mod mask;
 pub mod monitor;
 pub mod pipeline;
 pub mod sidecar;
