@@ -1,6 +1,58 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { EditParams, ExportRequest, ImageInfo, PreviewImage, WatermarkInfo } from "./types";
+import type {
+  EditParams,
+  ExportRequest,
+  ImageInfo,
+  MonitorInfo,
+  MonitorShot,
+  PreviewImage,
+  TetherStatus,
+  WatermarkInfo,
+} from "./types";
+
+// ---- tethered capture ----
+
+export async function pickFolder(): Promise<string | null> {
+  const result = await open({ multiple: false, directory: true, title: "Choose the folder your camera software saves into" });
+  if (!result) return null;
+  return Array.isArray(result) ? result[0] : result;
+}
+
+export async function startTether(folder: string): Promise<TetherStatus> {
+  return invoke<TetherStatus>("start_tether", { folder });
+}
+
+export async function stopTether(): Promise<TetherStatus> {
+  return invoke<TetherStatus>("stop_tether");
+}
+
+export async function tetherStatus(): Promise<TetherStatus> {
+  return invoke<TetherStatus>("tether_status");
+}
+
+// ---- phone monitor ----
+
+export async function startMonitor(): Promise<MonitorInfo> {
+  return invoke<MonitorInfo>("start_monitor");
+}
+
+export async function stopMonitor(): Promise<MonitorInfo> {
+  return invoke<MonitorInfo>("stop_monitor");
+}
+
+export async function monitorStatus(): Promise<MonitorInfo> {
+  return invoke<MonitorInfo>("monitor_status");
+}
+
+export async function publishShot(shot: MonitorShot): Promise<number> {
+  return invoke<number>("publish_shot", { shot });
+}
+
+/** JPEG bytes travel as the raw request body, not as JSON. */
+export async function publishFrame(jpeg: Uint8Array): Promise<number> {
+  return invoke<number>("publish_frame", jpeg);
+}
 
 export async function openImage(path: string): Promise<ImageInfo> {
   return invoke<ImageInfo>("open_image", { path });

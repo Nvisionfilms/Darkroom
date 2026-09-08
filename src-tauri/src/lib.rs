@@ -3,8 +3,10 @@ pub mod decode;
 pub mod denoise;
 pub mod detail;
 pub mod export;
+pub mod monitor;
 pub mod pipeline;
 pub mod sidecar;
+pub mod tether;
 
 use decode::{LinearImage, Metadata};
 use pipeline::EditParams;
@@ -34,6 +36,109 @@ pub struct Loaded {
 pub struct AppState {
     loaded: Mutex<Option<Loaded>>,
     watermark: Mutex<Option<(String, Arc<pipeline::WatermarkImage>)>>,
+    tether: Mutex<Option<tether::Active>>,
+    monitor: Mutex<Option<monitor::Monitor>>,
+}
+
+// ---- tethered capture (hot folder) ----
+
+#[tauri::command]
+fn start_tether(app: tauri::AppHandle, folder: String, state: State<'_, AppState>) -> Result<tether::TetherStatus, String> {
+    let active = tether::start(app, folder).map_err(err)?;
+    let status = active.status();
+    *state.tether.lock().unwrap() = Some(active);
+    Ok(status)
+}
+
+#[tauri::command]
+fn stop_tether(state: State<'_, AppState>) -> tether::TetherStatus {
+    let prev = state.tether.lock().unwrap().take();
+    tether::TetherStatus {
+        active: false,
+        folder: prev.map(|a| a.status().folder).unwrap_or_default(),
+        count: 0,
+    }
+}
+
+#[tauri::command]
+fn tether_status(state: State<'_, AppState>) -> tether::TetherStatus {
+    state
+        .tether
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|a| a.status())
+        .unwrap_or_default()
+}
+
+// ---- phone monitor (LAN web page) ----
+
+fn monitor_off() -> monitor::MonitorInfo {
+    monitor::MonitorInfo {
+        active: false,
+        url: String::new(),
+        port: 0,
+        qr_svg: String::new(),
+        viewers: 0,
+    }
+}
+
+#[tauri::command]
+fn start_monitor(state: State<'_, AppState>) -> Result<monitor::MonitorInfo, String> {
+    let mut guard = state.monitor.lock().unwrap();
+    if let Some(m) = guard.as_ref() {
+        return Ok(m.info());
+    }
+    let m = monitor::start().map_err(err)?;
+    let info = m.info();
+    *guard = Some(m);
+    Ok(info)
+}
+
+#[tauri::command]
+fn stop_monitor(state: State<'_, AppState>) -> monitor::MonitorInfo {
+    let prev = state.monitor.lock().unwrap().take();
+    drop(prev);
+    monitor_off()
+}
+
+#[tauri::command]
+fn monitor_status(state: State<'_, AppState>) -> monitor::MonitorInfo {
+    state
+        .monitor
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.info())
+        .unwrap_or_else(monitor_off)
+}
+
+/// Current file name, metadata line and filmstrip for the phone page.
+#[tauri::command]
+fn publish_shot(shot: monitor::Shot, state: State<'_, AppState>) -> u64 {
+    state
+        .monitor
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.publish_shot(shot))
+        .unwrap_or(0)
+}
+
+/// JPEG bytes of the developed image as the app currently shows it. The
+/// webview sends the encoded picture as the raw request body.
+#[tauri::command]
+fn publish_frame(request: tauri::ipc::Request<'_>, state: State<'_, AppState>) -> Result<u64, String> {
+    let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
+        return Err("publish_frame expects raw JPEG bytes".into());
+    };
+    Ok(state
+        .monitor
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.publish_frame(bytes.clone()))
+        .unwrap_or(0))
 }
 
 #[derive(Serialize)]
@@ -252,7 +357,15 @@ pub fn run() {
             startup_file,
             load_session,
             save_session,
-            supported_extensions
+            supported_extensions,
+            start_tether,
+            stop_tether,
+            tether_status,
+            start_monitor,
+            stop_monitor,
+            monitor_status,
+            publish_shot,
+            publish_frame
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

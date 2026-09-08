@@ -6,10 +6,18 @@ import { CropOverlay } from "./CropOverlay";
 import { MirrorOverlay, type Mapper } from "./MirrorOverlay";
 import { WatermarkOverlay } from "./WatermarkOverlay";
 
+/** Renders the developed picture (fit, cropped, no letterbox) and returns it as a JPEG. */
+export type CaptureFn = () => Promise<Blob | null>;
+
+/** Long edge of the picture sent to the phone monitor. */
+const CAPTURE_MAX_EDGE = 1600;
+
 interface Props {
   image: PreviewImage | null;
   params: EditParams;
   lut: Float32Array;
+  /** filled in with a CaptureFn while the viewer is mounted (phone monitor) */
+  captureRef?: React.MutableRefObject<CaptureFn | null>;
   /** clockwise degrees, applied even in before/after mode */
   rotation: number;
   /** when set, the mirror window handles are drawn and editable */
@@ -43,6 +51,7 @@ export function Viewer({
   image,
   params,
   lut,
+  captureRef,
   rotation,
   mirror,
   onMirrorChange,
@@ -69,6 +78,8 @@ export function Viewer({
   cropRef.current = crop ?? null;
   const cropModeRef = useRef(false);
   cropModeRef.current = cropMode;
+  const paramsRef = useRef(params);
+  paramsRef.current = params;
   const developDirty = useRef(true);
   const frame = useRef<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -280,6 +291,55 @@ export function Viewer({
     fit();
     requestRender();
   }, [rotation, fit, requestRender]);
+
+  // Phone monitor: draw a fit view, copy the picture out, then put the user's
+  // own view straight back. All of it happens before the frame is composited,
+  // so nothing flickers on screen.
+  useEffect(() => {
+    if (!captureRef) return;
+    captureRef.current = () =>
+      new Promise<Blob | null>((resolve) => {
+        const r = rendererRef.current;
+        const c = canvasRef.current;
+        let ok = false;
+        try {
+          ok = !!r && !!c && r.imgW > 0 && r.ready();
+        } catch {
+          ok = false;
+        }
+        if (!ok || !r || !c) {
+          resolve(null);
+          return;
+        }
+        const p = paramsRef.current;
+        if (developDirty.current) {
+          r.runDevelop(p);
+          developDirty.current = false;
+          histPending.current = true;
+        }
+        const d = r.displaySize(rotRef.current, cropRef.current, false);
+        const s = Math.min(c.width / d.w, c.height / d.h);
+        const fitView: View = { scale: s, x: (c.width - d.w * s) / 2, y: (c.height - d.h * s) / 2 };
+        r.draw(fitView, p.sharpen, rotRef.current, cropRef.current, false);
+        const w = Math.max(1, Math.round(d.w * s));
+        const h = Math.max(1, Math.round(d.h * s));
+        const k = Math.min(1, CAPTURE_MAX_EDGE / Math.max(w, h));
+        const out = document.createElement("canvas");
+        out.width = Math.max(1, Math.round(w * k));
+        out.height = Math.max(1, Math.round(h * k));
+        const ctx = out.getContext("2d");
+        if (ctx) {
+          ctx.drawImage(c, fitView.x, fitView.y, w, h, 0, 0, out.width, out.height);
+          out.toBlob((b) => resolve(b), "image/jpeg", 0.86);
+        } else {
+          resolve(null);
+        }
+        r.draw(viewRef.current, p.sharpen, rotRef.current, cropRef.current, cropModeRef.current);
+      });
+    return () => {
+      captureRef.current = null;
+    };
+  }, [captureRef]);
 
   // Controls outside the WebGL canvas (the mockup-style Fit / 100% buttons)
   // use one event so both Before and After canvases stay aligned.

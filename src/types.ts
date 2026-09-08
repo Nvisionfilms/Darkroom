@@ -1,5 +1,35 @@
 export type Point = [number, number];
 
+/** Hot-folder tethering (see src-tauri/src/tether.rs). */
+export interface TetherStatus {
+  active: boolean;
+  folder: string;
+  count: number;
+}
+
+/** Phone monitor server (see src-tauri/src/monitor.rs). */
+export interface MonitorInfo {
+  active: boolean;
+  url: string;
+  port: number;
+  qrSvg: string;
+  viewers: number;
+}
+
+export interface MonitorThumb {
+  name: string;
+  src: string;
+  active: boolean;
+}
+
+export interface MonitorShot {
+  name: string;
+  meta: string;
+  index: number;
+  total: number;
+  thumbs: MonitorThumb[];
+}
+
 export interface HslParams {
   hue: number[];
   saturation: number[];

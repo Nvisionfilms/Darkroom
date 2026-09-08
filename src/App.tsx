@@ -1,14 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { listen } from "@tauri-apps/api/event";
 import {
   getPreview,
   loadSession,
+  monitorStatus,
   openImage,
+  pickFolder,
   pickImages,
+  publishFrame,
+  publishShot,
   saveEdits,
   saveSession,
+  startMonitor,
+  startTether,
   startupFile,
+  stopMonitor,
+  stopTether,
   supportedExtensions,
+  tetherStatus,
 } from "./api";
+import { MonitorPanel } from "./components/MonitorPanel";
+import { TetherPanel } from "./components/TetherPanel";
+import type { CaptureFn } from "./components/ViewerCore";
 import { aspectRatio, CropPanel, fitAspect } from "./components/CropPanel";
 import { CurveEditor } from "./components/CurveEditor";
 import { ExportDialog } from "./components/ExportDialog";
@@ -25,7 +38,15 @@ import { getVersion } from "@tauri-apps/api/app";
 import { Viewer } from "./components/Viewer";
 import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
-import { defaultParams, type EditParams, type Histogram as Hist, type ImageInfo, type PreviewImage } from "./types";
+import {
+  defaultParams,
+  type EditParams,
+  type Histogram as Hist,
+  type ImageInfo,
+  type MonitorInfo,
+  type PreviewImage,
+  type TetherStatus,
+} from "./types";
 import "./App.css";
 
 type InspectorKey =
@@ -38,7 +59,13 @@ type InspectorKey =
   | "denoise"
   | "crop"
   | "mirror"
-  | "watermark";
+  | "watermark"
+  | "tether"
+  | "monitor";
+
+const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
+/** how many filmstrip thumbnails the phone page receives */
+const MONITOR_STRIP = 60;
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
@@ -140,10 +167,31 @@ export default function App() {
     crop: false,
     mirror: false,
     watermark: false,
+    tether: false,
+    monitor: false,
   });
   const updater = useUpdater(version);
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
+
+  // tethered capture + phone monitor
+  const [tether, setTether] = useState<TetherStatus>({ active: false, folder: "", count: 0 });
+  const [tetherFolder, setTetherFolder] = useState(() => {
+    try {
+      return localStorage.getItem(TETHER_FOLDER_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  const [autoOpen, setAutoOpen] = useState(true);
+  const autoOpenRef = useRef(true);
+  autoOpenRef.current = autoOpen;
+  const [monitor, setMonitor] = useState<MonitorInfo | null>(null);
+  const captureRef = useRef<CaptureFn | null>(null);
+  const loadingRef = useRef(false);
+  /** newest tethered shot that arrived while another one was still loading */
+  const tetherQueue = useRef<string | null>(null);
+  const loadRef = useRef<(path: string) => Promise<void>>(async () => {});
 
   useEffect(() => {
     getVersion().then(setVersion).catch(() => setVersion("dev"));
@@ -209,6 +257,7 @@ export default function App() {
   }, [files, current]);
 
   const load = useCallback(async (path: string) => {
+    loadingRef.current = true;
     setLoading(fileName(path));
     setError(null);
     try {
@@ -233,8 +282,105 @@ export default function App() {
       setError(`Could not open ${fileName(path)}: ${String(e)}`);
     } finally {
       setLoading(null);
+      loadingRef.current = false;
+      // a burst of tethered shots: skip straight to the newest one
+      const next = tetherQueue.current;
+      if (next) {
+        tetherQueue.current = null;
+        void loadRef.current(next);
+      }
     }
   }, []);
+  loadRef.current = load;
+
+  // ---- tethered capture ----
+  useEffect(() => {
+    const un = listen<{ path: string; count: number }>("tether://file", (e) => {
+      const p = e.payload.path;
+      setTether((t) => ({ ...t, count: e.payload.count }));
+      setFiles((prev) => (prev.some((f) => f.path === p) ? prev : [...prev, placeholder(p)]));
+      if (!autoOpenRef.current) return;
+      if (loadingRef.current) tetherQueue.current = p;
+      else void loadRef.current(p);
+    });
+    return () => {
+      un.then((f) => f()).catch(() => {});
+    };
+  }, []);
+
+  const chooseTetherFolder = useCallback(async () => {
+    const f = await pickFolder();
+    if (!f) return;
+    setTetherFolder(f);
+    try {
+      localStorage.setItem(TETHER_FOLDER_KEY, f);
+    } catch {
+      /* private mode etc. */
+    }
+  }, []);
+
+  const toggleTether = useCallback(async () => {
+    try {
+      if (tether.active) {
+        setTether(await stopTether());
+        return;
+      }
+      let folder = tetherFolder;
+      if (!folder) {
+        const f = await pickFolder();
+        if (!f) return;
+        folder = f;
+        setTetherFolder(f);
+        try {
+          localStorage.setItem(TETHER_FOLDER_KEY, f);
+        } catch {
+          /* ignore */
+        }
+      }
+      setTether(await startTether(folder));
+    } catch (e) {
+      setError(`Tethering: ${String(e)}`);
+    }
+  }, [tether.active, tetherFolder]);
+
+  // ---- phone monitor ----
+  const toggleMonitor = useCallback(async () => {
+    try {
+      if (monitor?.active) {
+        await stopMonitor();
+        setMonitor(null);
+      } else {
+        setMonitor(await startMonitor());
+      }
+    } catch (e) {
+      setError(`Phone monitor: ${String(e)}`);
+    }
+  }, [monitor?.active]);
+
+  // The Rust side keeps watching/serving across a webview reload; pick that up.
+  useEffect(() => {
+    tetherStatus()
+      .then((t) => {
+        if (t.active) setTether(t);
+      })
+      .catch(() => {});
+    monitorStatus()
+      .then((m) => {
+        if (m.active) setMonitor(m);
+      })
+      .catch(() => {});
+  }, []);
+
+  // viewer count refresh
+  useEffect(() => {
+    if (!monitor?.active) return;
+    const id = window.setInterval(() => {
+      monitorStatus()
+        .then((m) => setMonitor(m.active ? m : null))
+        .catch(() => {});
+    }, 5000);
+    return () => window.clearInterval(id);
+  }, [monitor?.active]);
 
   const openFiles = useCallback(async () => {
     const paths = await pickImages(extensions.length ? extensions : ["*"]);
@@ -366,6 +512,32 @@ export default function App() {
 
   const currentIndex = current ? files.findIndex((f) => f.path === current.path) : -1;
 
+  // What the phone shows besides pixels: name, metadata line, filmstrip.
+  const monitorOn = !!monitor?.active;
+  useEffect(() => {
+    if (!monitorOn) return;
+    const recent = files.slice(-MONITOR_STRIP);
+    publishShot({
+      name: current ? fileName(current.path) : "",
+      meta: current ? metaLine(current) : "",
+      index: currentIndex >= 0 ? currentIndex + 1 : 0,
+      total: files.length,
+      thumbs: recent.map((f) => ({ name: fileName(f.path), src: f.thumbnail, active: current?.path === f.path })),
+    }).catch(() => {});
+  }, [monitorOn, files, current, currentIndex]);
+
+  // The developed picture, re-sent once the edit settles.
+  useEffect(() => {
+    if (!monitorOn || !current || !preview) return;
+    const t = window.setTimeout(async () => {
+      const blob = await captureRef.current?.();
+      if (!blob) return;
+      const bytes = new Uint8Array(await blob.arrayBuffer());
+      publishFrame(bytes).catch(() => {});
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [monitorOn, current, preview, params, lut]);
+
   return (
     <div className="app">
       <header className="topbar">
@@ -431,6 +603,17 @@ export default function App() {
           >
             <span className="tool-glyph">✦</span><span>Effects</span>
           </button>
+          <button
+            type="button"
+            className={tether.active || monitor?.active ? "live" : ""}
+            onClick={() => {
+              revealSection("tether");
+              revealSection("monitor");
+            }}
+            title="Shoot into Darkroom and watch on a phone"
+          >
+            <span className="tool-glyph">⌁</span><span>Tether</span>
+          </button>
           <button type="button" onClick={() => setShowExport(true)} disabled={!current}>
             <span className="tool-glyph">⇧</span><span>Export</span>
           </button>
@@ -465,6 +648,7 @@ export default function App() {
             params={shownParams}
             beforeParams={defaults}
             lut={shownLut}
+            captureRef={captureRef}
             rotation={params.rotation}
             mirror={params.mirror}
             onMirrorChange={set("mirror")}
@@ -610,6 +794,31 @@ export default function App() {
               />
             </label>
             <WatermarkPanel watermark={params.watermark} onChange={set("watermark")} onError={setError} />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Tethered Capture"
+            open={openSections.tether}
+            onToggle={() => toggleSection("tether")}
+            note={tether.active ? <span className="section-note live">LIVE</span> : undefined}
+          >
+            <TetherPanel
+              status={tether}
+              folder={tetherFolder}
+              autoOpen={autoOpen}
+              onChooseFolder={chooseTetherFolder}
+              onToggle={toggleTether}
+              onAutoOpen={setAutoOpen}
+            />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Phone Monitor"
+            open={openSections.monitor}
+            onToggle={() => toggleSection("monitor")}
+            note={monitor?.active ? <span className="section-note live">{monitor.viewers}</span> : undefined}
+          >
+            <MonitorPanel info={monitor} onToggle={toggleMonitor} />
           </InspectorSection>
         </aside>
       </div>

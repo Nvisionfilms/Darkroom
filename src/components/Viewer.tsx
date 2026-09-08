@@ -319,6 +319,7 @@ export function Viewer(props: Props) {
         <div className="compare-before-layer" style={{ clipPath: `inset(0 ${100 - comparePosition}% 0 0)` }}>
           <CoreViewer
             {...coreProps}
+            captureRef={undefined}
             params={beforeParams}
             lut={beforeLut}
             mirror={null}

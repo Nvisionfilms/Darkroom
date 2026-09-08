@@ -16,6 +16,8 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 
 - **Motion Trails**: repeated semi-transparent directional echoes from the existing developed photo, with Amount, Direction, Distance, Copies, Fade, Blur, and Opacity controls.
 - **Auto Edit**: a deterministic one-click recipe over normal develop sliders (contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise, sharpening). Every result remains editable. It is not generative AI and never adds, removes, or replaces image content.
+- **Tethered Capture**: Darkroom watches the folder your camera software saves into (EOS Utility, Imaging Edge Desktop, a camera Wi‑Fi/FTP push, or a card reader) and opens each shot as it finishes writing. USB and Wi‑Fi both work because the vendor app does the transfer. Tether → Tethered Capture → choose the folder → Start watching.
+- **Phone Monitor**: the app serves a live page on the local network (QR code in Tether → Phone Monitor). The phone shows the developed picture as you edit it plus the recent filmstrip. Nothing leaves the LAN and nothing is uploaded.
 - Motion Trails retain the legacy `mirror` sidecar key only for backwards compatibility with existing `.drk.json` edits.
 
 ## Development
