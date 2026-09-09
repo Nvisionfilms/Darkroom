@@ -250,6 +250,8 @@ export const MASK_KIND_RADIAL = 3;
 export const DEVELOP_FRAG = `#version 300 es
 precision highp float;
 precision highp sampler2D;
+precision highp sampler3D;
+precision highp sampler2DArray;
 in vec2 vUv;
 out vec4 outColor;
 
@@ -261,14 +263,8 @@ uniform sampler2D uB2;      // blur sigma ~4
 uniform sampler2D uB3;      // blur sigma ~2% long edge (quarter res)
 uniform sampler2D uDark;    // blurred dark channel (quarter res), haze veil
 uniform sampler2D uLumaG;   // globally developed picture (for luminance masks)
-uniform sampler2D uMask0;
-uniform sampler2D uMask1;
-uniform sampler2D uMask2;
-uniform sampler2D uMask3;
-uniform sampler2D uMask4;
-uniform sampler2D uMask5;
-uniform sampler2D uMask6;
-uniform sampler2D uMask7;
+uniform sampler2DArray uMasks; // brush and subject mask rasters, one layer each
+uniform sampler3D uLook;    // creative look-up table (.cube)
 uniform int uUseMaps;
 uniform vec2 uSize;         // image size in px
 // global tone
@@ -298,6 +294,12 @@ uniform int uGradingOn;
 // picture profile: monochrome
 uniform int uMono;
 uniform vec3 uMonoMix;
+// creative look
+uniform int uLookOn;
+uniform float uLookAmount;
+uniform float uLookSize;
+uniform vec3 uLookMin;
+uniform vec3 uLookMax;
 // lens vignetting correction (scene-referred gain), twin of geometry.rs
 uniform int uVigOn;
 uniform vec3 uVigK;
@@ -427,6 +429,14 @@ float vignetteGain(vec2 p) {
   return max(g, 0.0);
 }
 
+// Trilinear .cube sampling. Twin of Lut3d::sample in lut3d.rs: the half-texel
+// scale and offset make the lattice endpoints land exactly on 0 and 1.
+vec3 sampleLook(vec3 c) {
+  vec3 t = clamp((c - uLookMin) / max(uLookMax - uLookMin, vec3(1e-6)), 0.0, 1.0);
+  vec3 uvw = t * ((uLookSize - 1.0) / uLookSize) + 0.5 / uLookSize;
+  return clamp(texture(uLook, uvw).rgb, 0.0, 1.0);
+}
+
 vec3 developPixel(vec3 rgb, Tone t) {
   if (uVigOn == 1) rgb *= vignetteGain(vUv * uSize);
   // 1. white balance
@@ -463,6 +473,8 @@ vec3 developPixel(vec3 rgb, Tone t) {
   // 6. profile base curve + point curves
   g = vec3(baseCurve(g.r, uBaseContrast), baseCurve(g.g, uBaseContrast), baseCurve(g.b, uBaseContrast));
   g = vec3(lut(1, lut(0, g.r)), lut(2, lut(0, g.g)), lut(3, lut(0, g.b)));
+  // 6b. creative look (.cube), blended by amount
+  if (uLookOn == 1) g = mix(g, sampleLook(g), uLookAmount);
   // 7. vibrance / saturation
   float mx = max(g.r, max(g.g, g.b));
   float mn = min(g.r, min(g.g, g.b));
@@ -505,15 +517,9 @@ vec3 developPixel(vec3 rgb, Tone t) {
 }
 
 float maskRaster(int slot, vec2 uv) {
-  if (slot == 0) return texture(uMask0, uv).r;
-  if (slot == 1) return texture(uMask1, uv).r;
-  if (slot == 2) return texture(uMask2, uv).r;
-  if (slot == 3) return texture(uMask3, uv).r;
-  if (slot == 4) return texture(uMask4, uv).r;
-  if (slot == 5) return texture(uMask5, uv).r;
-  if (slot == 6) return texture(uMask6, uv).r;
-  return texture(uMask7, uv).r;
+  return texture(uMasks, vec3(uv, float(slot))).r;
 }
+
 
 // Twin of mask.rs Prepared::weight. Pixel centres: uv * size == x + 0.5.
 float maskWeight(int i, vec2 uv, float luma) {

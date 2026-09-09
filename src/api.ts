@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type {
   EditParams,
+  Preset,
   ExportRequest,
   ImageInfo,
   MonitorInfo,
@@ -85,6 +86,42 @@ export async function openWatermark(path: string): Promise<WatermarkInfo> {
 export async function getWatermarkPixels(): Promise<Uint8Array> {
   const buf = await invoke<ArrayBuffer>("get_watermark_pixels");
   return new Uint8Array(buf);
+}
+
+/** Parse a .cube file on the Rust side; returns its name and lattice size. */
+export async function openLook(path: string): Promise<{ path: string; name: string; size: number }> {
+  return invoke<{ path: string; name: string; size: number }>("open_look", { path });
+}
+
+/** The loaded look as RGBA half floats for a WebGL2 3D texture. */
+export async function getLookPixels(): Promise<Uint16Array> {
+  const buf = await invoke<ArrayBuffer>("get_look_pixels");
+  return new Uint16Array(buf);
+}
+
+export async function pickCube(): Promise<string | null> {
+  const result = await open({
+    multiple: false,
+    directory: false,
+    title: "Choose a .cube look-up table",
+    filters: [{ name: "Cube LUT", extensions: ["cube", "CUBE"] }],
+  });
+  if (!result) return null;
+  return Array.isArray(result) ? result[0] : result;
+}
+
+// ---- develop presets ----
+
+export async function listPresets(): Promise<Preset[]> {
+  return invoke<Preset[]>("list_presets");
+}
+
+export async function savePreset(name: string, settings: unknown): Promise<Preset> {
+  return invoke<Preset>("save_preset", { name, settings });
+}
+
+export async function deletePreset(name: string): Promise<void> {
+  await invoke("delete_preset", { name });
 }
 
 export async function pickWatermark(): Promise<string | null> {

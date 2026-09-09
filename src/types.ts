@@ -302,6 +302,64 @@ export interface HealSpot {
   opacity: number;
 }
 
+/** A creative look-up table loaded from a .cube file. */
+export interface Look {
+  enabled: boolean;
+  path: string;
+  name: string;
+  /** 0..100 blend with the un-looked image */
+  amount: number;
+}
+
+export function defaultLook(): Look {
+  return { enabled: true, path: "", name: "", amount: 100 };
+}
+
+/** A saved set of develop settings. `settings` is an EditParams subset. */
+export interface Preset {
+  name: string;
+  settings: Partial<EditParams>;
+}
+
+/**
+ * The develop fields a preset carries. Anything tied to one frame (crop,
+ * rotation, perspective, masks, retouch spots, the lens calibration) is left
+ * out on purpose, so applying a preset never moves the picture around.
+ */
+export const PRESET_KEYS: (keyof EditParams)[] = [
+  "exposure",
+  "contrast",
+  "highlights",
+  "shadows",
+  "whites",
+  "blacks",
+  "temperature",
+  "tint",
+  "vibrance",
+  "saturation",
+  "baseContrast",
+  "sharpen",
+  "texture",
+  "clarity",
+  "dehaze",
+  "denoiseLuma",
+  "denoiseChroma",
+  "denoiseDetail",
+  "grading",
+  "hsl",
+  "curves",
+  "profile",
+  "look",
+  "lens",
+];
+
+/** Copy just the preset fields out of a full edit. */
+export function presetSettings(p: EditParams): Partial<EditParams> {
+  const out: Record<string, unknown> = {};
+  for (const k of PRESET_KEYS) out[k] = p[k];
+  return out as Partial<EditParams>;
+}
+
 export function defaultTransform(): Transform {
   return { vertical: 0, horizontal: 0, rotate: 0, scale: 0, aspect: 0, x: 0, y: 0 };
 }
@@ -374,6 +432,8 @@ export interface EditParams {
   masks: Mask[];
   /** picture profile id, see profiles.ts */
   profile: string;
+  /** creative look from a .cube file */
+  look: Look;
   transform: Transform;
   lens: Lens;
   /** calibration cached for this photo, or null when the lens is unknown */
@@ -506,6 +566,7 @@ export function defaultParams(): EditParams {
     dehaze: 0,
     masks: [],
     profile: "standard",
+    look: defaultLook(),
     transform: defaultTransform(),
     lens: defaultLens(),
     lensProfile: null,

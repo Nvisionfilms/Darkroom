@@ -16,6 +16,8 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 
 - **Motion Trails**: repeated semi-transparent directional echoes from the existing developed photo, with Amount, Direction, Distance, Copies, Fade, Blur, and Opacity controls.
 - **Auto Edit**: a deterministic one-click recipe over normal develop sliders (contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise, sharpening). Every result remains editable. It is not generative AI and never adds, removes, or replaces image content.
+- **Picture Profiles and Looks**: alongside the built-in profiles, load any `.cube` look-up table (1D or 3D, up to 64 points per axis) with an Amount slider. The look is applied after the point curves, so the tone controls above it still work in scene-referred light and vibrance, HSL and colour grading still work on top.
+- **Presets**: save the current develop settings under a name and apply them to any other photo. A preset carries tone, colour, curves, detail, profile, look and lens settings; it never carries the crop, perspective, masks or retouch spots, so applying one never moves the picture around. Presets live in the app data folder.
 - **Lens Corrections**: distortion, vignetting and colour fringing from the bundled open [lensfun](https://lensfun.github.io) database, matched automatically from the camera and lens recorded in the file, plus manual sliders for lenses that are not in it.
 - **Transform**: perspective correction (vertical and horizontal keystone), rotate, aspect, scale and shift.
 - **Picture Profiles**: Standard, Neutral, Portrait, Landscape, Vivid, Flat and three monochrome looks. A profile only moves normal develop controls, so every result stays editable.

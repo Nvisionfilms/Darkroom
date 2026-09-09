@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
-import { getWatermarkPixels, openWatermark } from "../api";
+import { getLookPixels, getWatermarkPixels, openLook, openWatermark } from "../api";
 import {
   brushRaster,
   decodeRaster,
@@ -290,7 +290,9 @@ export function Viewer({
     const canvas = canvasRef.current!;
     try {
       rendererRef.current = new Renderer(canvas);
-      (window as unknown as { __renderer?: Renderer }).__renderer = rendererRef.current;
+      // only the main viewer claims the debug hook; the Before comparison
+      // layer would otherwise overwrite it with its own renderer
+      if (captureRef) (window as unknown as { __renderer?: Renderer }).__renderer = rendererRef.current;
     } catch (e) {
       setError(String(e));
       return;
@@ -384,6 +386,36 @@ export function Viewer({
       requestRender();
     }
   }, [params.masks, image, requestRender]);
+
+  // creative look: parse the .cube on the Rust side and upload the lattice
+  const lookPath = params.look.path;
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    if (!lookPath) {
+      r.setLook("", 0, null);
+      developDirty.current = true;
+      requestRender();
+      return;
+    }
+    if (r.hasLook(lookPath)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await openLook(lookPath);
+        const px = await getLookPixels();
+        if (cancelled || !rendererRef.current) return;
+        rendererRef.current.setLook(lookPath, info.size, px);
+        developDirty.current = true;
+        requestRender();
+      } catch (e) {
+        if (!cancelled) setError(`Could not load the look: ${String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [lookPath, requestRender]);
 
   // object remover: hand the spots and their colour matches to the renderer
   const spotsKey = healKey(params.heal);

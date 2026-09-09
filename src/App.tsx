@@ -13,7 +13,12 @@ import {
   saveSession,
   startMonitor,
   startTether,
+  deletePreset,
   findHealSource,
+  listPresets,
+  openLook,
+  pickCube,
+  savePreset,
   startupFile,
   stopMonitor,
   stopTether,
@@ -27,6 +32,8 @@ import { HealPanel } from "./components/HealPanel";
 import { LensPanel } from "./components/LensPanel";
 import { TransformPanel } from "./components/TransformPanel";
 import { PROFILES } from "./profiles";
+import { LookRow } from "./components/LookRow";
+import { PresetPanel } from "./components/PresetPanel";
 import { nextGuide, type GuideKind } from "./components/CropGuides";
 import type { CaptureFn, MaskApi } from "./components/ViewerCore";
 import { encodeRaster, whiteBalanceFor, type BrushSettings } from "./mask";
@@ -51,6 +58,7 @@ import {
   defaultParams,
   newHealSpot,
   newMask,
+  presetSettings,
   type EditParams,
   type Histogram as Hist,
   type ImageInfo,
@@ -58,6 +66,7 @@ import {
   type Mask,
   type MaskKind,
   type MonitorInfo,
+  type Preset,
   type PreviewImage,
   type TetherStatus,
 } from "./types";
@@ -79,7 +88,8 @@ type InspectorKey =
   | "masks"
   | "lens"
   | "transform"
-  | "heal";
+  | "heal"
+  | "presets";
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
 const GUIDE_KEY = "darkroom.guide";
@@ -222,6 +232,7 @@ export default function App() {
     lens: false,
     transform: false,
     heal: false,
+    presets: false,
   });
   const updater = useUpdater(version);
   const saveTimer = useRef<number | null>(null);
@@ -262,6 +273,9 @@ export default function App() {
   const [healKind, setHealKind] = useState<"heal" | "clone">("heal");
   const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
   const [healBusy, setHealBusy] = useState(false);
+  // creative look (.cube) and saved presets
+  const [lookBusy, setLookBusy] = useState(false);
+  const [presets, setPresets] = useState<Preset[]>([]);
   const autoNrRef = useRef(autoNr);
   autoNrRef.current = autoNr;
 
@@ -529,6 +543,52 @@ export default function App() {
       if (kind === "subject") void runDetectSubject(m.id);
     },
     [params.masks, runDetectSubject],
+  );
+
+  // ---- creative look (.cube) ----
+  const loadLook = useCallback(async () => {
+    setLookBusy(true);
+    try {
+      const path = await pickCube();
+      if (!path) return;
+      const info = await openLook(path);
+      setParams((p) => ({ ...p, look: { enabled: true, path, name: info.name, amount: p.look.amount || 100 } }));
+    } catch (e) {
+      setError(`Could not read the .cube file: ${String(e)}`);
+    } finally {
+      setLookBusy(false);
+    }
+  }, []);
+
+  // ---- develop presets ----
+  const refreshPresets = useCallback(() => {
+    listPresets()
+      .then(setPresets)
+      .catch((e) => setError(`Presets: ${String(e)}`));
+  }, []);
+
+  useEffect(refreshPresets, [refreshPresets]);
+
+  const applyPreset = useCallback((preset: Preset) => {
+    setParams((p) => ({ ...p, ...preset.settings }));
+  }, []);
+
+  const storePreset = useCallback(
+    (name: string) => {
+      savePreset(name, presetSettings(params))
+        .then(refreshPresets)
+        .catch((e) => setError(`Could not save the preset: ${String(e)}`));
+    },
+    [params, refreshPresets],
+  );
+
+  const removePreset = useCallback(
+    (name: string) => {
+      deletePreset(name)
+        .then(refreshPresets)
+        .catch((e) => setError(`Could not delete the preset: ${String(e)}`));
+    },
+    [refreshPresets],
   );
 
   // ---- object remover ----
@@ -991,6 +1051,7 @@ export default function App() {
                 ))}
               </select>
             </label>
+            <LookRow look={params.look} busy={lookBusy} onLoad={() => void loadLook()} onChange={set("look")} />
             <Slider label="Exposure" value={params.exposure} min={-5} max={5} step={0.05} onChange={set("exposure")} />
             <Slider label="Contrast" value={params.contrast} min={-100} max={100} onChange={set("contrast")} />
             <Slider label="Highlights" value={params.highlights} min={-100} max={100} onChange={set("highlights")} />
@@ -1084,6 +1145,21 @@ export default function App() {
               onToggleMode={toggleCropMode}
               guide={guide}
               onGuide={changeGuide}
+            />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Presets"
+            open={openSections.presets}
+            onToggle={() => toggleSection("presets")}
+            note={presets.length ? <span className="section-note">{presets.length}</span> : undefined}
+          >
+            <PresetPanel
+              presets={presets}
+              disabled={!current}
+              onApply={applyPreset}
+              onSave={storePreset}
+              onDelete={removePreset}
             />
           </InspectorSection>
 

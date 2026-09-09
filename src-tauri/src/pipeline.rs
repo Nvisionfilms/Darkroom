@@ -12,6 +12,7 @@ use crate::color::{dot3, mul3, DWG_TO_SRGB, LUMA_709, LUMA_PROXY};
 use crate::detail::{sample_q, DetailMaps};
 use crate::geometry::{Lens, LensProfile, Transform, Warp};
 use crate::heal::HealSpot;
+use crate::lut3d::Lut3d;
 use crate::mask::{self, Mask};
 use crate::profiles;
 use rayon::prelude::*;
@@ -87,6 +88,9 @@ pub struct EditParams {
     /// picture profile id (see profiles.rs)
     #[serde(default = "default_profile")]
     pub profile: String,
+    /// creative look from a .cube file
+    #[serde(default)]
+    pub look: Look,
     /// perspective / geometry
     #[serde(default)]
     pub transform: Transform,
@@ -105,6 +109,34 @@ pub struct EditParams {
 
 fn default_profile() -> String {
     "standard".into()
+}
+
+/// A creative look-up table loaded from a .cube file. `path` empty = none.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Look {
+    pub enabled: bool,
+    pub path: String,
+    pub name: String,
+    /// 0..100 blend with the un-looked image
+    pub amount: f32,
+}
+
+impl Default for Look {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            path: String::new(),
+            name: String::new(),
+            amount: 100.0,
+        }
+    }
+}
+
+impl Look {
+    pub fn is_active(&self) -> bool {
+        self.enabled && !self.path.is_empty() && self.amount > 0.0
+    }
 }
 
 impl EditParams {
@@ -420,6 +452,7 @@ impl Default for EditParams {
             dehaze: 0.0,
             masks: Vec::new(),
             profile: default_profile(),
+            look: Look::default(),
             transform: Transform::default(),
             lens: Lens::default(),
             lens_profile: None,
@@ -516,6 +549,8 @@ pub struct Uniforms {
     /// picture profile: monochrome conversion
     mono: bool,
     mono_mix: [f32; 3],
+    /// creative look blend, 0..1
+    look_amount: f32,
 }
 
 /// Tint offset for a hue/saturation pair: hue colour minus its luminance,
@@ -573,6 +608,11 @@ impl Uniforms {
             grading_on: p.grading.shadow_sat > 0.0 || p.grading.mid_sat > 0.0 || p.grading.high_sat > 0.0,
             mono: lk.mono,
             mono_mix: lk.mono_mix,
+            look_amount: if p.look.is_active() {
+                (p.look.amount / 100.0).clamp(0.0, 1.0)
+            } else {
+                0.0
+            },
         }
     }
 }
@@ -740,7 +780,7 @@ pub struct LocalMaps {
 /// tone for this pixel; `u` holds the global-only settings.
 #[inline]
 pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
-    develop_pixel_gain(rgb, maps, t, u, lut, 1.0)
+    develop_pixel_gain(rgb, maps, t, u, lut, 1.0, None)
 }
 
 /// As `develop_pixel`, with a scene-referred gain applied first. The gain
@@ -753,6 +793,7 @@ pub fn develop_pixel_gain(
     u: &Uniforms,
     lut: &[f32],
     gain: f32,
+    look: Option<&Lut3d>,
 ) -> [f32; 3] {
     let rgb = if gain == 1.0 {
         rgb
@@ -811,6 +852,15 @@ pub fn develop_pixel_gain(
         lut_lookup(lut, 2, lut_lookup(lut, 0, g[1])),
         lut_lookup(lut, 3, lut_lookup(lut, 0, g[2])),
     ];
+    // 6b. creative look (.cube), blended by amount
+    if let Some(l) = look {
+        if u.look_amount > 0.0 {
+            let s = l.sample(g);
+            for c in 0..3 {
+                g[c] += (s[c] - g[c]) * u.look_amount;
+            }
+        }
+    }
     // 7. vibrance / saturation
     let mx = g[0].max(g[1]).max(g[2]);
     let mn = g[0].min(g[1]).min(g[2]);
@@ -870,6 +920,18 @@ pub fn develop_buffer(
     params: &EditParams,
     lut: &[f32],
 ) -> Vec<f32> {
+    develop_buffer_look(src, width, maps, params, lut, None)
+}
+
+/// As `develop_buffer`, with a creative look applied after the point curves.
+pub fn develop_buffer_look(
+    src: &[f32],
+    width: usize,
+    maps: Option<&DetailMaps>,
+    params: &EditParams,
+    lut: &[f32],
+    look: Option<&Lut3d>,
+) -> Vec<f32> {
     let u = Uniforms::from_params(params);
     let height = src.len() / 3 / width.max(1);
     let masks = mask::prepare(&params.masks, width, height);
@@ -900,11 +962,11 @@ pub fn develop_buffer(
                     1.0
                 };
                 let o = if masks.is_empty() {
-                    develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain)
+                    develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look)
                 } else {
                     // luminance masks look at the globally developed picture
                     let luma = if needs_luma {
-                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain), LUMA_709)
+                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look), LUMA_709)
                     } else {
                         0.0
                     };
@@ -913,7 +975,7 @@ pub fn develop_buffer(
                     for pm in &masks {
                         t.add(&pm.mask.adjust, pm.weight(px, py, luma));
                     }
-                    develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain)
+                    develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain, look)
                 };
                 d[0] = o[0];
                 d[1] = o[1];

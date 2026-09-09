@@ -1312,3 +1312,54 @@ input[type="number"] {
   stroke-width: 1.2;
   pointer-events: none;
 }
+
+/* ---- creative look and presets ---- */
+.look-row {
+  margin-top: 4px;
+}
+.look-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--text);
+  font-style: normal;
+}
+.look-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 4px 0 2px;
+}
+.look-enable {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  cursor: pointer;
+  flex: 1;
+}
+.preset-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.preset-save {
+  display: flex;
+  gap: 6px;
+}
+.preset-name {
+  flex: 1;
+  min-width: 0;
+  background: #141414;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text);
+  padding: 4px 7px;
+  font: inherit;
+}
+.preset-name:focus {
+  outline: none;
+  border-color: var(--accent);
+}

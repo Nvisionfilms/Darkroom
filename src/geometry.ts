@@ -1,11 +1,11 @@
 // Twin of src-tauri/src/geometry.rs and of the warp in PRESENT_FRAG.
 // Normalised coordinates: origin at the image centre, r = 1 is half of the
-// shorter side, exactly as lensfun calibrations are defined.
+// image diagonal, exactly as lensfun calibrations are defined.
 
 import type { Lens, LensProfile, Transform } from "./types";
 
-export const PERSPECTIVE_K = 0.5;
-export const MANUAL_DISTORTION_K = 0.25;
+export const PERSPECTIVE_K = 0.9;
+export const MANUAL_DISTORTION_K = 0.8;
 export const MANUAL_CA_K = 0.005;
 
 const smooth01 = (x: number) => {
@@ -52,7 +52,8 @@ const hasVignetting = (p: LensProfile | null) => !!p && (p.vig[0] !== 0 || p.vig
 const hasTca = (p: LensProfile | null) => !!p && p.tca[0] !== 0 && p.tca[1] !== 0 && (p.tca[0] !== 1 || p.tca[1] !== 1);
 
 export function makeWarp(t: Transform, l: Lens, profile: LensProfile | null, width: number, height: number): Warp {
-  const hs = Math.max(1, Math.min(width, height) / 2);
+  // r = 1 at half the image diagonal, the lensfun convention
+  const hs = Math.max(1, Math.hypot(width, height) / 2);
   const rot = (t.rotate * Math.PI) / 180;
   const a = t.aspect / 100;
   const useProf = l.profile && !!profile;
@@ -86,7 +87,7 @@ export function makeWarp(t: Transform, l: Lens, profile: LensProfile | null, wid
     vig: vigOn ? profile!.vig : [0, 0, 0],
     vigAmount: Math.max(0, Math.min(1, l.vignetteAmount / 100)),
     mv: l.manualVignette / 100,
-    mvStart: Math.max(0, Math.min(1, l.manualVignetteMid / 100)) * 1.2,
+    mvStart: Math.max(0, Math.min(1, l.manualVignetteMid / 100)),
     rmax: Math.hypot(width / (2 * hs), height / (2 * hs)),
   };
 }

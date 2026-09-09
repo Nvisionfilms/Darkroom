@@ -6,9 +6,11 @@ pub mod export;
 pub mod geometry;
 pub mod heal;
 pub mod lensdb;
+pub mod lut3d;
 pub mod mask;
 pub mod monitor;
 pub mod pipeline;
+pub mod preset;
 pub mod profiles;
 pub mod sidecar;
 pub mod tether;
@@ -43,6 +45,61 @@ pub struct AppState {
     watermark: Mutex<Option<(String, Arc<pipeline::WatermarkImage>)>>,
     tether: Mutex<Option<tether::Active>>,
     monitor: Mutex<Option<monitor::Monitor>>,
+    look: Mutex<Option<(String, Arc<lut3d::Lut3d>)>>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LookInfo {
+    path: String,
+    name: String,
+    size: usize,
+}
+
+/// Parse a .cube file and keep it for `get_look_pixels`.
+#[tauri::command]
+async fn open_look(path: String, state: State<'_, AppState>) -> Result<LookInfo, String> {
+    let p = path.clone();
+    let lut = tauri::async_runtime::spawn_blocking(move || lut3d::Lut3d::load(Path::new(&p)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)?;
+    let info = LookInfo {
+        path: path.clone(),
+        name: lut.name.clone(),
+        size: lut.size,
+    };
+    *state.look.lock().unwrap() = Some((path, Arc::new(lut)));
+    Ok(info)
+}
+
+/// The loaded look as RGBA half floats, ready for a WebGL2 3D texture.
+#[tauri::command]
+fn get_look_pixels(state: State<'_, AppState>) -> Result<Response, String> {
+    let guard = state.look.lock().unwrap();
+    let (_, lut) = guard.as_ref().ok_or("no look loaded")?;
+    Ok(Response::new(lut.to_rgba_f16()))
+}
+
+// ---- develop presets ----
+
+#[tauri::command]
+fn list_presets(app: tauri::AppHandle) -> Result<Vec<preset::Preset>, String> {
+    preset::list(&app).map_err(err)
+}
+
+#[tauri::command]
+fn save_preset(
+    app: tauri::AppHandle,
+    name: String,
+    settings: serde_json::Value,
+) -> Result<preset::Preset, String> {
+    preset::save(&app, &name, &settings).map_err(err)
+}
+
+#[tauri::command]
+fn delete_preset(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    preset::delete(&app, &name).map_err(err)
 }
 
 // ---- tethered capture (hot folder) ----
@@ -408,7 +465,12 @@ pub fn run() {
             publish_shot,
             publish_frame,
             find_heal_source,
-            picture_profiles
+            picture_profiles,
+            open_look,
+            get_look_pixels,
+            list_presets,
+            save_preset,
+            delete_preset
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

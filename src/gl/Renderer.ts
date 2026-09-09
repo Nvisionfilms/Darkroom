@@ -360,10 +360,18 @@ export class Renderer {
     this.makeTex("V", gl.R16F, gl.RED, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
     // globally developed picture, sampled by luminance-range masks
     this.makeTex("devG", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR);
-    // mask rasters (brush, subject) live at half resolution
+    // mask rasters (brush, subject) live at half resolution, one array
+    // texture layer each so they cost a single texture unit
     this.mw = Math.max(1, Math.ceil(W / 2));
     this.mh = Math.max(1, Math.ceil(H / 2));
-    for (let i = 0; i < MAX_MASKS; i++) this.makeTex(`M${i}`, gl.R8, gl.RED, gl.UNSIGNED_BYTE, this.mw, this.mh, gl.LINEAR);
+    if (this.maskTex) gl.deleteTexture(this.maskTex);
+    this.maskTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.maskTex);
+    gl.texImage3D(gl.TEXTURE_2D_ARRAY, 0, gl.R8, this.mw, this.mh, MAX_MASKS, 0, gl.RED, gl.UNSIGNED_BYTE, null);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D_ARRAY, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     this.slotContent = new Array(MAX_MASKS).fill("");
     this.rasters.clear();
     this.makeTex("dev", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
@@ -562,6 +570,7 @@ export class Renderer {
 
   private mw = 1;
   private mh = 1;
+  private maskTex: WebGLTexture | null = null;
   private rasters = new Map<string, RasterEntry>();
   /** which raster (id:version) each slot texture currently holds */
   private slotContent: string[] = [];
@@ -597,19 +606,19 @@ export class Renderer {
     if (!r) return;
     r.version += 1;
     const slot = this.slotContent.findIndex((c) => c.startsWith(id + ":"));
-    if (slot < 0) return;
+    if (slot < 0 || !this.maskTex) return;
     const gl = this.gl;
     const x = Math.max(0, Math.floor(rect.x));
     const y = Math.max(0, Math.floor(rect.y));
     const w = Math.min(r.w - x, Math.ceil(rect.w));
     const h = Math.min(r.h - y, Math.ceil(rect.h));
     if (w <= 0 || h <= 0) return;
-    gl.bindTexture(gl.TEXTURE_2D, this.t[`M${slot}`].tex);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.maskTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, r.w);
     gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
-    gl.texSubImage2D(gl.TEXTURE_2D, 0, x, y, w, h, gl.RED, gl.UNSIGNED_BYTE, r.data);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, slot, w, h, 1, gl.RED, gl.UNSIGNED_BYTE, r.data);
     gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
     gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
     gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
@@ -620,17 +629,46 @@ export class Renderer {
   private uploadSlot(slot: number, id: string): void {
     const r = this.rasters.get(id);
     const key = r ? `${id}:${r.version}` : "";
-    if (this.slotContent[slot] === key) return;
+    if (this.slotContent[slot] === key || !this.maskTex) return;
     const gl = this.gl;
-    gl.bindTexture(gl.TEXTURE_2D, this.t[`M${slot}`].tex);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.maskTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    if (r && r.w === this.mw && r.h === this.mh) {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.mw, this.mh, 0, gl.RED, gl.UNSIGNED_BYTE, r.data);
-    } else {
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, this.mw, this.mh, 0, gl.RED, gl.UNSIGNED_BYTE, null);
-    }
+    const empty = new Uint8Array(this.mw * this.mh);
+    const data = r && r.w === this.mw && r.h === this.mh ? r.data : empty;
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, 0, 0, slot, this.mw, this.mh, 1, gl.RED, gl.UNSIGNED_BYTE, data);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     this.slotContent[slot] = key;
+  }
+
+  // ---- creative look (.cube) ----
+
+  private lookTex: WebGLTexture | null = null;
+  private lookPath = "";
+  private lookSize = 0;
+
+  /** Upload (or clear) the look lattice as a 3D texture. */
+  setLook(path: string, size: number, rgbaF16: Uint16Array | null): void {
+    const gl = this.gl;
+    if (this.lookTex) {
+      gl.deleteTexture(this.lookTex);
+      this.lookTex = null;
+    }
+    this.lookPath = path;
+    this.lookSize = 0;
+    if (!rgbaF16 || !path || size < 2) return;
+    this.lookTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
+    gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, size, size, size, 0, gl.RGBA, gl.HALF_FLOAT, rgbaF16);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_3D, gl.TEXTURE_WRAP_R, gl.CLAMP_TO_EDGE);
+    this.lookSize = size;
+  }
+
+  hasLook(path: string): boolean {
+    return !!this.lookTex && this.lookPath === path;
   }
 
   /**
@@ -714,10 +752,9 @@ export class Renderer {
     gl.uniform4fv(this.loc(d, "uMaskP0[0]"), p0);
     gl.uniform4fv(this.loc(d, "uMaskP1[0]"), p1);
     gl.uniform1fv(this.loc(d, "uMaskAdj[0]"), adj);
-    for (let i = 0; i < MAX_MASKS; i++) {
-      this.bindTex(8 + i, this.t[`M${i}`].tex);
-      gl.uniform1i(this.loc(d, `uMask${i}`), 8 + i);
-    }
+    gl.activeTexture(gl.TEXTURE8);
+    gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.maskTex);
+    gl.uniform1i(this.loc(d, "uMasks"), 8);
   }
 
   /** Resolved lens/perspective geometry for the preview. */
@@ -761,6 +798,16 @@ export class Renderer {
     f("uRmax", warp.rmax);
     f("uHs", warp.hs);
     f("uCs", warp.cs);
+    // creative look
+    const lookOn = p.look.enabled && p.look.amount > 0 && this.hasLook(p.look.path);
+    gl.uniform1i(this.loc(d, "uLookOn"), lookOn ? 1 : 0);
+    f("uLookAmount", Math.max(0, Math.min(1, p.look.amount / 100)));
+    f("uLookSize", Math.max(2, this.lookSize));
+    gl.uniform3f(this.loc(d, "uLookMin"), 0, 0, 0);
+    gl.uniform3f(this.loc(d, "uLookMax"), 1, 1, 1);
+    gl.activeTexture(gl.TEXTURE9);
+    gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
+    gl.uniform1i(this.loc(d, "uLook"), 9);
     gl.uniform1fv(this.loc(d, "uHslHue[0]"), add8(p.hsl.hue, lkp.bandHue));
     gl.uniform1fv(this.loc(d, "uHslSat[0]"), add8(p.hsl.saturation, lkp.bandSat));
     gl.uniform1fv(this.loc(d, "uHslLum[0]"), add8(p.hsl.luminance, lkp.bandLum));
@@ -1053,6 +1100,8 @@ export class Renderer {
 
   dispose(): void {
     const gl = this.gl;
+    if (this.maskTex) gl.deleteTexture(this.maskTex);
+    if (this.lookTex) gl.deleteTexture(this.lookTex);
     gl.deleteTexture(this.imageTex);
     gl.deleteTexture(this.lutTex);
     for (const t of Object.values(this.t)) gl.deleteTexture(t.tex);

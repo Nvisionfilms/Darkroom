@@ -3,7 +3,7 @@
 //! in `PRESENT_FRAG` and of `src/geometry.ts`.
 //!
 //! Coordinates are normalised the lensfun/hugin way: the origin is the image
-//! centre and r = 1 is half of the shorter image side. The mapping goes from
+//! centre and r = 1 is half of the image diagonal. The mapping goes from
 //! the *output* canvas to the *source* (inverse mapping), which is what a
 //! resampler needs:
 //!
@@ -122,8 +122,8 @@ impl LensProfile {
     }
 }
 
-pub const PERSPECTIVE_K: f32 = 0.5;
-pub const MANUAL_DISTORTION_K: f32 = 0.25;
+pub const PERSPECTIVE_K: f32 = 0.9;
+pub const MANUAL_DISTORTION_K: f32 = 0.8;
 pub const MANUAL_CA_K: f32 = 0.005;
 
 #[inline]
@@ -139,7 +139,7 @@ pub struct Warp {
     pub h: f32,
     pub cx: f32,
     pub cy: f32,
-    /// half of the shorter side (r = 1)
+    /// half the image diagonal (r = 1)
     pub hs: f32,
     // transform
     pub ox: f32,
@@ -171,7 +171,10 @@ pub struct Warp {
 impl Warp {
     pub fn new(t: &Transform, l: &Lens, profile: Option<&LensProfile>, w: usize, h: usize) -> Self {
         let (wf, hf) = (w as f32, h as f32);
-        let hs = (wf.min(hf) / 2.0).max(1.0);
+        // lensfun calibrations are normalised so that r = 1 at half the image
+        // diagonal; using half the short side instead makes the vignetting
+        // polynomial diverge past the frame edges.
+        let hs = ((wf * wf + hf * hf).sqrt() / 2.0).max(1.0);
         let rot = t.rotate.to_radians();
         let a = t.aspect / 100.0;
         let use_prof = l.profile && profile.is_some();
@@ -206,7 +209,7 @@ impl Warp {
             vig: if vig_on { p.vig } else { [0.0; 3] },
             vig_amount: (l.vignette_amount / 100.0).clamp(0.0, 1.0),
             mv: l.manual_vignette / 100.0,
-            mv_start: (l.manual_vignette_mid / 100.0).clamp(0.0, 1.0) * 1.2,
+            mv_start: (l.manual_vignette_mid / 100.0).clamp(0.0, 1.0),
             rmax: ((wf / (2.0 * hs)).powi(2) + (hf / (2.0 * hs)).powi(2)).sqrt(),
         }
     }

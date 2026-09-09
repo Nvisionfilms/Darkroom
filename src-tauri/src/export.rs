@@ -129,7 +129,20 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
     } else {
         None
     };
-    pipeline::develop_buffer(&denoised, img.width, maps.as_ref(), params, lut)
+    // creative look (.cube); a look that cannot be read is skipped rather
+    // than failing the whole export
+    let look = if params.look.is_active() {
+        match crate::lut3d::Lut3d::load(Path::new(&params.look.path)) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                log::warn!("look: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    pipeline::develop_buffer_look(&denoised, img.width, maps.as_ref(), params, lut, look.as_ref())
 }
 
 /// Motion Trails uses the legacy `Mirror` storage shape for sidecar
