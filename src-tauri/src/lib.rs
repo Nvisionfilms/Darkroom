@@ -3,9 +3,13 @@ pub mod decode;
 pub mod denoise;
 pub mod detail;
 pub mod export;
+pub mod geometry;
+pub mod heal;
+pub mod lensdb;
 pub mod mask;
 pub mod monitor;
 pub mod pipeline;
+pub mod profiles;
 pub mod sidecar;
 pub mod tether;
 
@@ -188,6 +192,8 @@ pub struct ImageInfo {
     metadata: Metadata,
     edits: Option<EditParams>,
     thumbnail: String,
+    /// lens calibration found for this camera/lens, if any
+    lens_profile: Option<geometry::LensProfile>,
 }
 
 fn err(e: anyhow::Error) -> String {
@@ -240,6 +246,12 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
     .map_err(|e| e.to_string())?
     .map_err(err)?;
 
+    let lens_profile = lensdb::lookup(
+        meta.camera.as_deref(),
+        meta.lens.as_deref(),
+        meta.focal_length,
+        meta.f_number,
+    );
     let info = ImageInfo {
         path: loaded.path.clone(),
         width: loaded.image.width,
@@ -250,6 +262,7 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
         metadata: meta,
         edits: sidecar::load(Path::new(&loaded.path)),
         thumbnail: thumb,
+        lens_profile,
     };
     *state.loaded.lock().unwrap() = Some(loaded);
     Ok(info)
@@ -330,6 +343,33 @@ fn startup_file() -> Option<String> {
         .find(|a| !a.starts_with('-') && Path::new(a).is_file())
 }
 
+/// Pick a source patch for an object-remover spot, from the loaded photo.
+/// Deterministic patch search; it copies existing pixels, nothing generated.
+#[tauri::command]
+async fn find_heal_source(
+    x: f32,
+    y: f32,
+    radius: f32,
+    avoid: Vec<(f32, f32, f32)>,
+    state: State<'_, AppState>,
+) -> Result<(f32, f32), String> {
+    let image = {
+        let guard = state.loaded.lock().unwrap();
+        guard.as_ref().ok_or("no image loaded")?.image.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || {
+        heal::find_source(&image.data, image.width, image.height, x, y, radius, &avoid)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Ids of the built-in picture profiles.
+#[tauri::command]
+fn picture_profiles() -> Vec<String> {
+    profiles::IDS.iter().map(|s| s.to_string()).collect()
+}
+
 #[tauri::command]
 fn supported_extensions() -> Vec<String> {
     decode::RAW_EXTENSIONS
@@ -366,7 +406,9 @@ pub fn run() {
             stop_monitor,
             monitor_status,
             publish_shot,
-            publish_frame
+            publish_frame,
+            find_heal_source,
+            picture_profiles
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

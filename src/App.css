@@ -1231,3 +1231,84 @@ input[type="number"] {
   color: var(--muted);
   cursor: pointer;
 }
+
+/* ---- lens, transform, object remover ---- */
+.lens-panel,
+.transform-panel,
+.heal-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.lens-status {
+  padding: 7px 9px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.lens-status.found {
+  border-color: #2f6b3e;
+  background: #16241a;
+}
+.lens-status strong {
+  display: block;
+  font-weight: 600;
+}
+.lens-status small {
+  display: block;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.35;
+  margin-top: 2px;
+}
+.section-sub {
+  color: var(--muted);
+  text-transform: uppercase;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  margin-top: 2px;
+}
+.heal-overlay {
+  pointer-events: none;
+}
+.heal-overlay.placing {
+  cursor: crosshair;
+}
+.heal-surface {
+  fill: transparent;
+  pointer-events: all;
+}
+.heal-link {
+  stroke: rgba(255, 255, 255, 0.45);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+  pointer-events: none;
+}
+.heal-dest {
+  fill: rgba(79, 140, 255, 0.1);
+  stroke: #fff;
+  stroke-width: 1.5;
+  pointer-events: all;
+  cursor: move;
+}
+.heal-src {
+  fill: rgba(95, 211, 122, 0.08);
+  stroke: #5fd37a;
+  stroke-width: 1.5;
+  stroke-dasharray: 5 4;
+  pointer-events: all;
+  cursor: grab;
+}
+.heal-spot.selected .heal-dest {
+  stroke: #8aa2ff;
+  stroke-width: 2.5;
+}
+.heal-spot.selected .heal-src {
+  stroke-width: 2.5;
+}
+.heal-cursor {
+  fill: rgba(79, 140, 255, 0.12);
+  stroke: #fff;
+  stroke-width: 1.2;
+  pointer-events: none;
+}

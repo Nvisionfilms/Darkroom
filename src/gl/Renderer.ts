@@ -10,6 +10,8 @@ import {
   type PreviewImage,
 } from "../types";
 import { maskKindCode, type Rect } from "../mask";
+import { makeWarp, warpHasVignette, warpIsIdentity, type Warp } from "../geometry";
+import { look as profileLook } from "../profiles";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
@@ -19,9 +21,11 @@ import {
   DEVELOP_FRAG,
   DOWN2_FRAG,
   DOWNSAMPLE_FRAG,
+  HEAL_FRAG,
   IDENTITY3,
   LOGLUMA_FRAG,
   MASK_ADJ_STRIDE,
+  MAX_HEAL,
   MAX_MASKS,
   MIRROR_FRAG,
   PREP_FRAG,
@@ -212,6 +216,7 @@ export class Renderer {
       denoise: link(gl, VERTEX, DENOISE_FRAG),
       down2: link(gl, VERTEX, DOWN2_FRAG),
       combine: link(gl, VERTEX, COMBINE_FRAG),
+      heal: link(gl, VERTEX, HEAL_FRAG),
       logluma: link(gl, VERTEX, LOGLUMA_FRAG),
       dark: link(gl, VERTEX, DARK_FRAG),
       blur: link(gl, VERTEX, BLUR_FRAG),
@@ -332,6 +337,7 @@ export class Renderer {
     const H = img.height;
     this.qw = Math.max(1, Math.floor(W / 4));
     this.qh = Math.max(1, Math.floor(H / 4));
+    this.makeTex("H", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, W, H, gl.NEAREST);
     this.makeTex("P", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, W, H, gl.NEAREST);
     this.makeTex("D1", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, W, H, gl.NEAREST);
     this.makeTex("D", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, W, H, gl.LINEAR);
@@ -392,9 +398,52 @@ export class Renderer {
     run(tmp, dst, 0, 1);
   }
 
+  // ---- object remover ----
+
+  private healPos = new Float32Array(MAX_HEAL * 4);
+  private healShape = new Float32Array(MAX_HEAL * 4);
+  private healOffset = new Float32Array(MAX_HEAL * 3);
+  private healCount = 0;
+  private healKey = "";
+
   /**
-   * Whole-image passes that depend only on the source and the denoise
-   * settings: denoise, log-luma and its blurs. Cached until those change.
+   * Set the object-remover spots. `offsets` are the per-spot colour matches
+   * computed from the preview (see src/heal.ts) so the GPU does not have to
+   * average discs; `key` identifies this set for caching.
+   */
+  setHeal(
+    spots: { x: number; y: number; sx: number; sy: number; radius: number; feather: number; opacity: number; enabled: boolean; kind: string }[],
+    offsets: [number, number, number][],
+    key: string,
+  ): void {
+    const long = Math.max(this.imgW, this.imgH);
+    let n = 0;
+    for (let i = 0; i < spots.length && n < MAX_HEAL; i++) {
+      const s = spots[i];
+      if (!s.enabled || s.opacity <= 0 || s.radius <= 0) continue;
+      const o = n * 4;
+      this.healPos[o] = s.x * this.imgW;
+      this.healPos[o + 1] = s.y * this.imgH;
+      this.healPos[o + 2] = s.sx * this.imgW;
+      this.healPos[o + 3] = s.sy * this.imgH;
+      this.healShape[o] = Math.max(1, s.radius * long);
+      this.healShape[o + 1] = 1 - Math.max(0, Math.min(1, s.feather / 100));
+      this.healShape[o + 2] = Math.max(0, Math.min(1, s.opacity / 100));
+      this.healShape[o + 3] = 0;
+      const off = offsets[i] ?? [0, 0, 0];
+      this.healOffset[n * 3] = off[0];
+      this.healOffset[n * 3 + 1] = off[1];
+      this.healOffset[n * 3 + 2] = off[2];
+      n++;
+    }
+    this.healCount = n;
+    this.healKey = key;
+  }
+
+  /**
+   * Whole-image passes that depend only on the source, the object remover and
+   * the denoise settings: heal, denoise, log-luma and its blurs. Cached until
+   * those change.
    */
   prepare(p: EditParams): boolean {
     if (!this.imgW) return false;
@@ -402,11 +451,27 @@ export class Renderer {
     const nl = Math.max(0, Math.min(1, p.denoiseLuma / 100));
     const nc = Math.max(0, Math.min(1, p.denoiseChroma / 100));
     const nd = Math.max(0, Math.min(1, p.denoiseDetail / 100));
-    const key = `${nl}|${nc}|${nd}`;
+    const key = `${nl}|${nc}|${nd}|${this.healKey}`;
     if (key === this.prepKey) return false;
     const T = this.t;
     const W = this.imgW;
     const H = this.imgH;
+
+    // object remover, before everything else
+    let source = this.imageTex;
+    if (this.healCount > 0) {
+      const hp = this.prog.heal;
+      this.pass(hp, T.H, () => {
+        this.bindTex(0, this.imageTex);
+        gl.uniform1i(this.loc(hp, "uSrc"), 0);
+        gl.uniform2f(this.loc(hp, "uSize"), W, H);
+        gl.uniform1i(this.loc(hp, "uNumSpots"), this.healCount);
+        gl.uniform4fv(this.loc(hp, "uSpotPos[0]"), this.healPos);
+        gl.uniform4fv(this.loc(hp, "uSpotShape[0]"), this.healShape);
+        gl.uniform3fv(this.loc(hp, "uSpotOffset[0]"), this.healOffset);
+      });
+      source = T.H.tex;
+    }
 
     const useDenoise = (nl > 0 || nc > 0) && this.sigma > 0;
     if (useDenoise) {
@@ -440,10 +505,10 @@ export class Renderer {
           gl.uniform2f(this.loc(this.prog.down2, "uTexel"), 1 / srcW, 1 / srcH);
         });
       // scale 1: full resolution
-      prep(this.imageTex, T.P);
-      nlm(this.imageTex, T.P, T.D1, this.sigma);
+      prep(source, T.P);
+      nlm(source, T.P, T.D1, this.sigma);
       // scale 2: half resolution
-      down2(this.imageTex, W, H, T.S2);
+      down2(source, W, H, T.S2);
       prep(T.S2.tex, T.P2);
       nlm(T.S2.tex, T.P2, T.D2, this.sigma * HALF_RES_SIGMA);
       down2(T.D1, W, H, T.D1s);
@@ -459,7 +524,7 @@ export class Renderer {
       });
     } else {
       this.pass(this.prog.copy, T.D, () => {
-        this.bindTex(0, this.imageTex);
+        this.bindTex(0, source);
         gl.uniform1i(this.loc(this.prog.copy, "uSrc"), 0);
       });
     }
@@ -655,29 +720,50 @@ export class Renderer {
     }
   }
 
+  /** Resolved lens/perspective geometry for the preview. */
+  warp(p: EditParams): Warp {
+    return makeWarp(p.transform, p.lens, p.lensProfile, this.imgW, this.imgH);
+  }
+
   private setDevelopUniforms(p: EditParams): void {
     const gl = this.gl;
     const d = this.prog.develop;
+    const lkp = profileLook(p.profile);
     const n = (v: number) => Math.max(-1, Math.min(1, v / 100));
     const f = (name: string, v: number) => gl.uniform1f(this.loc(d, name), v);
+    // the picture profile adds to the user's own settings (twin of
+    // Uniforms::from_params in pipeline.rs)
+    const add8 = (a: number[], b: number[]) => Float32Array.from(a, (v, i) => n(v + b[i]));
     f("uExposure", Math.max(-10, Math.min(10, p.exposure)));
-    f("uContrast", n(p.contrast));
+    f("uContrast", n(p.contrast + lkp.contrast));
     f("uHighlights", n(p.highlights));
     f("uShadows", n(p.shadows));
     f("uWhites", n(p.whites));
     f("uBlacks", n(p.blacks));
-    f("uTemp", n(p.temperature));
+    f("uTemp", n(p.temperature + lkp.temperature));
     f("uTint", n(p.tint));
-    f("uVibrance", n(p.vibrance));
-    f("uSaturation", n(p.saturation));
+    f("uVibrance", n(p.vibrance + lkp.vibrance));
+    f("uSaturation", n(p.saturation + lkp.saturation));
     f("uBaseContrast", Math.max(0, Math.min(1, p.baseContrast)));
     f("uTexture", n(p.texture));
     f("uClarity", n(p.clarity));
     f("uDehaze", n(p.dehaze));
     gl.uniform2f(this.loc(d, "uSize"), this.imgW, this.imgH);
-    gl.uniform1fv(this.loc(d, "uHslHue[0]"), Float32Array.from(p.hsl.hue, n));
-    gl.uniform1fv(this.loc(d, "uHslSat[0]"), Float32Array.from(p.hsl.saturation, n));
-    gl.uniform1fv(this.loc(d, "uHslLum[0]"), Float32Array.from(p.hsl.luminance, n));
+    gl.uniform1i(this.loc(d, "uMono"), lkp.mono ? 1 : 0);
+    gl.uniform3fv(this.loc(d, "uMonoMix"), lkp.monoMix);
+    // lens vignetting correction (scene-referred)
+    const warp = this.warp(p);
+    gl.uniform1i(this.loc(d, "uVigOn"), warpHasVignette(warp) ? 1 : 0);
+    gl.uniform3fv(this.loc(d, "uVigK"), warp.vig);
+    f("uVigAmount", warp.vigAmount);
+    f("uMv", warp.mv);
+    f("uMvStart", warp.mvStart);
+    f("uRmax", warp.rmax);
+    f("uHs", warp.hs);
+    f("uCs", warp.cs);
+    gl.uniform1fv(this.loc(d, "uHslHue[0]"), add8(p.hsl.hue, lkp.bandHue));
+    gl.uniform1fv(this.loc(d, "uHslSat[0]"), add8(p.hsl.saturation, lkp.bandSat));
+    gl.uniform1fv(this.loc(d, "uHslLum[0]"), add8(p.hsl.luminance, lkp.bandLum));
     const gr = p.grading;
     gl.uniform3fv(this.loc(d, "uTintS"), tintOffset(gr.shadowHue, gr.shadowSat));
     gl.uniform3fv(this.loc(d, "uTintM"), tintOffset(gr.midHue, gr.midSat));
@@ -841,8 +927,11 @@ export class Renderer {
     return rotation % 180 === 0 ? c : { w: c.h, h: c.w };
   }
 
-  /** Draw the developed image to the canvas with pan/zoom, crop/straighten, rotation and output sharpening. */
-  draw(view: View, sharpen: number, rotation = 0, crop?: Crop | null, cropMode = false): void {
+  /**
+   * Draw the developed image to the canvas with pan/zoom, crop/straighten,
+   * lens and perspective correction, rotation and output sharpening.
+   */
+  draw(view: View, sharpen: number, rotation = 0, crop?: Crop | null, cropMode = false, warp?: Warp | null): void {
     const gl = this.gl;
     const cw = this.canvas.width;
     const ch = this.canvas.height;
@@ -859,6 +948,25 @@ export class Renderer {
     gl.uniform2f(this.loc(pr, "uTexel"), 1 / this.imgW, 1 / this.imgH);
     gl.uniform1f(this.loc(pr, "uSharpen"), Math.max(0, Math.min(1.5, sharpen / 100)));
     gl.uniform3f(this.loc(pr, "uOutside"), 0.09, 0.09, 0.09);
+    // lens distortion / chromatic aberration / perspective, twin of geometry.rs
+    gl.uniform2f(this.loc(pr, "uSize"), this.imgW, this.imgH);
+    const wp = warp && !warpIsIdentity(warp) ? warp : null;
+    gl.uniform1i(this.loc(pr, "uWarpOn"), wp ? 1 : 0);
+    if (wp) {
+      gl.uniform1i(this.loc(pr, "uTransformOn"), wp.transformOn ? 1 : 0);
+      gl.uniform1f(this.loc(pr, "uHs"), wp.hs);
+      gl.uniform2f(this.loc(pr, "uOfs"), wp.ox, wp.oy);
+      gl.uniform1f(this.loc(pr, "uInvScale"), wp.invScale);
+      gl.uniform2f(this.loc(pr, "uAspect"), wp.ax, wp.ay);
+      gl.uniform2f(this.loc(pr, "uCosSinT"), wp.cos, wp.sin);
+      gl.uniform2f(this.loc(pr, "uPersp"), wp.ph, wp.pv);
+      gl.uniform1i(this.loc(pr, "uDistModel"), wp.distModel);
+      gl.uniform3fv(this.loc(pr, "uDist"), wp.dist);
+      gl.uniform1f(this.loc(pr, "uDistAmount"), wp.distAmount);
+      gl.uniform1f(this.loc(pr, "uCs"), wp.cs);
+      gl.uniform1f(this.loc(pr, "uKm"), wp.km);
+      gl.uniform2f(this.loc(pr, "uTca"), wp.tcaR, wp.tcaB);
+    }
     // crop/straighten: the quad shows the crop output (or the whole straightened
     // canvas in crop mode); uUvMat maps quad coords to source texture coords
     const out = this.cropSize(crop, cropMode);

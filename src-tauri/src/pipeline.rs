@@ -10,7 +10,10 @@
 
 use crate::color::{dot3, mul3, DWG_TO_SRGB, LUMA_709, LUMA_PROXY};
 use crate::detail::{sample_q, DetailMaps};
+use crate::geometry::{Lens, LensProfile, Transform, Warp};
+use crate::heal::HealSpot;
 use crate::mask::{self, Mask};
+use crate::profiles;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -81,8 +84,27 @@ pub struct EditParams {
     /// local adjustments ("overlays")
     #[serde(default)]
     pub masks: Vec<Mask>,
+    /// picture profile id (see profiles.rs)
+    #[serde(default = "default_profile")]
+    pub profile: String,
+    /// perspective / geometry
+    #[serde(default)]
+    pub transform: Transform,
+    /// lens correction settings
+    #[serde(default)]
+    pub lens: Lens,
+    /// calibration resolved for this photo (cached in the sidecar)
+    #[serde(default)]
+    pub lens_profile: Option<LensProfile>,
+    /// object remover spots
+    #[serde(default)]
+    pub heal: Vec<HealSpot>,
     pub hsl: HslParams,
     pub curves: Curves,
+}
+
+fn default_profile() -> String {
+    "standard".into()
 }
 
 impl EditParams {
@@ -94,6 +116,11 @@ impl EditParams {
             || self.masks.iter().any(|m| {
                 m.is_active() && (m.adjust.texture != 0.0 || m.adjust.clarity != 0.0 || m.adjust.dehaze != 0.0)
             })
+    }
+
+    /// Resolved geometry for an image of this size.
+    pub fn warp(&self, width: usize, height: usize) -> Warp {
+        Warp::new(&self.transform, &self.lens, self.lens_profile.as_ref(), width, height)
     }
 }
 
@@ -392,6 +419,11 @@ impl Default for EditParams {
             crop: Crop::default(),
             dehaze: 0.0,
             masks: Vec::new(),
+            profile: default_profile(),
+            transform: Transform::default(),
+            lens: Lens::default(),
+            lens_profile: None,
+            heal: Vec::new(),
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],
@@ -481,6 +513,9 @@ pub struct Uniforms {
     tint_h: [f32; 3],
     balance: f32,
     grading_on: bool,
+    /// picture profile: monochrome conversion
+    mono: bool,
+    mono_mix: [f32; 3],
 }
 
 /// Tint offset for a hue/saturation pair: hue colour minus its luminance,
@@ -495,38 +530,49 @@ pub fn tint_offset(hue_deg: f32, sat: f32) -> [f32; 3] {
 impl Uniforms {
     pub fn from_params(p: &EditParams) -> Self {
         let n = |v: f32| (v / 100.0).clamp(-1.0, 1.0);
-        let n8 = |a: &[f32; 8]| {
+        let _n8 = |a: &[f32; 8]| {
             let mut o = [0.0f32; 8];
             for i in 0..8 {
                 o[i] = n(a[i]);
             }
             o
         };
+        // the picture profile adds to the user's own settings
+        let lk = profiles::look(&p.profile);
+        let add8 = |a: &[f32; 8], b: &[f32; 8]| {
+            let mut o = [0.0f32; 8];
+            for i in 0..8 {
+                o[i] = n(a[i] + b[i]);
+            }
+            o
+        };
         Self {
             tone: Tone {
                 exposure: p.exposure.clamp(-10.0, 10.0),
-                contrast: n(p.contrast),
+                contrast: n(p.contrast + lk.contrast),
                 highlights: n(p.highlights),
                 shadows: n(p.shadows),
                 whites: n(p.whites),
                 blacks: n(p.blacks),
-                temp: n(p.temperature),
+                temp: n(p.temperature + lk.temperature),
                 tint: n(p.tint),
-                saturation: n(p.saturation),
+                saturation: n(p.saturation + lk.saturation),
                 texture: n(p.texture),
                 clarity: n(p.clarity),
                 dehaze: n(p.dehaze),
             },
-            vibrance: n(p.vibrance),
+            vibrance: n(p.vibrance + lk.vibrance),
             base_contrast: p.base_contrast.clamp(0.0, 1.0),
-            hsl_hue: n8(&p.hsl.hue),
-            hsl_sat: n8(&p.hsl.saturation),
-            hsl_lum: n8(&p.hsl.luminance),
+            hsl_hue: add8(&p.hsl.hue, &lk.band_hue),
+            hsl_sat: add8(&p.hsl.saturation, &lk.band_sat),
+            hsl_lum: add8(&p.hsl.luminance, &lk.band_lum),
             tint_s: tint_offset(p.grading.shadow_hue, p.grading.shadow_sat),
             tint_m: tint_offset(p.grading.mid_hue, p.grading.mid_sat),
             tint_h: tint_offset(p.grading.high_hue, p.grading.high_sat),
             balance: n(p.grading.balance),
             grading_on: p.grading.shadow_sat > 0.0 || p.grading.mid_sat > 0.0 || p.grading.high_sat > 0.0,
+            mono: lk.mono,
+            mono_mix: lk.mono_mix,
         }
     }
 }
@@ -694,6 +740,25 @@ pub struct LocalMaps {
 /// tone for this pixel; `u` holds the global-only settings.
 #[inline]
 pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
+    develop_pixel_gain(rgb, maps, t, u, lut, 1.0)
+}
+
+/// As `develop_pixel`, with a scene-referred gain applied first. The gain
+/// carries lens vignetting correction, which must act on linear light.
+#[inline]
+pub fn develop_pixel_gain(
+    rgb: [f32; 3],
+    maps: Option<LocalMaps>,
+    t: &Tone,
+    u: &Uniforms,
+    lut: &[f32],
+    gain: f32,
+) -> [f32; 3] {
+    let rgb = if gain == 1.0 {
+        rgb
+    } else {
+        [rgb[0] * gain, rgb[1] * gain, rgb[2] * gain]
+    };
     // 1. white balance
     let mut c = [
         rgb[0] * (1.0 + 0.4 * t.temp),
@@ -765,6 +830,11 @@ pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Unifo
             g[c] = (g[c] + ws * u.tint_s[c] + wm * u.tint_m[c] + wh * u.tint_h[c]).clamp(0.0, 1.0);
         }
     }
+    // 7c. picture profile: monochrome conversion
+    if u.mono {
+        let y = (g[0] * u.mono_mix[0] + g[1] * u.mono_mix[1] + g[2] * u.mono_mix[2]).clamp(0.0, 1.0);
+        return [y, y, y];
+    }
     // 8. HSL bands
     let mut hsv = rgb2hsv(g);
     let hdeg = hsv[0] * 360.0;
@@ -804,6 +874,8 @@ pub fn develop_buffer(
     let height = src.len() / 3 / width.max(1);
     let masks = mask::prepare(&params.masks, width, height);
     let needs_luma = masks.iter().any(|m| m.needs_luma());
+    let warp = params.warp(width, height);
+    let vignette = warp.has_vignette();
     let row_len = width * 3;
     let mut out = vec![0.0f32; src.len()];
     out.par_chunks_mut(row_len)
@@ -822,12 +894,17 @@ pub fn develop_buffer(
                     }
                 });
                 let rgb = [p[0], p[1], p[2]];
+                let gain = if vignette {
+                    warp.vignette_gain(x as f32 + 0.5, y as f32 + 0.5)
+                } else {
+                    1.0
+                };
                 let o = if masks.is_empty() {
-                    develop_pixel(rgb, m, &u.tone, &u, lut)
+                    develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain)
                 } else {
                     // luminance masks look at the globally developed picture
                     let luma = if needs_luma {
-                        dot3(develop_pixel(rgb, m, &u.tone, &u, lut), LUMA_709)
+                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain), LUMA_709)
                     } else {
                         0.0
                     };
@@ -836,7 +913,7 @@ pub fn develop_buffer(
                     for pm in &masks {
                         t.add(&pm.mask.adjust, pm.weight(px, py, luma));
                     }
-                    develop_pixel(rgb, m, &t.finish(), &u, lut)
+                    develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain)
                 };
                 d[0] = o[0];
                 d[1] = o[1];

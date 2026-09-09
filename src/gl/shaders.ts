@@ -20,6 +20,44 @@ const vec3 LUMA_709 = vec3(0.2126, 0.7152, 0.0722);
 float lumaProxy(vec3 c) { return dot(c, LUMA_PROXY); }
 `;
 
+/** Maximum object-remover spots evaluated in one pass. */
+export const MAX_HEAL = 16;
+
+/**
+ * Object remover: copy feathered patches from elsewhere in the same photo.
+ * Twin of src-tauri/src/heal.rs. Every spot reads the untouched source, and
+ * the per-spot colour offset is computed on the CPU with the same formula.
+ */
+export const HEAL_FRAG = `#version 300 es
+precision highp float;
+precision highp sampler2D;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uSrc;
+uniform vec2 uSize;
+uniform int uNumSpots;
+uniform vec4 uSpotPos[${MAX_HEAL}];   // dest x, dest y, source x, source y (px)
+uniform vec4 uSpotShape[${MAX_HEAL}]; // radius px, hardness, opacity, unused
+uniform vec3 uSpotOffset[${MAX_HEAL}];
+float smooth01(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
+void main() {
+  vec2 p = vUv * uSize;
+  vec3 c = texture(uSrc, vUv).rgb;
+  for (int i = 0; i < ${MAX_HEAL}; i++) {
+    if (i >= uNumSpots) break;
+    vec4 pos = uSpotPos[i];
+    vec4 sh = uSpotShape[i];
+    float d = length(p - pos.xy) / sh.x;
+    if (d >= 1.0) continue;
+    float soft = max(1.0 - sh.y, 0.01);
+    float a = sh.z * (1.0 - smooth01((d - sh.y) / soft));
+    if (a <= 0.0) continue;
+    vec3 s = max(texture(uSrc, (pos.zw + (p - pos.xy)) / uSize).rgb + uSpotOffset[i], 0.0);
+    c = mix(c, s, a);
+  }
+  outColor = vec4(c, 1.0);
+}`;
+
 /** Source linear -> sqrt-domain (r, g, b, luma) for noise distances. */
 export const PREP_FRAG = `#version 300 es
 precision highp float;
@@ -257,6 +295,18 @@ uniform vec3 uTintM;
 uniform vec3 uTintH;
 uniform float uBalance;
 uniform int uGradingOn;
+// picture profile: monochrome
+uniform int uMono;
+uniform vec3 uMonoMix;
+// lens vignetting correction (scene-referred gain), twin of geometry.rs
+uniform int uVigOn;
+uniform vec3 uVigK;
+uniform float uVigAmount;
+uniform float uMv;
+uniform float uMvStart;
+uniform float uRmax;
+uniform float uHs;
+uniform float uCs;
 // masks
 uniform int uNumMasks;
 uniform int uUseLumaG;
@@ -361,7 +411,24 @@ vec3 hsv2rgb(vec3 h) {
   return vec3(v, p, q);
 }
 
+// Twin of geometry.rs Warp::vignette_gain
+float vignetteGain(vec2 p) {
+  vec2 d = (p - uSize * 0.5) / uHs;
+  float r2 = dot(d, d);
+  float g = 1.0;
+  if (uVigK != vec3(0.0)) {
+    float rc2 = r2 * uCs * uCs;
+    float f = 1.0 + uVigK.x * rc2 + uVigK.y * rc2 * rc2 + uVigK.z * rc2 * rc2 * rc2;
+    g *= 1.0 + uVigAmount * (1.0 / clamp(f, 0.05, 20.0) - 1.0);
+  }
+  if (uMv != 0.0) {
+    g *= 1.0 + uMv * smooth01((sqrt(r2) - uMvStart) / max(uRmax - uMvStart, 1e-3));
+  }
+  return max(g, 0.0);
+}
+
 vec3 developPixel(vec3 rgb, Tone t) {
+  if (uVigOn == 1) rgb *= vignetteGain(vUv * uSize);
   // 1. white balance
   vec3 c = rgb * vec3(1.0 + 0.4 * t.temp, 1.0 - 0.25 * t.tint, 1.0 - 0.4 * t.temp);
   // 2. exposure
@@ -410,6 +477,11 @@ vec3 developPixel(vec3 rgb, Tone t) {
     float wh = smooth01((lb - 0.5) / 0.5);
     float wm = max(1.0 - ws - wh, 0.0);
     g = clamp(g + ws * uTintS + wm * uTintM + wh * uTintH, 0.0, 1.0);
+  }
+  // 7c. picture profile: monochrome conversion
+  if (uMono == 1) {
+    float y = clamp(dot(g, uMonoMix), 0.0, 1.0);
+    return vec3(y);
   }
   // 8. HSL bands
   vec3 hsv = rgb2hsv(g);
@@ -597,32 +669,99 @@ void main() {
   outColor = vec4(c, 1.0);
 }`;
 
+/**
+ * Display pass: perspective transform + lens distortion + chromatic
+ * aberration, then output sharpening. `vUv` arrives already carrying the crop
+ * offset and straighten rotation (uUvMat), so `vUv * uSize` is the canvas
+ * point that geometry.rs feeds to `Warp::map_rgb`.
+ */
 export const PRESENT_FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uTex;
 uniform vec2 uTexel;
+uniform vec2 uSize;
 uniform float uSharpen;
 uniform vec3 uOutside;   // colour for texels outside the image (straighten corners)
+// warp, twin of geometry.rs Warp
+uniform int uWarpOn;
+uniform int uTransformOn;
+uniform float uHs;
+uniform vec2 uOfs;
+uniform float uInvScale;
+uniform vec2 uAspect;
+uniform vec2 uCosSinT;
+uniform vec2 uPersp;
+uniform int uDistModel;
+uniform vec3 uDist;
+uniform float uDistAmount;
+uniform float uCs;
+uniform float uKm;
+uniform vec2 uTca;
 const vec3 LUMA = vec3(0.2126, 0.7152, 0.0722);
-void main() {
-  if (any(lessThan(vUv, vec2(0.0))) || any(greaterThan(vUv, vec2(1.0)))) {
-    outColor = vec4(uOutside, 1.0);
-    return;
+
+float distortRadius(float r) {
+  float rd = r;
+  if (uDistModel != 0) {
+    float rc = r * uCs;
+    float f;
+    if (uDistModel == 1) f = rc * (uDist.x * rc * rc * rc + uDist.y * rc * rc + uDist.z * rc + 1.0 - uDist.x - uDist.y - uDist.z);
+    else if (uDistModel == 2) f = rc * (1.0 - uDist.x + uDist.x * rc * rc);
+    else f = rc * (1.0 + uDist.x * rc * rc + uDist.y * rc * rc * rc * rc);
+    rd = r + uDistAmount * (f / uCs - r);
   }
-  vec3 c = texture(uTex, vUv).rgb;
+  if (uKm != 0.0) rd *= 1.0 + uKm * rd * rd;
+  return rd;
+}
+
+vec2 mapNorm(vec2 p) {
+  vec2 q = (p - uSize * 0.5) / uHs;
+  if (uTransformOn == 1) {
+    q = (q - uOfs) * uInvScale / uAspect;
+    vec2 r = vec2(uCosSinT.x * q.x - uCosSinT.y * q.y, uCosSinT.y * q.x + uCosSinT.x * q.y);
+    q = r / max(1.0 + dot(uPersp, r), 0.05);
+  }
+  float r = length(q);
+  if (r > 1e-6) q *= distortRadius(r) / r;
+  return q;
+}
+
+vec2 toUv(vec2 q, float k) { return (uSize * 0.5 + q * k * uHs) / uSize; }
+
+float sharpLuma(vec2 uv) { return dot(texture(uTex, uv).rgb, LUMA); }
+
+void main() {
+  vec2 uv = vUv;
+  vec3 c;
+  if (uWarpOn == 1) {
+    vec2 q = mapNorm(vUv * uSize);
+    uv = toUv(q, 1.0);
+    vec2 uvR = toUv(q, uTca.x);
+    vec2 uvB = toUv(q, uTca.y);
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+      outColor = vec4(uOutside, 1.0);
+      return;
+    }
+    c = vec3(texture(uTex, uvR).r, texture(uTex, uv).g, texture(uTex, uvB).b);
+  } else {
+    if (any(lessThan(uv, vec2(0.0))) || any(greaterThan(uv, vec2(1.0)))) {
+      outColor = vec4(uOutside, 1.0);
+      return;
+    }
+    c = texture(uTex, uv).rgb;
+  }
   if (uSharpen > 0.0) {
     float b = 0.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2(-1.0, -1.0)).rgb, LUMA) * 1.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2( 0.0, -1.0)).rgb, LUMA) * 2.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2( 1.0, -1.0)).rgb, LUMA) * 1.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2(-1.0,  0.0)).rgb, LUMA) * 2.0;
+    b += sharpLuma(uv + uTexel * vec2(-1.0, -1.0)) * 1.0;
+    b += sharpLuma(uv + uTexel * vec2( 0.0, -1.0)) * 2.0;
+    b += sharpLuma(uv + uTexel * vec2( 1.0, -1.0)) * 1.0;
+    b += sharpLuma(uv + uTexel * vec2(-1.0,  0.0)) * 2.0;
     b += dot(c, LUMA) * 4.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2( 1.0,  0.0)).rgb, LUMA) * 2.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2(-1.0,  1.0)).rgb, LUMA) * 1.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2( 0.0,  1.0)).rgb, LUMA) * 2.0;
-    b += dot(texture(uTex, vUv + uTexel * vec2( 1.0,  1.0)).rgb, LUMA) * 1.0;
+    b += sharpLuma(uv + uTexel * vec2( 1.0,  0.0)) * 2.0;
+    b += sharpLuma(uv + uTexel * vec2(-1.0,  1.0)) * 1.0;
+    b += sharpLuma(uv + uTexel * vec2( 0.0,  1.0)) * 2.0;
+    b += sharpLuma(uv + uTexel * vec2( 1.0,  1.0)) * 1.0;
     b /= 16.0;
     c += (dot(c, LUMA) - b) * uSharpen;
   }

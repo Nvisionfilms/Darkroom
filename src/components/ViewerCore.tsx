@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
 import { getWatermarkPixels, openWatermark } from "../api";
 import {
@@ -12,10 +12,13 @@ import {
   type BrushSettings,
   type StrokeCursor,
 } from "../mask";
+import { canvasToSource, makeWarp, sourceToCanvas, warpIsIdentity } from "../geometry";
+import { healKey, healOffset } from "../heal";
 import {
   cropIsIdentity,
   type Crop,
   type EditParams,
+  type HealSpot,
   type Histogram,
   type Mask,
   type Mirror,
@@ -25,6 +28,7 @@ import {
 } from "../types";
 import type { GuideKind } from "./CropGuides";
 import { CropOverlay } from "./CropOverlay";
+import { HealOverlay } from "./HealOverlay";
 import { MaskOverlay } from "./MaskOverlay";
 import { MirrorOverlay, type Mapper } from "./MirrorOverlay";
 import { WatermarkOverlay } from "./WatermarkOverlay";
@@ -63,6 +67,13 @@ interface Props {
   onPickWb?: (rgb: [number, number, number]) => void;
   guide?: GuideKind;
   guideFlip?: number;
+  /** object remover: clicking the photo places a spot */
+  healTool?: boolean;
+  healRadius?: number;
+  selectedSpotId?: string | null;
+  onSelectSpot?: (id: string | null) => void;
+  onAddSpot?: (x: number, y: number) => void;
+  onSpotChange?: (s: HealSpot) => void;
   /** clockwise degrees, applied even in before/after mode */
   rotation: number;
   /** when set, the mirror window handles are drawn and editable */
@@ -106,6 +117,12 @@ export function Viewer({
   onPickWb,
   guide = "thirds",
   guideFlip = 0,
+  healTool = false,
+  healRadius = 0.03,
+  selectedSpotId = null,
+  onSelectSpot,
+  onAddSpot,
+  onSpotChange,
   rotation,
   mirror,
   onMirrorChange,
@@ -134,6 +151,13 @@ export function Viewer({
   cropModeRef.current = cropMode;
   const paramsRef = useRef(params);
   paramsRef.current = params;
+  // lens + perspective geometry, recomputed only when its inputs change
+  const warp = useMemo(
+    () => (image ? makeWarp(params.transform, params.lens, params.lensProfile, image.width, image.height) : null),
+    [image, params.transform, params.lens, params.lensProfile],
+  );
+  const warpRef = useRef(warp);
+  warpRef.current = warp;
   const showMaskId = showMask && selectedMaskId ? selectedMaskId : null;
   const showMaskRef = useRef<string | null>(null);
   showMaskRef.current = showMaskId;
@@ -237,7 +261,7 @@ export function Viewer({
       developDirty.current = false;
       histPending.current = true;
     }
-    r.draw(viewRef.current, params.sharpen, rotRef.current, cropRef.current, cropModeRef.current);
+    r.draw(viewRef.current, params.sharpen, rotRef.current, cropRef.current, cropModeRef.current, warpRef.current);
     onZoom(zoomLabel());
     if (mirror?.enabled || watermark?.enabled || cropMode || selectedMaskId || wbPick) setOverlayTick((t) => t + 1);
     // read the histogram only once the GPU is done, so the UI never waits on it
@@ -361,6 +385,18 @@ export function Viewer({
     }
   }, [params.masks, image, requestRender]);
 
+  // object remover: hand the spots and their colour matches to the renderer
+  const spotsKey = healKey(params.heal);
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !image) return;
+    const offsets = params.heal.map((s) => healOffset(image, s));
+    r.setHeal(params.heal, offsets, spotsKey);
+    developDirty.current = true;
+    requestRender();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [spotsKey, image, requestRender]);
+
   // let the app push rasters in (subject detection)
   useEffect(() => {
     if (!maskApiRef) return;
@@ -456,6 +492,18 @@ export function Viewer({
     const strokes = [...m.strokes, p.stroke];
     brushCache.current.set(m.id, strokes); // the raster already contains this stroke
     onMaskChange({ ...m, strokes });
+  };
+
+  // ---- object remover: click the photo to place a spot ----
+  const placeSpot = (e: React.MouseEvent) => {
+    const mp = mapperRef.current;
+    const r = rendererRef.current;
+    if (!mp || !r || !onAddSpot) return;
+    e.stopPropagation();
+    const rect = (e.currentTarget as Element).getBoundingClientRect();
+    const [ix, iy] = mp.toImage(e.clientX - rect.left, e.clientY - rect.top);
+    if (ix < 0 || iy < 0 || ix >= r.imgW || iy >= r.imgH) return;
+    onAddSpot(ix / r.imgW, iy / r.imgH);
   };
 
   // ---- white balance eyedropper ----
@@ -564,7 +612,7 @@ export function Viewer({
         const d = r.displaySize(rot, crop, false);
         const s = Math.min(c.width / d.w, c.height / d.h);
         const fitView: View = { scale: s, x: (c.width - d.w * s) / 2, y: (c.height - d.h * s) / 2 };
-        r.draw(fitView, p.sharpen, rot, crop, false);
+        r.draw(fitView, p.sharpen, rot, crop, false, warpRef.current);
         const w = Math.max(1, Math.round(d.w * s));
         const h = Math.max(1, Math.round(d.h * s));
         const k = Math.min(1, CAPTURE_MAX_EDGE / Math.max(w, h));
@@ -580,7 +628,7 @@ export function Viewer({
         }
         if (showMaskRef.current) r.runDevelop(p, showMaskRef.current);
         developDirty.current = false;
-        r.draw(viewRef.current, p.sharpen, rotRef.current, cropRef.current, cropModeRef.current);
+        r.draw(viewRef.current, p.sharpen, rotRef.current, cropRef.current, cropModeRef.current, warpRef.current);
       });
     return () => {
       captureRef.current = null;
@@ -652,7 +700,13 @@ export function Viewer({
   let mapper: Mapper | null = null;
   const rr = rendererRef.current;
   const maskTool = !cropMode && !!selectedMask;
-  if ((cropMode || mirror?.enabled || (watermark?.enabled && watermark.path) || maskTool || wbPick) && rr && rr.imgW && image) {
+  const healActive = !cropMode && (healTool || params.heal.length > 0);
+  if (
+    (cropMode || mirror?.enabled || (watermark?.enabled && watermark.path) || maskTool || wbPick || healActive) &&
+    rr &&
+    rr.imgW &&
+    image
+  ) {
     void overlayTick;
     const d = dpr();
     const v = viewRef.current;
@@ -700,17 +754,22 @@ export function Viewer({
       }
       return [x0 + u * out.w, y0 + vv * out.h];
     };
-    // source coords <-> canvas coords (rotate about the centre by the straighten angle)
+    // source coords <-> canvas coords: the lens/perspective warp (when any is
+    // active), then the straighten rotation about the centre
+    const wp = warp && !warpIsIdentity(warp) ? warp : null;
     const toScreen = (ix: number, iy: number): [number, number] => {
-      const rx = ix - cx;
-      const ry = iy - cy;
+      const [wx, wy] = wp ? sourceToCanvas(wp, ix, iy) : [ix, iy];
+      const rx = wx - cx;
+      const ry = wy - cy;
       return canvasToScreen(cx + ca * rx + sa * ry, cy - sa * rx + ca * ry);
     };
     const toImage = (sxs: number, sys: number): [number, number] => {
       const [sx, sy] = screenToCanvas(sxs, sys);
       const rx = sx - cx;
       const ry = sy - cy;
-      return [cx + ca * rx - sa * ry, cy + sa * rx + ca * ry];
+      const px = cx + ca * rx - sa * ry;
+      const py = cy + sa * rx + ca * ry;
+      return wp ? canvasToSource(wp, px, py) : [px, py];
     };
     mapper = {
       toScreen,
@@ -732,7 +791,13 @@ export function Viewer({
       className="viewer"
       onWheel={onWheel}
       onPointerDown={onPointerDown}
-      onPointerMove={onPointerMove}
+      onPointerMove={(e) => {
+        if (healTool) {
+          const r = (e.currentTarget as Element).getBoundingClientRect();
+          setBrushPos([e.clientX - r.left, e.clientY - r.top]);
+        }
+        onPointerMove(e);
+      }}
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerUp}
       onDoubleClick={onDoubleClick}
@@ -756,6 +821,26 @@ export function Viewer({
           <rect className="brush-surface" x={0} y={0} width="100%" height="100%" />
           {brushPos && (
             <circle cx={brushPos[0]} cy={brushPos[1]} r={brushRadiusCss} className={"brush-cursor" + (brush.erase ? " erase" : "")} />
+          )}
+        </svg>
+      )}
+      {mapper && healActive && onSpotChange && onSelectSpot && (
+        <svg className={"mirror-overlay heal-overlay" + (healTool ? " placing" : "")}>
+          {healTool && <rect className="heal-surface" x={0} y={0} width="100%" height="100%" onClick={placeSpot} />}
+          <HealOverlay
+            spots={params.heal}
+            selectedId={selectedSpotId}
+            mapper={mapper}
+            onSelect={onSelectSpot}
+            onChange={onSpotChange}
+          />
+          {healTool && brushPos && (
+            <circle
+              cx={brushPos[0]}
+              cy={brushPos[1]}
+              r={healRadius * Math.max(mapper.width, mapper.height) * mapper.scale}
+              className="heal-cursor"
+            />
           )}
         </svg>
       )}

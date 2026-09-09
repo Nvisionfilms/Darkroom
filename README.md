@@ -16,6 +16,10 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 
 - **Motion Trails**: repeated semi-transparent directional echoes from the existing developed photo, with Amount, Direction, Distance, Copies, Fade, Blur, and Opacity controls.
 - **Auto Edit**: a deterministic one-click recipe over normal develop sliders (contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise, sharpening). Every result remains editable. It is not generative AI and never adds, removes, or replaces image content.
+- **Lens Corrections**: distortion, vignetting and colour fringing from the bundled open [lensfun](https://lensfun.github.io) database, matched automatically from the camera and lens recorded in the file, plus manual sliders for lenses that are not in it.
+- **Transform**: perspective correction (vertical and horizontal keystone), rotate, aspect, scale and shift.
+- **Picture Profiles**: Standard, Neutral, Portrait, Landscape, Vivid, Flat and three monochrome looks. A profile only moves normal develop controls, so every result stays editable.
+- **Object Remover**: heal and clone spots that copy real pixels from elsewhere in the same photograph, with an automatic patch search. Heal also matches the brightness and colour of the new surroundings. Patch-based, not generative.
 - **Masks (local adjustments)**: linear and radial gradients, a brush, a luminance range, and an on-device **Subject** mask (a small salient-object model runs locally; nothing is uploaded and no pixels are generated). Each mask carries its own Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temperature, Tint, Saturation, Texture, Clarity and Dehaze, can be inverted, and shows as a red overlay (M). Masks are stored in the sidecar and applied identically on export.
 - **Dehaze**: dark-channel haze removal (or added haze with negative values), globally and per mask.
 - **White balance eyedropper**: click something neutral in the photo to set Temperature and Tint.

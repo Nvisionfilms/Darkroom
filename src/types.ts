@@ -251,6 +251,93 @@ export function newMask(kind: MaskKind, existing: Mask[]): Mask {
   };
 }
 
+/** Perspective / geometry sliders. All -100..100 except rotate, in degrees. */
+export interface Transform {
+  vertical: number;
+  horizontal: number;
+  rotate: number;
+  scale: number;
+  aspect: number;
+  x: number;
+  y: number;
+}
+
+/** Lens correction settings; see src-tauri/src/geometry.rs. */
+export interface Lens {
+  profile: boolean;
+  distortionAmount: number;
+  vignetteAmount: number;
+  ca: boolean;
+  manualDistortion: number;
+  manualVignette: number;
+  manualVignetteMid: number;
+  manualCaR: number;
+  manualCaB: number;
+}
+
+/** Calibration resolved from the bundled lensfun database. */
+export interface LensProfile {
+  name: string;
+  /** 0 none, 1 ptlens, 2 poly3, 3 poly5 */
+  distModel: number;
+  dist: [number, number, number];
+  vig: [number, number, number];
+  tca: [number, number];
+  cropScale: number;
+}
+
+/** One object-remover spot. Positions are fractions of the image size. */
+export interface HealSpot {
+  id: string;
+  /** "heal" matches the surroundings, "clone" copies as-is */
+  kind: "heal" | "clone";
+  enabled: boolean;
+  x: number;
+  y: number;
+  sx: number;
+  sy: number;
+  /** fraction of the long edge */
+  radius: number;
+  feather: number;
+  opacity: number;
+}
+
+export function defaultTransform(): Transform {
+  return { vertical: 0, horizontal: 0, rotate: 0, scale: 0, aspect: 0, x: 0, y: 0 };
+}
+
+export function defaultLens(): Lens {
+  return {
+    profile: true,
+    distortionAmount: 100,
+    vignetteAmount: 100,
+    ca: true,
+    manualDistortion: 0,
+    manualVignette: 0,
+    manualVignetteMid: 50,
+    manualCaR: 0,
+    manualCaB: 0,
+  };
+}
+
+let healCounter = 0;
+
+export function newHealSpot(x: number, y: number, radius: number, kind: "heal" | "clone" = "heal"): HealSpot {
+  healCounter += 1;
+  return {
+    id: `spot-${Date.now().toString(36)}-${healCounter}`,
+    kind,
+    enabled: true,
+    x,
+    y,
+    sx: x,
+    sy: y,
+    radius,
+    feather: 60,
+    opacity: 100,
+  };
+}
+
 export interface EditParams {
   exposure: number;
   contrast: number;
@@ -285,6 +372,14 @@ export interface EditParams {
   dehaze: number;
   /** local adjustments */
   masks: Mask[];
+  /** picture profile id, see profiles.ts */
+  profile: string;
+  transform: Transform;
+  lens: Lens;
+  /** calibration cached for this photo, or null when the lens is unknown */
+  lensProfile: LensProfile | null;
+  /** object remover spots */
+  heal: HealSpot[];
   hsl: HslParams;
   curves: Curves;
 }
@@ -311,6 +406,8 @@ export interface ImageInfo {
   metadata: Metadata;
   edits: EditParams | null;
   thumbnail: string;
+  /** lens calibration found for this camera and lens, if any */
+  lensProfile: LensProfile | null;
 }
 
 export interface PreviewImage {
@@ -408,6 +505,11 @@ export function defaultParams(): EditParams {
     crop: defaultCrop(),
     dehaze: 0,
     masks: [],
+    profile: "standard",
+    transform: defaultTransform(),
+    lens: defaultLens(),
+    lensProfile: null,
+    heal: [],
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),

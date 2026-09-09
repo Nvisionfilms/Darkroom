@@ -39,7 +39,9 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
         let wm = pipeline::WatermarkImage::load(Path::new(&wmp.path))?;
         pipeline::watermark_pass(&mut developed, img.width, img.height, wmp, &wm);
     }
-    let (developed, cw, ch) = pipeline::crop_pass(&developed, img.width, img.height, &req.params.crop);
+    // crop + straighten + perspective + lens distortion/CA in one resample
+    let warp = req.params.warp(img.width, img.height);
+    let (developed, cw, ch) = crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
     let (developed, dw, dh) = pipeline::rotate(&developed, cw, ch, req.params.rotation);
     let mut buf: ImageBuffer<Rgb<f32>, Vec<f32>> =
         ImageBuffer::from_raw(dw as u32, dh as u32, developed).context("buffer size mismatch")?;
@@ -105,13 +107,22 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
 /// The scene-referred part of the pipeline that needs whole-image context:
 /// noise estimate -> NLM denoise -> local-contrast maps -> per-pixel develop.
 pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<f32> {
+    // Object remover first: the copied pixels then go through denoise and
+    // develop exactly like the rest of the frame.
+    let healed: std::borrow::Cow<[f32]> = if params.heal.iter().any(|s| s.is_active()) {
+        let mut d = img.data.clone();
+        crate::heal::heal_image(&mut d, img.width, img.height, &params.heal);
+        std::borrow::Cow::Owned(d)
+    } else {
+        std::borrow::Cow::Borrowed(&img.data)
+    };
     let np = NoiseParams::from_sliders(params.denoise_luma, params.denoise_chroma, params.denoise_detail);
     let denoised: std::borrow::Cow<[f32]> = if np.is_noop() {
-        std::borrow::Cow::Borrowed(&img.data)
+        healed
     } else {
-        let sigma = denoise::estimate_sigma(&img.data, img.width, img.height);
+        let sigma = denoise::estimate_sigma(&healed, img.width, img.height);
         log::info!("export denoise sigma={sigma:.5}");
-        std::borrow::Cow::Owned(denoise::denoise_image(&img.data, img.width, img.height, sigma, &np))
+        std::borrow::Cow::Owned(denoise::denoise_image(&healed, img.width, img.height, sigma, &np))
     };
     let maps = if params.needs_maps() {
         Some(detail::build(&denoised, img.width, img.height))

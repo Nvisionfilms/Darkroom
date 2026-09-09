@@ -13,6 +13,7 @@ import {
   saveSession,
   startMonitor,
   startTether,
+  findHealSource,
   startupFile,
   stopMonitor,
   stopTether,
@@ -22,6 +23,10 @@ import {
 import { MonitorPanel } from "./components/MonitorPanel";
 import { TetherPanel } from "./components/TetherPanel";
 import { MaskPanel } from "./components/MaskPanel";
+import { HealPanel } from "./components/HealPanel";
+import { LensPanel } from "./components/LensPanel";
+import { TransformPanel } from "./components/TransformPanel";
+import { PROFILES } from "./profiles";
 import { nextGuide, type GuideKind } from "./components/CropGuides";
 import type { CaptureFn, MaskApi } from "./components/ViewerCore";
 import { encodeRaster, whiteBalanceFor, type BrushSettings } from "./mask";
@@ -44,10 +49,12 @@ import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
 import {
   defaultParams,
+  newHealSpot,
   newMask,
   type EditParams,
   type Histogram as Hist,
   type ImageInfo,
+  type HealSpot,
   type Mask,
   type MaskKind,
   type MonitorInfo,
@@ -69,7 +76,10 @@ type InspectorKey =
   | "watermark"
   | "tether"
   | "monitor"
-  | "masks";
+  | "masks"
+  | "lens"
+  | "transform"
+  | "heal";
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
 const GUIDE_KEY = "darkroom.guide";
@@ -137,6 +147,7 @@ function placeholder(path: string): ImageInfo {
     metadata: { kind: "" },
     edits: null,
     thumbnail: "",
+    lensProfile: null,
   };
 }
 
@@ -208,6 +219,9 @@ export default function App() {
     tether: false,
     monitor: false,
     masks: false,
+    lens: false,
+    transform: false,
+    heal: false,
   });
   const updater = useUpdater(version);
   const saveTimer = useRef<number | null>(null);
@@ -242,6 +256,12 @@ export default function App() {
   const [guide, setGuide] = useState<GuideKind>(() => readPref(GUIDE_KEY, "thirds") as GuideKind);
   const [guideFlip, setGuideFlip] = useState(0);
   const [autoNr, setAutoNr] = useState(() => readPref(AUTO_NR_KEY, "0") === "1");
+  // object remover
+  const [healTool, setHealTool] = useState(false);
+  const [healRadius, setHealRadius] = useState(0.03);
+  const [healKind, setHealKind] = useState<"heal" | "clone">("heal");
+  const [selectedSpotId, setSelectedSpotId] = useState<string | null>(null);
+  const [healBusy, setHealBusy] = useState(false);
   const autoNrRef = useRef(autoNr);
   autoNrRef.current = autoNr;
 
@@ -324,8 +344,13 @@ export default function App() {
       setCropMode(false);
       setSelectedMaskId(null);
       setWbPick(false);
+      setHealTool(false);
+      setSelectedSpotId(null);
       let p = info.edits ?? defaultParamsForImage(info);
       if (!info.edits && autoNrRef.current && info.metadata.kind === "raw") p = { ...p, ...autoNoise(info.noiseSigma) };
+      // the lens calibration is derived from the file rather than user data,
+      // so always take the freshly resolved one
+      p = { ...p, lensProfile: info.lensProfile };
       setParams(p);
       setFiles((prev) => {
         const i = prev.findIndex((f) => f.path === info.path);
@@ -506,6 +531,67 @@ export default function App() {
     [params.masks, runDetectSubject],
   );
 
+  // ---- object remover ----
+  const addSpot = useCallback(
+    async (x: number, y: number) => {
+      const spot = newHealSpot(x, y, healRadius, healKind);
+      const avoid: [number, number, number][] = params.heal.map((s) => [s.x, s.y, s.radius]);
+      setParams((p) => ({ ...p, heal: [...p.heal, spot] }));
+      setSelectedSpotId(spot.id);
+      setHealBusy(true);
+      try {
+        const [sx, sy] = await findHealSource(x, y, healRadius, avoid);
+        setParams((p) => ({ ...p, heal: p.heal.map((s) => (s.id === spot.id ? { ...s, sx, sy } : s)) }));
+      } catch (e) {
+        setError("Object remover: " + String(e));
+      } finally {
+        setHealBusy(false);
+      }
+    },
+    [healRadius, healKind, params.heal],
+  );
+
+  const changeSpot = useCallback((s: HealSpot) => {
+    setParams((p) => ({ ...p, heal: p.heal.map((x) => (x.id === s.id ? s : x)) }));
+  }, []);
+
+  const deleteSpot = useCallback((id: string) => {
+    setParams((p) => ({ ...p, heal: p.heal.filter((x) => x.id !== id) }));
+    setSelectedSpotId((s) => (s === id ? null : s));
+  }, []);
+
+  const repickSpot = useCallback(
+    async (id: string) => {
+      const spot = params.heal.find((s) => s.id === id);
+      if (!spot) return;
+      const avoid: [number, number, number][] = params.heal
+        .filter((s) => s.id !== id)
+        .map((s) => [s.x, s.y, s.radius]);
+      setHealBusy(true);
+      try {
+        const [sx, sy] = await findHealSource(spot.x, spot.y, spot.radius, avoid);
+        setParams((p) => ({ ...p, heal: p.heal.map((s) => (s.id === id ? { ...s, sx, sy } : s)) }));
+      } catch (e) {
+        setError("Object remover: " + String(e));
+      } finally {
+        setHealBusy(false);
+      }
+    },
+    [params.heal],
+  );
+
+  const toggleHealTool = useCallback(() => {
+    setHealTool((v) => {
+      if (!v) {
+        setOpenSections((prev) => ({ ...prev, heal: true }));
+        setCropMode(false);
+        setSelectedMaskId(null);
+        setWbPick(false);
+      }
+      return !v;
+    });
+  }, []);
+
   // ---- white balance eyedropper ----
   const pickWb = useCallback((rgb: [number, number, number]) => {
     const wb = whiteBalanceFor(rgb[0], rgb[1], rgb[2]);
@@ -615,6 +701,16 @@ export default function App() {
       } else if (e.key === "O" && !command && cropMode) {
         e.preventDefault();
         setGuideFlip((f) => (f + 1) % 4);
+      } else if (e.key === "Escape" && healTool) {
+        e.preventDefault();
+        setHealTool(false);
+      } else if ((e.key === "[" || e.key === "]") && !command && healTool) {
+        e.preventDefault();
+        const k = e.key === "]" ? 1.25 : 0.8;
+        setHealRadius((r) => clamp(r * k, 0.003, 0.2));
+      } else if (e.key.toLowerCase() === "r" && !command && current) {
+        e.preventDefault();
+        toggleHealTool();
       } else if ((e.key === "[" || e.key === "]") && !command && selectedMask?.kind === "brush") {
         e.preventDefault();
         const k = e.key === "]" ? 1.25 : 0.8;
@@ -654,7 +750,20 @@ export default function App() {
       window.removeEventListener("keydown", down);
       window.removeEventListener("keyup", up);
     };
-  }, [openFiles, current, rotate, cropMode, toggleCropMode, wbPick, selectedMaskId, selectedMask?.kind, guide, changeGuide]);
+  }, [
+    openFiles,
+    current,
+    rotate,
+    cropMode,
+    toggleCropMode,
+    wbPick,
+    selectedMaskId,
+    selectedMask?.kind,
+    guide,
+    changeGuide,
+    healTool,
+    toggleHealTool,
+  ]);
 
   const set =
     <K extends keyof EditParams>(key: K) =>
@@ -755,6 +864,15 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={healTool ? "active" : ""}
+            onClick={toggleHealTool}
+            disabled={!current}
+            title="Object remover: copy over something you do not want"
+          >
+            <span className="tool-glyph">✚</span><span>Repair</span>
+          </button>
+          <button
+            type="button"
             onClick={() => {
               revealSection("mirror");
               revealSection("watermark");
@@ -818,6 +936,12 @@ export default function App() {
             onPickWb={pickWb}
             guide={guide}
             guideFlip={guideFlip}
+            healTool={healTool}
+            healRadius={healRadius}
+            selectedSpotId={selectedSpotId}
+            onSelectSpot={setSelectedSpotId}
+            onAddSpot={addSpot}
+            onSpotChange={changeSpot}
             rotation={params.rotation}
             mirror={params.mirror}
             onMirrorChange={set("mirror")}
@@ -853,11 +977,18 @@ export default function App() {
             <label className="field">
               <span>Profile</span>
               <select
-                value={params.baseContrast >= 0.5 ? "standard" : "linear"}
-                onChange={(e) => set("baseContrast")(e.target.value === "standard" ? 1 : 0)}
+                value={params.profile}
+                title={PROFILES.find((x) => x.id === params.profile)?.hint}
+                onChange={(e) => {
+                  const id = e.target.value;
+                  setParams((p) => ({ ...p, profile: id, baseContrast: id === "flat" ? 0 : 1 }));
+                }}
               >
-                <option value="standard">Standard</option>
-                <option value="linear">Linear (flat)</option>
+                {PROFILES.map((x) => (
+                  <option key={x.id} value={x.id}>
+                    {x.name}
+                  </option>
+                ))}
               </select>
             </label>
             <Slider label="Exposure" value={params.exposure} min={-5} max={5} step={0.05} onChange={set("exposure")} />
@@ -953,6 +1084,50 @@ export default function App() {
               onToggleMode={toggleCropMode}
               guide={guide}
               onGuide={changeGuide}
+            />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Lens Corrections"
+            open={openSections.lens}
+            onToggle={() => toggleSection("lens")}
+            note={current?.lensProfile ? <span className="section-note">auto</span> : undefined}
+          >
+            <LensPanel
+              lens={params.lens}
+              profile={params.lensProfile}
+              camera={current?.metadata.camera}
+              lensName={current?.metadata.lens}
+              onChange={set("lens")}
+            />
+          </InspectorSection>
+
+          <InspectorSection title="Transform" open={openSections.transform} onToggle={() => toggleSection("transform")}>
+            <TransformPanel transform={params.transform} onChange={set("transform")} />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Object Remover"
+            shortcut="R"
+            open={openSections.heal}
+            onToggle={() => toggleSection("heal")}
+            note={params.heal.length ? <span className="section-note">{params.heal.length}</span> : undefined}
+          >
+            <HealPanel
+              spots={params.heal}
+              selectedId={selectedSpotId}
+              active={healTool}
+              radius={healRadius}
+              kind={healKind}
+              busy={healBusy}
+              onToggle={toggleHealTool}
+              onRadius={setHealRadius}
+              onKind={setHealKind}
+              onSelect={setSelectedSpotId}
+              onChange={changeSpot}
+              onDelete={deleteSpot}
+              onClear={() => setParams((p) => ({ ...p, heal: [] }))}
+              onRepick={(id) => void repickSpot(id)}
             />
           </InspectorSection>
 

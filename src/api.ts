@@ -118,6 +118,19 @@ export async function supportedExtensions(): Promise<string[]> {
   return invoke<string[]>("supported_extensions");
 }
 
+/**
+ * Pick a source patch for an object-remover spot. `avoid` lists the other
+ * spots as [x, y, radius] so sources are not taken from them.
+ */
+export async function findHealSource(
+  x: number,
+  y: number,
+  radius: number,
+  avoid: [number, number, number][],
+): Promise<[number, number]> {
+  return invoke<[number, number]>("find_heal_source", { x, y, radius, avoid });
+}
+
 export async function pickImages(extensions: string[]): Promise<string[]> {
   const result = await open({
     multiple: true,
