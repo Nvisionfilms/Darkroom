@@ -1,6 +1,6 @@
 [package]
 name = "darkroom"
-version = "0.2.8"
+version = "0.2.9"
 description = "Darkroom - RAW photo editor"
 authors = ["Nvisionfilms"]
 edition = "2021"
