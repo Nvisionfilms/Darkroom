@@ -27,6 +27,7 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 - **White balance eyedropper**: click something neutral in the photo to set Temperature and Tint.
 - **Auto noise reduction**: sets the noise sliders from the measured noise level, optionally for every new RAW file.
 - **Crop guides**: Thirds, Grid, Golden Ratio, Golden Spiral, Golden Triangle and Diagonal (O cycles, Shift+O flips).
+- **Filmstrip thumbnails** generate on their own in the background, three at a time, so a restored session, a browsed folder or a tethered burst fills in without clicking each frame. RAW files use the camera’s embedded preview, which is far quicker than demosaicing.
 - **Tethered Capture**: Darkroom watches the folder your camera software saves into (EOS Utility, Imaging Edge Desktop, a camera Wi‑Fi/FTP push, or a card reader) and opens each shot as it finishes writing. USB and Wi‑Fi both work because the vendor app does the transfer. Tether → Tethered Capture → choose the folder → Start watching.
 - **Phone Monitor**: the app serves a live page on the local network (QR code in Tether → Phone Monitor). The phone shows the developed picture as you edit it plus the recent filmstrip. Nothing leaves the LAN and nothing is uploaded.
 - Motion Trails retain the legacy `mirror` sidecar key only for backwards compatibility with existing `.drk.json` edits.

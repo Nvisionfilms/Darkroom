@@ -14,6 +14,7 @@ pub mod preset;
 pub mod profiles;
 pub mod sidecar;
 pub mod tether;
+pub mod thumb;
 
 use decode::{LinearImage, Metadata};
 use pipeline::EditParams;
@@ -421,6 +422,17 @@ async fn find_heal_source(
     .map_err(|e| e.to_string())
 }
 
+/// A filmstrip thumbnail for a file that has not been opened yet. Cheap
+/// enough to run for a whole folder: RAW files use the camera preview.
+#[tauri::command]
+async fn get_thumbnail(path: String) -> Result<String, String> {
+    let p = path.clone();
+    tauri::async_runtime::spawn_blocking(move || thumb::thumbnail(Path::new(&p)))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)
+}
+
 /// Ids of the built-in picture profiles.
 #[tauri::command]
 fn picture_profiles() -> Vec<String> {
@@ -466,6 +478,7 @@ pub fn run() {
             publish_frame,
             find_heal_source,
             picture_profiles,
+            get_thumbnail,
             open_look,
             get_look_pixels,
             list_presets,

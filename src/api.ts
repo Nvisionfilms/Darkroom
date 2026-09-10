@@ -69,6 +69,15 @@ export async function getPreview(width: number, height: number, noiseSigma: numb
   return img;
 }
 
+/**
+ * A filmstrip thumbnail for a file that has not been opened yet. RAW files
+ * use the camera's own embedded preview, so this is quick enough to run over
+ * a whole folder.
+ */
+export async function getThumbnail(path: string): Promise<string> {
+  return invoke<string>("get_thumbnail", { path });
+}
+
 export async function saveEdits(path: string, edits: EditParams): Promise<void> {
   await invoke("save_edits", { path, edits });
 }

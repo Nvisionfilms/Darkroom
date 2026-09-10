@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
 import {
   getPreview,
+  getThumbnail,
   loadSession,
   monitorStatus,
   openImage,
@@ -544,6 +545,44 @@ export default function App() {
     },
     [params.masks, runDetectSubject],
   );
+
+  // ---- filmstrip thumbnails ----
+  // Files arrive as placeholders (session restore, Browse, a tethered burst).
+  // Their thumbnails are generated in the background, a few at a time, so the
+  // strip fills in without anyone having to click each frame.
+  const thumbSeen = useRef(new Set<string>());
+  const thumbBusy = useRef(0);
+  const thumbQueue = useRef<string[]>([]);
+
+  const pumpThumbnails = useCallback(() => {
+    const MAX_PARALLEL = 3;
+    while (thumbBusy.current < MAX_PARALLEL && thumbQueue.current.length > 0) {
+      const path = thumbQueue.current.shift()!;
+      thumbBusy.current += 1;
+      getThumbnail(path)
+        .then((thumbnail) => {
+          setFiles((prev) => prev.map((f) => (f.path === path && !f.thumbnail ? { ...f, thumbnail } : f)));
+        })
+        .catch(() => {
+          // unreadable or unsupported file: leave the placeholder in place
+        })
+        .finally(() => {
+          thumbBusy.current -= 1;
+          pumpThumbnails();
+        });
+    }
+  }, []);
+
+  useEffect(() => {
+    let queued = false;
+    for (const f of files) {
+      if (f.thumbnail || thumbSeen.current.has(f.path)) continue;
+      thumbSeen.current.add(f.path);
+      thumbQueue.current.push(f.path);
+      queued = true;
+    }
+    if (queued) pumpThumbnails();
+  }, [files, pumpThumbnails]);
 
   // ---- creative look (.cube) ----
   const loadLook = useCallback(async () => {
