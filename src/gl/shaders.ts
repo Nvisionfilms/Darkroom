@@ -1,6 +1,8 @@
 // GPU twin of src-tauri/src/pipeline.rs, denoise.rs, detail.rs and mask.rs.
 // Keep the math identical to the Rust code.
 
+import { ENCODE_LOG_GLSL } from "../camlog";
+
 export const VERTEX = `#version 300 es
 in vec2 aPos;
 uniform mat3 uTransform;
@@ -300,6 +302,8 @@ uniform float uLookAmount;
 uniform float uLookSize;
 uniform vec3 uLookMin;
 uniform vec3 uLookMax;
+uniform int uLookLog;       // 0 display-referred, else a camera log encoding
+uniform mat3 uLookMat;      // linear DWG -> camera gamut
 // lens vignetting correction (scene-referred gain), twin of geometry.rs
 uniform int uVigOn;
 uniform vec3 uVigK;
@@ -429,6 +433,8 @@ float vignetteGain(vec2 p) {
   return max(g, 0.0);
 }
 
+${ENCODE_LOG_GLSL}
+
 // Trilinear .cube sampling. Twin of Lut3d::sample in lut3d.rs: the half-texel
 // scale and offset make the lattice endpoints land exactly on 0 and 1.
 vec3 sampleLook(vec3 c) {
@@ -470,11 +476,14 @@ vec3 developPixel(vec3 rgb, Tone t) {
   s = max(s, 0.0);
   s = clamp(vec3(shoulder(s.r), shoulder(s.g), shoulder(s.b)), 0.0, 1.0);
   vec3 g = vec3(srgbEnc(s.r), srgbEnc(s.g), srgbEnc(s.b));
-  // 6. profile base curve + point curves
+  // 6. profile base curve
   g = vec3(baseCurve(g.r, uBaseContrast), baseCurve(g.g, uBaseContrast), baseCurve(g.b, uBaseContrast));
+  // 6a. a look built for camera log footage replaces the display render
+  if (uLookOn == 1 && uLookLog != 0) g = mix(g, sampleLook(encodeLog(uLookLog, uLookMat * c)), uLookAmount);
+  // 6b. point curves
   g = vec3(lut(1, lut(0, g.r)), lut(2, lut(0, g.g)), lut(3, lut(0, g.b)));
-  // 6b. creative look (.cube), blended by amount
-  if (uLookOn == 1) g = mix(g, sampleLook(g), uLookAmount);
+  // 6c. a display-referred look on the finished picture
+  if (uLookOn == 1 && uLookLog == 0) g = mix(g, sampleLook(g), uLookAmount);
   // 7. vibrance / saturation
   float mx = max(g.r, max(g.g, g.b));
   float mn = min(g.r, min(g.g, g.b));

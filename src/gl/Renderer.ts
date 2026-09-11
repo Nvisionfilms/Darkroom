@@ -12,6 +12,7 @@ import {
 import { maskKindCode, type Rect } from "../mask";
 import { makeWarp, warpHasVignette, warpIsIdentity, type Warp } from "../geometry";
 import { look as profileLook } from "../profiles";
+import { columnMajor, lookInput } from "../camlog";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
@@ -656,6 +657,10 @@ export class Renderer {
     this.lookPath = path;
     this.lookSize = 0;
     if (!rgbaF16 || !path || size < 2) return;
+    const max = gl.getParameter(gl.MAX_3D_TEXTURE_SIZE) as number;
+    if (size > max) {
+      throw new Error(`this graphics card supports looks up to ${max} points per axis; the file has ${size}`);
+    }
     this.lookTex = gl.createTexture()!;
     gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
     gl.texImage3D(gl.TEXTURE_3D, 0, gl.RGBA16F, size, size, size, 0, gl.RGBA, gl.HALF_FLOAT, rgbaF16);
@@ -805,6 +810,9 @@ export class Renderer {
     f("uLookSize", Math.max(2, this.lookSize));
     gl.uniform3f(this.loc(d, "uLookMin"), 0, 0, 0);
     gl.uniform3f(this.loc(d, "uLookMax"), 1, 1, 1);
+    const li = lookInput(p.look.input);
+    gl.uniform1i(this.loc(d, "uLookLog"), li.encoding);
+    gl.uniformMatrix3fv(this.loc(d, "uLookMat"), false, columnMajor(li.matrix));
     gl.activeTexture(gl.TEXTURE9);
     gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
     gl.uniform1i(this.loc(d, "uLook"), 9);

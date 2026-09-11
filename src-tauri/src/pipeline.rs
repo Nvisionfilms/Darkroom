@@ -120,6 +120,9 @@ pub struct Look {
     pub name: String,
     /// 0..100 blend with the un-looked image
     pub amount: f32,
+    /// what the LUT expects as input: "display" or a camera log space
+    /// (see camlog.rs INPUTS)
+    pub input: String,
 }
 
 impl Default for Look {
@@ -129,6 +132,7 @@ impl Default for Look {
             path: String::new(),
             name: String::new(),
             amount: 100.0,
+            input: "display".into(),
         }
     }
 }
@@ -551,6 +555,9 @@ pub struct Uniforms {
     mono_mix: [f32; 3],
     /// creative look blend, 0..1
     look_amount: f32,
+    /// look input encoding (camlog ENC_*) and linear DWG -> camera gamut matrix
+    look_log: u8,
+    look_mat: [[f32; 3]; 3],
 }
 
 /// Tint offset for a hue/saturation pair: hue colour minus its luminance,
@@ -613,6 +620,8 @@ impl Uniforms {
             } else {
                 0.0
             },
+            look_log: crate::camlog::input(&p.look.input).0,
+            look_mat: crate::camlog::input(&p.look.input).1,
         }
     }
 }
@@ -843,18 +852,30 @@ pub fn develop_pixel_gain(
         srgb_enc(shoulder(s[1].max(0.0)).clamp(0.0, 1.0)),
         srgb_enc(shoulder(s[2].max(0.0)).clamp(0.0, 1.0)),
     ];
-    // 6. profile base curve + point curves
+    // 6. profile base curve
     for v in g.iter_mut() {
         *v = base_curve(*v, u.base_contrast);
     }
+    // 6a. a look built for camera log footage replaces the display render:
+    // the graded scene-linear image is converted into the camera gamut,
+    // encoded with its log curve, and the LUT's output is blended in
+    if let Some(l) = look {
+        if u.look_log != 0 && u.look_amount > 0.0 {
+            let s = l.sample(crate::camlog::encode(u.look_log, mul3(&u.look_mat, c)));
+            for k in 0..3 {
+                g[k] += (s[k] - g[k]) * u.look_amount;
+            }
+        }
+    }
+    // 6b. point curves
     g = [
         lut_lookup(lut, 1, lut_lookup(lut, 0, g[0])),
         lut_lookup(lut, 2, lut_lookup(lut, 0, g[1])),
         lut_lookup(lut, 3, lut_lookup(lut, 0, g[2])),
     ];
-    // 6b. creative look (.cube), blended by amount
+    // 6c. a display-referred look (.cube) on the finished picture
     if let Some(l) = look {
-        if u.look_amount > 0.0 {
+        if u.look_log == 0 && u.look_amount > 0.0 {
             let s = l.sample(g);
             for c in 0..3 {
                 g[c] += (s[c] - g[c]) * u.look_amount;

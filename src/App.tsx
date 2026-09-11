@@ -33,6 +33,7 @@ import { HealPanel } from "./components/HealPanel";
 import { LensPanel } from "./components/LensPanel";
 import { TransformPanel } from "./components/TransformPanel";
 import { PROFILES } from "./profiles";
+import { detectLookInput } from "./camlog";
 import { LookRow } from "./components/LookRow";
 import { PresetPanel } from "./components/PresetPanel";
 import { nextGuide, type GuideKind } from "./components/CropGuides";
@@ -591,7 +592,8 @@ export default function App() {
       const path = await pickCube();
       if (!path) return;
       const info = await openLook(path);
-      setParams((p) => ({ ...p, look: { enabled: true, path, name: info.name, amount: p.look.amount || 100 } }));
+      const input = detectLookInput(`${info.name} ${path.split(/[\\/]/).pop() ?? ""}`);
+      setParams((p) => ({ ...p, look: { enabled: true, path, name: info.name, amount: p.look.amount || 100, input } }));
     } catch (e) {
       setError(`Could not read the .cube file: ${String(e)}`);
     } finally {

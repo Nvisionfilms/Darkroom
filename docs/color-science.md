@@ -26,7 +26,8 @@ colours outside the display gamut compress instead of clipping.
 | Midtone Detail | **Clarity**: `log2` luma minus a 2%-of-long-edge Gaussian, weighted to midtones (full within +-1.5 EV of mid grey), soft-limited with `tanh` so halos stay bounded. Negative values soften. |
 | (Structure, Capture One / Nik) | **Texture**: band-pass of the log luma between sigma 1 px and sigma 4 px, so it boosts surface detail without amplifying single-pixel noise. |
 | Color Boost | Vibrance (boosts low-saturation pixels more than saturated ones). |
-| DaVinci Intermediate curve | Encoder/decoder in `color.rs` for future LUT support; the pipeline does not need it internally. |
+| DaVinci Intermediate curve | Encoder/decoder in `color.rs`; used to feed LUTs whose input is DaVinci Intermediate / Wide Gamut. |
+| Color Space Transform before a camera LUT | `camlog.rs`: linear DWG is converted to the LUT's camera gamut (S-Gamut3.Cine, S-Gamut3, Cinema Gamut, Blackmagic Wide Gamut Gen 5, DWG) and encoded with its published log curve (S-Log3, Canon Log 3 v1.2, Blackmagic Film Gen 5, DaVinci Intermediate) before the LUT is sampled. |
 
 Local-contrast radii scale with the long edge, so the preview (<= 2560 px) and the
 full-resolution export look the same.
@@ -77,4 +78,4 @@ Darkroom's denoiser (`denoise.rs` / `DENOISE_FRAG`):
 - Output to Display P3 / Adobe RGB / Rec.2020 and HDR output transforms.
 - Input ICC profiles for JPEG/TIFF.
 - Resolve's colour warper / hue-vs-hue style curves.
-- S-Log2/S-Log3 and other camera log inputs, plus .cube LUTs on the DI encoding.
+- S-Log2, ARRI LogC and other camera log inputs beyond S-Log3, Canon Log 3, Blackmagic Film Gen 5 and DaVinci Intermediate.

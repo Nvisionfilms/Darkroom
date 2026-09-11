@@ -16,7 +16,7 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 
 - **Motion Trails**: repeated semi-transparent directional echoes from the existing developed photo, with Amount, Direction, Distance, Copies, Fade, Blur, and Opacity controls.
 - **Auto Edit**: a deterministic one-click recipe over normal develop sliders (contrast, highlights/shadows, vibrance/saturation, texture/clarity, denoise, sharpening). Every result remains editable. It is not generative AI and never adds, removes, or replaces image content.
-- **Picture Profiles and Looks**: alongside the built-in profiles, load any `.cube` look-up table (1D or 3D, up to 64 points per axis) with an Amount slider. The look is applied after the point curves, so the tone controls above it still work in scene-referred light and vibrance, HSL and colour grading still work on top.
+- **Picture Profiles and Looks**: alongside the built-in profiles, load any `.cube` look-up table (1D or 3D, up to 129 points per axis, so Resolve's 33- and 65-point exports load) with an Amount slider. A **LUT input** setting tells Darkroom what the LUT was built for: a finished Rec.709/sRGB picture, or camera log footage (Sony S-Log3 with S-Gamut3.Cine or S-Gamut3, Canon Log 3 / Cinema Gamut, Blackmagic Film Gen 5, DaVinci Intermediate / Wide Gamut). For a log LUT the photo is converted into that camera's gamut and log curve first, exactly as a Resolve colour space transform would, using each maker's published specification. The input is detected from the file name, e.g. `SLog3SGamut3.CineToLC-709.cube`. The look is applied after the point curves, so the tone controls above it still work in scene-referred light and vibrance, HSL and colour grading still work on top.
 - **Presets**: save the current develop settings under a name and apply them to any other photo. A preset carries tone, colour, curves, detail, profile, look and lens settings; it never carries the crop, perspective, masks or retouch spots, so applying one never moves the picture around. Presets live in the app data folder.
 - **Lens Corrections**: distortion, vignetting and colour fringing from the bundled open [lensfun](https://lensfun.github.io) database, matched automatically from the camera and lens recorded in the file, plus manual sliders for lenses that are not in it.
 - **Transform**: perspective correction (vertical and horizontal keystone), rotate, aspect, scale and shift.
@@ -39,6 +39,15 @@ bun install
 bun run tauri dev
 bun run tauri build
 ```
+
+## Testing
+
+```
+bun run test                      # pipeline checks, unit tests, type check
+bun run test -- --app photo.CR3   # also launches the app and runs the UI smoke test (Windows)
+```
+
+The pipeline checks (`src-tauri/src/checks.rs`) run the whole develop pipeline on synthetic images, so they need no photos and run in CI. They check that neutral settings change nothing, that a technical S-Log3 LUT fed through the S-Log3 input lands on the flat render, that retouch spots stay inside their circle, that presets never carry crop or masks, and that old sidecars still open. The smoke test (`scripts/smoke.mjs`) drives the real window through every major tool on a temporary copy of the photo and fails on any error.
 
 ## Release notes
 

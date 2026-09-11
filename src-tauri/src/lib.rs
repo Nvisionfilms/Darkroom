@@ -1,3 +1,6 @@
+pub mod camlog;
+#[cfg(test)]
+mod checks;
 pub mod color;
 pub mod decode;
 pub mod denoise;

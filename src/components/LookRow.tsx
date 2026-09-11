@@ -1,3 +1,4 @@
+import { LOOK_INPUTS } from "../camlog";
 import type { Look } from "../types";
 import { Slider } from "./Slider";
 
@@ -37,10 +38,24 @@ export function LookRow({ look, busy, onLoad, onChange }: Props) {
               <input type="checkbox" checked={look.enabled} onChange={(e) => onChange({ ...look, enabled: e.target.checked })} />
               Apply
             </label>
-            <button className="tab" onClick={() => onChange({ enabled: true, path: "", name: "", amount: 100 })}>
+            <button className="tab" onClick={() => onChange({ enabled: true, path: "", name: "", amount: 100, input: "display" })}>
               Remove
             </button>
           </div>
+          <label className="field">
+            <span>LUT input</span>
+            <select
+              value={look.input ?? "display"}
+              title="What the LUT was built for. Camera log LUTs (Sony S-Log3, Canon Log 3, Blackmagic Film) need the matching input."
+              onChange={(e) => onChange({ ...look, input: e.target.value })}
+            >
+              {LOOK_INPUTS.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                </option>
+              ))}
+            </select>
+          </label>
           <Slider
             label="Look amount"
             value={look.amount}

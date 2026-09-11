@@ -309,10 +309,12 @@ export interface Look {
   name: string;
   /** 0..100 blend with the un-looked image */
   amount: number;
+  /** what the LUT expects as input: "display" or a camera log space (camlog.ts) */
+  input: string;
 }
 
 export function defaultLook(): Look {
-  return { enabled: true, path: "", name: "", amount: 100 };
+  return { enabled: true, path: "", name: "", amount: 100, input: "display" };
 }
 
 /** A saved set of develop settings. `settings` is an EditParams subset. */

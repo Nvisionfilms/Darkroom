@@ -22,9 +22,11 @@ pub struct Lut3d {
     pub data: Vec<f32>,
 }
 
-/// Cubes larger than this are rejected: 64 is the largest size in common use
-/// and the texture cost grows with the cube of the size.
-const MAX_SIZE: usize = 64;
+/// Cubes larger than this are rejected. Resolve and most grading tools export
+/// 33 and 65 points; 129 covers the rare high-precision cubes. The texture cost
+/// grows with the cube of the size (129 points is about 17 MB as half floats),
+/// and WebGL2 guarantees 3D textures of at least 256 per axis.
+pub const MAX_SIZE: usize = 129;
 /// A 1D cube is expanded to this lattice size.
 const EXPAND_1D: usize = 33;
 
@@ -224,6 +226,34 @@ mod tests {
                 assert!((o[i] - c[i]).abs() < 1e-5, "{c:?} -> {o:?}");
             }
         }
+    }
+
+    #[test]
+    fn sixty_five_point_cube_loads() {
+        // the size Resolve exports by default for high-quality LUTs
+        let n = 65;
+        let mut text = format!("TITLE \"Resolve 65\"\nLUT_3D_SIZE {n}\n");
+        for b in 0..n {
+            for g in 0..n {
+                for r in 0..n {
+                    let s = (n - 1) as f32;
+                    text.push_str(&format!("{} {} {}\n", r as f32 / s, g as f32 / s, b as f32 / s));
+                }
+            }
+        }
+        let lut = Lut3d::parse(&text, "x".into()).unwrap();
+        assert_eq!(lut.size, 65);
+        let o = lut.sample([0.3, 0.6, 0.9]);
+        for (got, want) in o.iter().zip([0.3f32, 0.6, 0.9]) {
+            assert!((got - want).abs() < 1e-4, "{o:?}");
+        }
+        assert_eq!(lut.to_rgba_f16().len(), 65 * 65 * 65 * 4 * 2);
+    }
+
+    #[test]
+    fn oversized_cube_is_rejected() {
+        let text = format!("LUT_3D_SIZE {}\n", MAX_SIZE + 1);
+        assert!(Lut3d::parse(&text, "x".into()).is_err());
     }
 
     #[test]

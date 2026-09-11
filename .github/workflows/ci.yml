@@ -29,6 +29,9 @@ jobs:
       - run: bun run build
       - run: cargo check --manifest-path src-tauri/Cargo.toml
 
+      # Pipeline checks on synthetic images plus unit tests. No photos needed.
+      - run: cargo test --lib --manifest-path src-tauri/Cargo.toml
+
       # Build the same NSIS package shipped to Windows users. This catches
       # installer regressions that TypeScript/Rust compile checks cannot see.
       - name: Build Windows NSIS installer
