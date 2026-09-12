@@ -317,6 +317,53 @@ export function defaultLook(): Look {
   return { enabled: true, path: "", name: "", amount: 100, input: "display" };
 }
 
+/**
+ * Double exposure: a second photograph composited onto this one. See
+ * blend.ts for the modes and src-tauri/src/blend.rs for the maths.
+ */
+export interface Blend {
+  enabled: boolean;
+  /** the second photograph; any format the app can open, RAW included */
+  path: string;
+  /** file name, shown in the panel */
+  name: string;
+  /** see BLEND_MODES in blend.ts */
+  mode: string;
+  /** 0..100 */
+  opacity: number;
+  /** exposure of the second picture, in stops */
+  exposure: number;
+  /** 10..400, percent of the fitted size */
+  scale: number;
+  /** -100..100, percent of half the frame */
+  x: number;
+  y: number;
+  /** degrees, clockwise */
+  rotation: number;
+  flip: boolean;
+  invert: boolean;
+  /** "cover", "contain" or "stretch" */
+  fit: string;
+}
+
+export function defaultBlend(): Blend {
+  return {
+    enabled: true,
+    path: "",
+    name: "",
+    mode: "expose",
+    opacity: 100,
+    exposure: 0,
+    scale: 100,
+    x: 0,
+    y: 0,
+    rotation: 0,
+    flip: false,
+    invert: false,
+    fit: "cover",
+  };
+}
+
 /** A saved set of develop settings. `settings` is an EditParams subset. */
 export interface Preset {
   name: string;
@@ -442,6 +489,8 @@ export interface EditParams {
   lensProfile: LensProfile | null;
   /** object remover spots */
   heal: HealSpot[];
+  /** double exposure: a second photograph composited onto this one */
+  blend: Blend;
   hsl: HslParams;
   curves: Curves;
 }
@@ -573,6 +622,7 @@ export function defaultParams(): EditParams {
     lens: defaultLens(),
     lensProfile: null,
     heal: [],
+    blend: defaultBlend(),
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),

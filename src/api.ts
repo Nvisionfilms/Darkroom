@@ -108,6 +108,35 @@ export async function getLookPixels(): Promise<Uint16Array> {
   return new Uint16Array(buf);
 }
 
+/**
+ * Decode the second picture of a double exposure on the Rust side; returns
+ * its name and the size of the preview copy.
+ */
+export async function openBlend(path: string): Promise<{ path: string; name: string; width: number; height: number }> {
+  return invoke<{ path: string; name: string; width: number; height: number }>("open_blend", { path });
+}
+
+/** The loaded second picture as linear RGB half floats, as getPreview gives. */
+export async function getBlendPixels(): Promise<Uint16Array> {
+  const buf = await invoke<ArrayBuffer>("get_blend_pixels");
+  return new Uint16Array(buf);
+}
+
+/** One photo, for the double exposure. */
+export async function pickPhoto(extensions: string[]): Promise<string | null> {
+  const result = await open({
+    multiple: false,
+    directory: false,
+    title: "Choose the second photo",
+    filters: [
+      { name: "Images", extensions },
+      { name: "All files", extensions: ["*"] },
+    ],
+  });
+  if (!result) return null;
+  return Array.isArray(result) ? result[0] : result;
+}
+
 export async function pickCube(): Promise<string | null> {
   const result = await open({
     multiple: false,

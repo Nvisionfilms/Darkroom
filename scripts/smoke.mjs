@@ -20,6 +20,9 @@ if (!source || !existsSync(source)) {
 const dir = mkdtempSync(join(tmpdir(), "darkroom-smoke-"));
 const photo = join(dir, basename(source)).split("\\").join("/");
 copyFileSync(source, photo);
+// the same picture again, to stand in for the second exposure
+const second = join(dir, "second-" + basename(source)).split("\\").join("/");
+copyFileSync(source, second);
 const sidecar = () => {
   try {
     return JSON.parse(readFileSync(photo + ".drk.json", "utf8")).edits;
@@ -202,6 +205,29 @@ await step("preset saves, applies and deletes", async () => {
   await js(`[...document.querySelectorAll('.preset-panel .mask-row')].find(r => r.textContent.includes(${JSON.stringify(name)})).querySelector('.mask-delete').click(); true`);
   expect(await waitFor(`![...document.querySelectorAll('.preset-panel .mask-name')].some(n => n.textContent === ${JSON.stringify(name)})`, 5000), "preset was not deleted");
 });
+
+await step("double exposure loads, blends and clears", async () => {
+    await js(`__smoke.open('Double Exposure'); true`);
+    await sleep(300);
+    expect(await js(`!!document.querySelector('.blend-drop')`), "no drop zone");
+    await js(`window.__darkroom.doubleExpose(${JSON.stringify(second)})`);
+    expect(await waitFor(`!!document.querySelector('.blend-file')`, 20000), "the second photo did not load");
+    await sleep(1500);
+    expect(sidecar()?.blend?.path === second, `blend path is ${sidecar()?.blend?.path}`);
+    expect(sidecar()?.blend?.mode === "expose", "the default mode should be a true double exposure");
+    await js(`__smoke.slider(document.querySelector('.blend-panel'), 'Opacity', 60); true`);
+    await sleep(1200);
+    expect(sidecar()?.blend?.opacity === 60, `opacity is ${sidecar()?.blend?.opacity}`);
+    await js(
+      `(() => { const sel = document.querySelector('.blend-panel select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'screen'); sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
+    );
+    await sleep(1200);
+    expect(sidecar()?.blend?.mode === "screen", `mode is ${sidecar()?.blend?.mode}`);
+    await js(`__smoke.button('Remove').click(); true`);
+    expect(await waitFor(`!document.querySelector('.blend-file')`, 5000), "the second photo was not removed");
+    await sleep(1200);
+    expect(!sidecar()?.blend?.path, "the sidecar still carries a second photo");
+  });
 
 await step("no errors at the end", async () => {
   await sleep(500);

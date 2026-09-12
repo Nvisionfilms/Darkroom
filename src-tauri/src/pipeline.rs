@@ -8,6 +8,7 @@
 //!   highlight shoulder -> sRGB OETF -> base curve -> point curves ->
 //!   vibrance/saturation -> HSL -> [sharpen on output]
 
+use crate::blend::{self, Blend};
 use crate::color::{dot3, mul3, DWG_TO_SRGB, LUMA_709, LUMA_PROXY};
 use crate::detail::{sample_q, DetailMaps};
 use crate::geometry::{Lens, LensProfile, Transform, Warp};
@@ -103,6 +104,9 @@ pub struct EditParams {
     /// object remover spots
     #[serde(default)]
     pub heal: Vec<HealSpot>,
+    /// double exposure: a second photograph composited onto this one
+    #[serde(default)]
+    pub blend: Blend,
     pub hsl: HslParams,
     pub curves: Curves,
 }
@@ -461,6 +465,7 @@ impl Default for EditParams {
             lens: Lens::default(),
             lens_profile: None,
             heal: Vec::new(),
+            blend: Blend::default(),
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],
@@ -558,6 +563,8 @@ pub struct Uniforms {
     /// look input encoding (camlog ENC_*) and linear DWG -> camera gamut matrix
     look_log: u8,
     look_mat: [[f32; 3]; 3],
+    /// double exposure blend mode (blend::MODE_*)
+    pub blend_mode: u32,
 }
 
 /// Tint offset for a hue/saturation pair: hue colour minus its luminance,
@@ -622,6 +629,7 @@ impl Uniforms {
             },
             look_log: crate::camlog::input(&p.look.input).0,
             look_mat: crate::camlog::input(&p.look.input).1,
+            blend_mode: blend::mode_id(&p.blend.mode),
         }
     }
 }
@@ -652,6 +660,19 @@ fn shoulder(x: f32) -> f32 {
     } else {
         K + (1.0 - K) * (1.0 - (-(x - K) / (1.0 - K)).exp())
     }
+}
+
+/// Step 5 on its own: linear DaVinci Wide Gamut light to a gamma-encoded
+/// sRGB picture. The double exposure runs its overlay through the same
+/// transform so the two pictures meet in one display space.
+#[inline]
+pub fn display_encode(c: [f32; 3]) -> [f32; 3] {
+    let s = gamut_compress(mul3(&DWG_TO_SRGB, c));
+    [
+        srgb_enc(shoulder(s[0].max(0.0)).clamp(0.0, 1.0)),
+        srgb_enc(shoulder(s[1].max(0.0)).clamp(0.0, 1.0)),
+        srgb_enc(shoulder(s[2].max(0.0)).clamp(0.0, 1.0)),
+    ]
 }
 
 #[inline]
@@ -789,7 +810,7 @@ pub struct LocalMaps {
 /// tone for this pixel; `u` holds the global-only settings.
 #[inline]
 pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
-    develop_pixel_gain(rgb, maps, t, u, lut, 1.0, None)
+    develop_pixel_gain(rgb, maps, t, u, lut, 1.0, None, None)
 }
 
 /// As `develop_pixel`, with a scene-referred gain applied first. The gain
@@ -803,6 +824,7 @@ pub fn develop_pixel_gain(
     lut: &[f32],
     gain: f32,
     look: Option<&Lut3d>,
+    bl: Option<([f32; 3], f32)>,
 ) -> [f32; 3] {
     let rgb = if gain == 1.0 {
         rgb
@@ -819,6 +841,16 @@ pub fn develop_pixel_gain(
     let ev = 2f32.powf(t.exposure);
     for v in c.iter_mut() {
         *v = (*v * ev).max(0.0);
+    }
+    // 2a. double exposure, the scene-referred way: the second picture is
+    // added as light before the tone mapping, so where the two overlap the
+    // highlights roll off together exactly as they would in camera
+    if let Some((o, a)) = bl {
+        if u.blend_mode == blend::MODE_EXPOSE && a > 0.0 {
+            for k in 0..3 {
+                c[k] += o[k] * a;
+            }
+        }
     }
     if let Some(m) = maps {
         // 2b. dehaze
@@ -846,12 +878,7 @@ pub fn develop_pixel_gain(
         *v *= ratio;
     }
     // 5. display transform: DWG -> linear sRGB, gamut compress, shoulder, encode
-    let s = gamut_compress(mul3(&DWG_TO_SRGB, c));
-    let mut g = [
-        srgb_enc(shoulder(s[0].max(0.0)).clamp(0.0, 1.0)),
-        srgb_enc(shoulder(s[1].max(0.0)).clamp(0.0, 1.0)),
-        srgb_enc(shoulder(s[2].max(0.0)).clamp(0.0, 1.0)),
-    ];
+    let mut g = display_encode(c);
     // 6. profile base curve
     for v in g.iter_mut() {
         *v = base_curve(*v, u.base_contrast);
@@ -880,6 +907,14 @@ pub fn develop_pixel_gain(
             for c in 0..3 {
                 g[c] += (s[c] - g[c]) * u.look_amount;
             }
+        }
+    }
+    // 6d. double exposure, the layer way: the familiar display-referred
+    // blend modes on the finished picture. Everything below still applies to
+    // the two pictures together.
+    if let Some((o, a)) = bl {
+        if u.blend_mode != blend::MODE_EXPOSE && a > 0.0 {
+            g = blend::mix_display(g, display_encode(o), u.blend_mode, a);
         }
     }
     // 7. vibrance / saturation
@@ -953,6 +988,19 @@ pub fn develop_buffer_look(
     lut: &[f32],
     look: Option<&Lut3d>,
 ) -> Vec<f32> {
+    develop_buffer_full(src, width, maps, params, lut, look, None)
+}
+
+/// As `develop_buffer_look`, with a second photograph blended in.
+pub fn develop_buffer_full(
+    src: &[f32],
+    width: usize,
+    maps: Option<&DetailMaps>,
+    params: &EditParams,
+    lut: &[f32],
+    look: Option<&Lut3d>,
+    over: Option<&blend::Source>,
+) -> Vec<f32> {
     let u = Uniforms::from_params(params);
     let height = src.len() / 3 / width.max(1);
     let masks = mask::prepare(&params.masks, width, height);
@@ -977,17 +1025,18 @@ pub fn develop_buffer_look(
                     }
                 });
                 let rgb = [p[0], p[1], p[2]];
+                let bl = over.map(|o| o.sample(x as f32 + 0.5, y as f32 + 0.5));
                 let gain = if vignette {
                     warp.vignette_gain(x as f32 + 0.5, y as f32 + 0.5)
                 } else {
                     1.0
                 };
                 let o = if masks.is_empty() {
-                    develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look)
+                    develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look, bl)
                 } else {
                     // luminance masks look at the globally developed picture
                     let luma = if needs_luma {
-                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look), LUMA_709)
+                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look, bl), LUMA_709)
                     } else {
                         0.0
                     };
@@ -996,7 +1045,7 @@ pub fn develop_buffer_look(
                     for pm in &masks {
                         t.add(&pm.mask.adjust, pm.weight(px, py, luma));
                     }
-                    develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain, look)
+                    develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain, look, bl)
                 };
                 d[0] = o[0];
                 d[1] = o[1];

@@ -293,7 +293,7 @@ fn presets_never_carry_frame_specific_fields() {
     let full = serde_json::to_value(EditParams::default()).unwrap();
     let preset = crate::preset::filter(&full);
     let obj = preset.as_object().unwrap();
-    for k in ["crop", "rotation", "transform", "masks", "heal", "lensProfile", "watermark", "mirror"] {
+    for k in ["crop", "rotation", "transform", "masks", "heal", "lensProfile", "watermark", "mirror", "blend"] {
         assert!(!obj.contains_key(k), "preset carries {k}");
     }
     for k in ["exposure", "curves", "profile", "look", "lens"] {
@@ -324,4 +324,149 @@ fn sidecars_round_trip_and_old_ones_still_open() {
     let opened: EditParams = serde_json::from_value(old).expect("an older sidecar must still open");
     assert_eq!(opened.profile, "standard");
     assert_eq!(opened.look.input, "display");
+}
+
+// ---- double exposure ----
+
+/// A solid-colour sRGB PNG on disk, to stand in for the second photograph.
+fn temp_png(name: &str, w: u32, h: u32, rgb: [u8; 3]) -> String {
+    let path = std::env::temp_dir().join(format!("darkroom-check-{}-{name}.png", std::process::id()));
+    let buf = image::ImageBuffer::from_fn(w, h, |_, _| image::Rgb(rgb));
+    buf.save(&path).expect("write test png");
+    path.to_string_lossy().into_owned()
+}
+
+fn blend(path: String, mode: &str) -> crate::blend::Blend {
+    crate::blend::Blend {
+        path,
+        name: "check".into(),
+        mode: mode.into(),
+        ..Default::default()
+    }
+}
+
+#[test]
+fn double_exposure_at_zero_opacity_changes_nothing() {
+    let img = test_card();
+    let base = develop(&img, &quiet());
+    for mode in ["expose", "screen", "multiply", "softlight", "difference"] {
+        let mut p = quiet();
+        p.blend = blend(temp_png("blend-off", 32, 32, [200, 120, 60]), mode);
+        p.blend.opacity = 0.0;
+        assert_eq!(max_diff(&base, &develop(&img, &p)), 0.0, "mode {mode}");
+    }
+    // and the same with the layer switched off
+    let mut p = quiet();
+    p.blend = blend(temp_png("blend-off", 32, 32, [200, 120, 60]), "screen");
+    p.blend.enabled = false;
+    assert_eq!(max_diff(&base, &develop(&img, &p)), 0.0);
+}
+
+#[test]
+fn exposing_a_second_picture_only_adds_light() {
+    let img = test_card();
+    let base = develop(&img, &quiet());
+    let mut p = quiet();
+    p.blend = blend(temp_png("blend-grey", 40, 40, [128, 128, 128]), "expose");
+    let out = develop(&img, &p);
+    // a second exposure can only ever brighten the negative
+    for (a, b) in out.iter().zip(&base) {
+        assert!(*a >= *b - 1e-5, "the double exposure darkened a pixel: {a} < {b}");
+    }
+    assert!(mean_diff(&out, &base) > 0.05, "the second exposure did nothing");
+}
+
+#[test]
+fn a_scaled_down_overlay_leaves_the_rest_of_the_frame_alone() {
+    let img = test_card();
+    let base = develop(&img, &quiet());
+    let mut p = quiet();
+    p.blend = blend(temp_png("blend-small", 40, 40, [255, 255, 255]), "screen");
+    p.blend.fit = "contain".into();
+    p.blend.scale = 25.0;
+    let out = develop(&img, &p);
+    let corner = |v: &[f32], x: usize, y: usize| {
+        let i = (y * W + x) * 3;
+        [v[i], v[i + 1], v[i + 2]]
+    };
+    for (x, y) in [(0, 0), (W - 1, 0), (0, H - 1), (W - 1, H - 1)] {
+        assert_eq!(corner(&out, x, y), corner(&base, x, y), "corner {x},{y} moved");
+    }
+    // the middle, where it does sit, is screened towards white
+    let mid = (H / 2 * W + W / 2) * 3;
+    assert!(out[mid] > base[mid] + 0.1, "the overlay is missing from the centre");
+}
+
+#[test]
+fn blend_modes_pull_the_picture_the_way_they_say() {
+    let img = test_card();
+    let base = develop(&img, &quiet());
+    let grey = temp_png("blend-mid", 40, 40, [128, 128, 128]);
+    let mean = |v: &[f32]| v.iter().sum::<f32>() / v.len() as f32;
+    let with = |mode: &str| {
+        let mut p = quiet();
+        p.blend = blend(grey.clone(), mode);
+        develop(&img, &p)
+    };
+    assert!(mean(&with("screen")) > mean(&base), "screen must lighten");
+    assert!(mean(&with("multiply")) < mean(&base), "multiply must darken");
+    // lighten and darken never cross the original in the wrong direction
+    for (a, b) in with("lighten").iter().zip(&base) {
+        assert!(*a >= *b - 1e-5, "lighten darkened a pixel");
+    }
+    for (a, b) in with("darken").iter().zip(&base) {
+        assert!(*a <= *b + 1e-5, "darken lightened a pixel");
+    }
+    // normal at full opacity replaces the picture with a flat frame
+    let flat = with("normal");
+    let first = [flat[0], flat[1], flat[2]];
+    for px in flat.chunks_exact(3) {
+        assert!(max_diff(px, &first) < 1e-4, "normal is not flat: {px:?} vs {first:?}");
+    }
+}
+
+#[test]
+fn an_unreadable_second_picture_is_skipped_rather_than_fatal() {
+    let img = test_card();
+    let base = develop(&img, &quiet());
+    let mut p = quiet();
+    p.blend = blend("Z:/no/such/photo.jpg".into(), "screen");
+    assert_eq!(max_diff(&base, &develop(&img, &p)), 0.0);
+}
+
+// ---- colour management ----
+
+/// Every exported file must be tagged sRGB. The preview canvas is colour
+/// managed by the webview, so an untagged export only matches the app by luck:
+/// on a calibrated or wide-gamut display the two drift apart badly.
+#[test]
+fn exports_are_tagged_as_srgb() {
+    let img = test_card();
+    let dir = std::env::temp_dir();
+    for (ext, format, depth) in [("jpg", "jpeg", 8), ("png", "png", 8), ("png", "png", 16), ("tif", "tiff", 16)] {
+        let out = dir.join(format!("darkroom-icc-{}-{format}{depth}.{ext}", std::process::id()));
+        let req = crate::export::ExportRequest {
+            out_path: out.to_string_lossy().into_owned(),
+            format: format.into(),
+            quality: 90,
+            bit_depth: depth,
+            max_long_edge: None,
+            params: quiet(),
+            lut: Vec::new(),
+        };
+        crate::export::export(&img, &req).unwrap_or_else(|e| panic!("export {format}{depth}: {e:#}"));
+        let bytes = std::fs::read(&out).expect("read the export back");
+        // each container carries the profile its own way: JPEG in an APP2
+        // segment introduced by "ICC_PROFILE", PNG deflated inside an iCCP
+        // chunk, TIFF verbatim in tag 34675
+        let profile = crate::icc::srgb();
+        let has = |needle: &[u8]| bytes.windows(needle.len()).any(|w| w == needle);
+        let found = match format {
+            "jpeg" => has(b"ICC_PROFILE"),
+            "png" => has(b"iCCP"),
+            _ => has(&profile[..64]),
+        };
+        assert!(found, "{format} {depth}-bit carries no ICC profile");
+        std::fs::remove_file(&out).ok();
+    }
 }

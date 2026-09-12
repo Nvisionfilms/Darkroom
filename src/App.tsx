@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   getPreview,
   getThumbnail,
@@ -17,8 +18,10 @@ import {
   deletePreset,
   findHealSource,
   listPresets,
+  openBlend,
   openLook,
   pickCube,
+  pickPhoto,
   savePreset,
   startupFile,
   stopMonitor,
@@ -36,6 +39,7 @@ import { PROFILES } from "./profiles";
 import { detectLookInput } from "./camlog";
 import { LookRow } from "./components/LookRow";
 import { PresetPanel } from "./components/PresetPanel";
+import { DoubleExposurePanel } from "./components/DoubleExposurePanel";
 import { nextGuide, type GuideKind } from "./components/CropGuides";
 import type { CaptureFn, MaskApi } from "./components/ViewerCore";
 import { encodeRaster, whiteBalanceFor, type BrushSettings } from "./mask";
@@ -57,6 +61,7 @@ import { Viewer } from "./components/Viewer";
 import { WatermarkPanel } from "./components/WatermarkPanel";
 import { buildLut } from "./curve";
 import {
+  defaultBlend,
   defaultParams,
   newHealSpot,
   newMask,
@@ -91,6 +96,7 @@ type InspectorKey =
   | "lens"
   | "transform"
   | "heal"
+  | "blend"
   | "presets";
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
@@ -234,6 +240,7 @@ export default function App() {
     lens: false,
     transform: false,
     heal: false,
+    blend: false,
     presets: false,
   });
   const updater = useUpdater(version);
@@ -277,6 +284,9 @@ export default function App() {
   const [healBusy, setHealBusy] = useState(false);
   // creative look (.cube) and saved presets
   const [lookBusy, setLookBusy] = useState(false);
+  const [blendBusy, setBlendBusy] = useState(false);
+  const [blendDrop, setBlendDrop] = useState(false);
+  const blendZone = useRef<HTMLDivElement | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const autoNrRef = useRef(autoNr);
   autoNrRef.current = autoNr;
@@ -601,6 +611,69 @@ export default function App() {
     }
   }, []);
 
+  // ---- double exposure ----
+  // The second picture arrives either from the file dialog or from a file
+  // dragged onto the panel. Rust decodes it (RAW included) and keeps a
+  // preview-sized copy; the export reads the original again at full size.
+  const loadBlend = useCallback(
+    async (dropped?: string) => {
+      setBlendBusy(true);
+      try {
+        const path = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"]));
+        if (!path) return;
+        const info = await openBlend(path);
+        setParams((p) => ({
+          ...p,
+          blend: { ...defaultBlend(), ...p.blend, enabled: true, path, name: info.name },
+        }));
+        setOpenSections((prev) => ({ ...prev, blend: true }));
+      } catch (e) {
+        setError(`Could not read that photo: ${String(e)}`);
+      } finally {
+        setBlendBusy(false);
+      }
+    },
+    [extensions],
+  );
+
+  // Files dragged in from the desktop. Tauri owns the drag and drop, so the
+  // webview never sees an HTML dragover; the pointer position comes in
+  // physical pixels and is matched against the drop zone's own box.
+  useEffect(() => {
+    let un: (() => void) | undefined;
+    let cancelled = false;
+    const overZone = (x: number, y: number) => {
+      const el = blendZone.current;
+      if (!el) return false;
+      const r = el.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const cx = x / dpr;
+      const cy = y / dpr;
+      return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
+    };
+    void getCurrentWebview()
+      .onDragDropEvent((e) => {
+        const p = e.payload;
+        if (p.type === "over" || p.type === "enter") {
+          setBlendDrop(overZone(p.position.x, p.position.y));
+        } else if (p.type === "drop") {
+          const hit = overZone(p.position.x, p.position.y);
+          setBlendDrop(false);
+          if (hit && p.paths.length) void loadBlend(p.paths[0]);
+        } else {
+          setBlendDrop(false);
+        }
+      })
+      .then((f) => {
+        if (cancelled) f();
+        else un = f;
+      });
+    return () => {
+      cancelled = true;
+      un?.();
+    };
+  }, [loadBlend]);
+
   // ---- develop presets ----
   const refreshPresets = useCallback(() => {
     listPresets()
@@ -753,8 +826,15 @@ export default function App() {
   }, [cropMode, revealSection]);
 
   useEffect(() => {
-    (window as unknown as { __darkroom?: unknown }).__darkroom = { load, autoEdit };
-  }, [load, autoEdit]);
+    // the test harness drives the app through this handle; doubleExpose is
+    // loadBlend without the file dialog it cannot click
+    (window as unknown as { __darkroom?: unknown }).__darkroom = {
+      load,
+      autoEdit,
+      doubleExpose: (path: string) => loadBlend(path),
+      capture: (opts?: { full?: boolean }) => captureRef.current?.(opts) ?? null,
+    };
+  }, [load, autoEdit, loadBlend]);
 
   const startedRef = useRef(false);
   useEffect(() => {
@@ -975,6 +1055,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => {
+              revealSection("blend");
               revealSection("mirror");
               revealSection("watermark");
             }}
@@ -1272,6 +1353,23 @@ export default function App() {
               onBrush={setBrush}
               onDetectSubject={(id) => void runDetectSubject(id)}
             />
+          </InspectorSection>
+
+          <InspectorSection
+            title="Double Exposure"
+            open={openSections.blend}
+            onToggle={() => toggleSection("blend")}
+            note={params.blend.path ? <span className="section-note">1</span> : undefined}
+          >
+            <div ref={blendZone}>
+              <DoubleExposurePanel
+                blend={params.blend}
+                busy={blendBusy}
+                dropping={blendDrop}
+                onPick={() => void loadBlend()}
+                onChange={set("blend")}
+              />
+            </div>
           </InspectorSection>
 
           <InspectorSection title="Motion Trails" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>

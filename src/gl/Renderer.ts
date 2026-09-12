@@ -13,6 +13,7 @@ import { maskKindCode, type Rect } from "../mask";
 import { makeWarp, warpHasVignette, warpIsIdentity, type Warp } from "../geometry";
 import { look as profileLook } from "../profiles";
 import { columnMajor, lookInput } from "../camlog";
+import { modeId, placement } from "../blend";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
@@ -676,6 +677,66 @@ export class Renderer {
     return !!this.lookTex && this.lookPath === path;
   }
 
+  // ---- double exposure ----
+
+  private blendTex: WebGLTexture | null = null;
+  private blendPath = "";
+  private blendW = 0;
+  private blendH = 0;
+
+  /**
+   * The second picture of a double exposure, as linear RGB half floats in the
+   * same shape `setImage` takes. Passing a null buffer clears it.
+   */
+  setBlend(path: string, width: number, height: number, rgbF16: Uint16Array | null): void {
+    const gl = this.gl;
+    if (this.blendTex) {
+      gl.deleteTexture(this.blendTex);
+      this.blendTex = null;
+    }
+    this.blendPath = path;
+    this.blendW = 0;
+    this.blendH = 0;
+    if (!rgbF16 || !path || width < 1 || height < 1) return;
+    this.blendTex = gl.createTexture()!;
+    gl.bindTexture(gl.TEXTURE_2D, this.blendTex);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGB16F, width, height, 0, gl.RGB, gl.HALF_FLOAT, rgbF16);
+    gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    this.blendW = width;
+    this.blendH = height;
+  }
+
+  hasBlend(path: string): boolean {
+    return !!this.blendTex && this.blendPath === path;
+  }
+
+  /** Uniforms for the double exposure. Twin of blend::Source::new. */
+  private setBlendUniforms(p: EditParams): void {
+    const gl = this.gl;
+    const d = this.prog.develop;
+    const b = p.blend;
+    const on = b.enabled && b.opacity > 0 && this.hasBlend(b.path) && this.blendW > 0;
+    gl.uniform1i(this.loc(d, "uBlendOn"), on ? 1 : 0);
+    gl.uniform1i(this.loc(d, "uBlendMode"), on ? modeId(b.mode) : 0);
+    gl.uniform1f(this.loc(d, "uBlendAlpha"), on ? Math.max(0, Math.min(1, b.opacity / 100)) : 0);
+    gl.uniform1f(this.loc(d, "uBlendEv"), b.exposure);
+    gl.uniform1i(this.loc(d, "uBlendInvert"), b.invert ? 1 : 0);
+    gl.uniform1i(this.loc(d, "uBlendFlip"), b.flip ? 1 : 0);
+    const pl = placement(b, this.imgW, this.imgH, Math.max(1, this.blendW), Math.max(1, this.blendH));
+    gl.uniform2f(this.loc(d, "uBlendC"), pl.cx, pl.cy);
+    gl.uniform2f(this.loc(d, "uBlendDen"), pl.denx, pl.deny);
+    gl.uniform2f(this.loc(d, "uBlendRot"), pl.cos, pl.sin);
+    // the sampler always needs a complete texture bound, overlay or not
+    gl.activeTexture(gl.TEXTURE10);
+    gl.bindTexture(gl.TEXTURE_2D, this.blendTex ?? this.imageTex);
+    gl.uniform1i(this.loc(d, "uBlend"), 10);
+  }
+
   /**
    * Masks the shader evaluates: enabled masks with a non-zero adjustment,
    * plus the one being shown/edited (so its overlay is visible even before
@@ -816,6 +877,7 @@ export class Renderer {
     gl.activeTexture(gl.TEXTURE9);
     gl.bindTexture(gl.TEXTURE_3D, this.lookTex);
     gl.uniform1i(this.loc(d, "uLook"), 9);
+    this.setBlendUniforms(p);
     gl.uniform1fv(this.loc(d, "uHslHue[0]"), add8(p.hsl.hue, lkp.bandHue));
     gl.uniform1fv(this.loc(d, "uHslSat[0]"), add8(p.hsl.saturation, lkp.bandSat));
     gl.uniform1fv(this.loc(d, "uHslLum[0]"), add8(p.hsl.luminance, lkp.bandLum));

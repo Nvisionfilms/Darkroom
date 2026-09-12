@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
-import { getLookPixels, getWatermarkPixels, openLook, openWatermark } from "../api";
+import { getBlendPixels, getLookPixels, getWatermarkPixels, openBlend, openLook, openWatermark } from "../api";
 import {
   brushRaster,
   decodeRaster,
@@ -416,6 +416,36 @@ export function Viewer({
       cancelled = true;
     };
   }, [lookPath, requestRender]);
+
+  // double exposure: decode the second picture on the Rust side and upload it
+  const blendPath = params.blend.path;
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r) return;
+    if (!blendPath) {
+      r.setBlend("", 0, 0, null);
+      developDirty.current = true;
+      requestRender();
+      return;
+    }
+    if (r.hasBlend(blendPath)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const info = await openBlend(blendPath);
+        const px = await getBlendPixels();
+        if (cancelled || !rendererRef.current) return;
+        rendererRef.current.setBlend(blendPath, info.width, info.height, px);
+        developDirty.current = true;
+        requestRender();
+      } catch (e) {
+        if (!cancelled) setError(`Could not load the second photo: ${String(e)}`);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [blendPath, requestRender]);
 
   // object remover: hand the spots and their colour matches to the renderer
   const spotsKey = healKey(params.heal);

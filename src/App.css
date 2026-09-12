@@ -1363,3 +1363,86 @@ input[type="number"] {
   outline: none;
   border-color: var(--accent);
 }
+
+/* ---- double exposure ---- */
+.blend-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.blend-drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  width: 100%;
+  padding: 18px 12px;
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+  color: var(--text);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 0.12s, background 0.12s;
+}
+.blend-drop:hover:not(:disabled) {
+  border-color: var(--muted);
+}
+.blend-drop.over {
+  border-color: #4f8cff;
+  border-style: solid;
+  background: #16213a;
+}
+.blend-drop.busy {
+  cursor: progress;
+}
+.blend-drop-glyph {
+  font-size: 20px;
+  line-height: 1;
+  color: var(--muted);
+}
+.blend-drop strong {
+  font-weight: 600;
+}
+.blend-drop small {
+  color: var(--muted);
+  font-size: 10px;
+}
+.blend-panel.over {
+  outline: 1px solid #4f8cff;
+  outline-offset: 4px;
+  border-radius: 6px;
+}
+.blend-file {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 6px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+}
+.blend-file strong {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 600;
+}
+.blend-file-actions {
+  display: flex;
+  gap: 6px;
+}
+.blend-toggles {
+  display: flex;
+  gap: 14px;
+  margin-top: 2px;
+}
+.blend-toggles label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  cursor: pointer;
+}

@@ -304,6 +304,17 @@ uniform vec3 uLookMin;
 uniform vec3 uLookMax;
 uniform int uLookLog;       // 0 display-referred, else a camera log encoding
 uniform mat3 uLookMat;      // linear DWG -> camera gamut
+// double exposure, twin of blend.rs
+uniform sampler2D uBlend;   // the second picture, linear DWG
+uniform int uBlendOn;
+uniform int uBlendMode;     // blend::MODE_*, 0 = expose (scene-referred)
+uniform float uBlendAlpha;  // opacity, 0..1
+uniform float uBlendEv;
+uniform int uBlendInvert;
+uniform int uBlendFlip;
+uniform vec2 uBlendC;       // centre of the overlay, in frame pixels
+uniform vec2 uBlendDen;     // size of the overlay, in frame pixels
+uniform vec2 uBlendRot;     // cos, sin of its rotation
 // lens vignetting correction (scene-referred gain), twin of geometry.rs
 uniform int uVigOn;
 uniform vec3 uVigK;
@@ -332,6 +343,11 @@ const mat3 DWG_TO_SRGB = mat3(
   1.898614899, -0.168948786, -0.121539161,
  -0.792176183,  1.488975754, -0.315675853,
  -0.106438716, -0.320026968,  1.437215014);
+// linear sRGB -> DaVinci Wide Gamut (column-major for GLSL)
+const mat3 SRGB_TO_DWG = mat3(
+  0.562767456, 0.077754635, 0.064669200,
+  0.323516589, 0.749577346, 0.191998692,
+  0.113715955, 0.172668019, 0.743332108);
 
 struct Tone {
   float exposure, contrast, highlights, shadows, whites, blacks, temp, tint, saturation, texture, clarity, dehaze;
@@ -339,6 +355,9 @@ struct Tone {
 
 float srgbEnc(float x) {
   return x <= 0.0031308 ? 12.92 * x : 1.055 * pow(x, 1.0 / 2.4) - 0.055;
+}
+float srgbDec(float x) {
+  return x <= 0.04045 ? x / 12.92 : pow((x + 0.055) / 1.055, 2.4);
 }
 float smooth01(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
 float shoulder(float x) {
@@ -433,6 +452,61 @@ float vignetteGain(vec2 p) {
   return max(g, 0.0);
 }
 
+// Step 5 on its own: linear DWG light to a gamma-encoded sRGB picture.
+// Twin of pipeline.rs display_encode(); the second picture of a double
+// exposure goes through the same transform, so the two meet in one space.
+vec3 displayEncode(vec3 c) {
+  vec3 s = max(gamutCompress(DWG_TO_SRGB * c), 0.0);
+  s = clamp(vec3(shoulder(s.r), shoulder(s.g), shoulder(s.b)), 0.0, 1.0);
+  return vec3(srgbEnc(s.r), srgbEnc(s.g), srgbEnc(s.b));
+}
+
+// ---- double exposure, twin of blend.rs ----
+
+// Negative of a linear colour, taken in a display encoding so it looks like a
+// photographic negative rather than a near-black frame.
+vec3 invertLinear(vec3 c) {
+  vec3 s = clamp(DWG_TO_SRGB * c, 0.0, 1.0);
+  vec3 d = vec3(1.0) - vec3(srgbEnc(s.r), srgbEnc(s.g), srgbEnc(s.b));
+  return SRGB_TO_DWG * vec3(srgbDec(d.r), srgbDec(d.g), srgbDec(d.b));
+}
+
+// The second picture under this pixel: linear DWG light in rgb, the alpha it
+// contributes in a. Twin of blend::Source::sample.
+vec4 blendSample() {
+  const float EDGE = 0.002;
+  vec2 d = vUv * uSize - uBlendC;
+  float u = ( d.x * uBlendRot.x + d.y * uBlendRot.y) / uBlendDen.x + 0.5;
+  float v = (-d.x * uBlendRot.y + d.y * uBlendRot.x) / uBlendDen.y + 0.5;
+  if (uBlendFlip == 1) u = 1.0 - u;
+  float cov = smooth01(min(min(u, 1.0 - u), min(v, 1.0 - v)) / EDGE);
+  if (cov <= 0.0) return vec4(0.0);
+  vec3 c = texture(uBlend, vec2(u, v)).rgb * exp2(uBlendEv);
+  if (uBlendInvert == 1) c = invertLinear(c);
+  return vec4(c, cov * uBlendAlpha);
+}
+
+// W3C compositing soft light, the same curve Photoshop uses.
+float softLight(float b, float o) {
+  if (o <= 0.5) return b - (1.0 - 2.0 * o) * b * (1.0 - b);
+  float d = b <= 0.25 ? ((16.0 * b - 12.0) * b + 4.0) * b : sqrt(max(b, 0.0));
+  return b + (2.0 * o - 1.0) * (d - b);
+}
+
+// The display-referred layer blends. Twin of blend::mix_display.
+vec3 blendMode(vec3 b, vec3 o, int mode, float a) {
+  vec3 m;
+  if (mode == 2) m = 1.0 - (1.0 - b) * (1.0 - o);
+  else if (mode == 3) m = b * o;
+  else if (mode == 4) m = mix(2.0 * b * o, 1.0 - 2.0 * (1.0 - b) * (1.0 - o), step(0.5, b));
+  else if (mode == 5) m = vec3(softLight(b.r, o.r), softLight(b.g, o.g), softLight(b.b, o.b));
+  else if (mode == 6) m = max(b, o);
+  else if (mode == 7) m = min(b, o);
+  else if (mode == 8) m = abs(b - o);
+  else m = o;
+  return clamp(mix(b, m, a), 0.0, 1.0);
+}
+
 ${ENCODE_LOG_GLSL}
 
 // Trilinear .cube sampling. Twin of Lut3d::sample in lut3d.rs: the half-texel
@@ -450,6 +524,11 @@ vec3 developPixel(vec3 rgb, Tone t) {
   // 2. exposure
   float ev = exp2(t.exposure);
   c = max(c * ev, 0.0);
+  // 2a. double exposure, the scene-referred way: the second picture is added
+  // as light before the tone mapping, so where the two overlap the highlights
+  // roll off together exactly as they would in camera
+  vec4 bl = uBlendOn == 1 ? blendSample() : vec4(0.0);
+  if (uBlendMode == 0) c += bl.rgb * bl.a;
   if (uUseMaps == 1) {
     // 2b. dehaze
     if (t.dehaze != 0.0) c = dehaze(c, texture(uDark, vUv).r * ev, t.dehaze);
@@ -472,10 +551,7 @@ vec3 developPixel(vec3 rgb, Tone t) {
   float y2 = 0.18 * exp2(toneLog(l, t));
   c *= y2 / y;
   // 5. display transform
-  vec3 s = gamutCompress(DWG_TO_SRGB * c);
-  s = max(s, 0.0);
-  s = clamp(vec3(shoulder(s.r), shoulder(s.g), shoulder(s.b)), 0.0, 1.0);
-  vec3 g = vec3(srgbEnc(s.r), srgbEnc(s.g), srgbEnc(s.b));
+  vec3 g = displayEncode(c);
   // 6. profile base curve
   g = vec3(baseCurve(g.r, uBaseContrast), baseCurve(g.g, uBaseContrast), baseCurve(g.b, uBaseContrast));
   // 6a. a look built for camera log footage replaces the display render
@@ -484,6 +560,9 @@ vec3 developPixel(vec3 rgb, Tone t) {
   g = vec3(lut(1, lut(0, g.r)), lut(2, lut(0, g.g)), lut(3, lut(0, g.b)));
   // 6c. a display-referred look on the finished picture
   if (uLookOn == 1 && uLookLog == 0) g = mix(g, sampleLook(g), uLookAmount);
+  // 6d. double exposure, the layer way: the familiar display-referred blend
+  // modes on the finished picture. Everything below still applies to both.
+  if (uBlendMode != 0 && bl.a > 0.0) g = blendMode(g, displayEncode(bl.rgb), uBlendMode, bl.a);
   // 7. vibrance / saturation
   float mx = max(g.r, max(g.g, g.b));
   float mn = min(g.r, min(g.g, g.b));

@@ -1,3 +1,4 @@
+pub mod blend;
 pub mod camlog;
 #[cfg(test)]
 mod checks;
@@ -8,6 +9,7 @@ pub mod detail;
 pub mod export;
 pub mod geometry;
 pub mod heal;
+pub mod icc;
 pub mod lensdb;
 pub mod lut3d;
 pub mod mask;
@@ -33,6 +35,9 @@ use tauri::State;
 const RAW_PREVIEW_MAX_EDGE: usize = 2560;
 const BITMAP_PREVIEW_MAX_EDGE: usize = 3200;
 const THUMB_MAX_EDGE: usize = 240;
+/// The second picture of a double exposure only has to look right on screen;
+/// the export reads it again at full resolution.
+const BLEND_PREVIEW_MAX_EDGE: usize = 1800;
 
 pub struct Loaded {
     path: String,
@@ -50,6 +55,8 @@ pub struct AppState {
     tether: Mutex<Option<tether::Active>>,
     monitor: Mutex<Option<monitor::Monitor>>,
     look: Mutex<Option<(String, Arc<lut3d::Lut3d>)>>,
+    /// the second picture of a double exposure, downsampled for the preview
+    blend: Mutex<Option<(String, Arc<Vec<u8>>)>>,
 }
 
 #[derive(Serialize)]
@@ -83,6 +90,52 @@ fn get_look_pixels(state: State<'_, AppState>) -> Result<Response, String> {
     let guard = state.look.lock().unwrap();
     let (_, lut) = guard.as_ref().ok_or("no look loaded")?;
     Ok(Response::new(lut.to_rgba_f16()))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlendInfo {
+    path: String,
+    name: String,
+    width: usize,
+    height: usize,
+}
+
+/// Decode the second picture of a double exposure and keep a preview-sized
+/// copy for `get_blend_pixels`. Any format the app can open works, RAW
+/// included.
+#[tauri::command]
+async fn open_blend(path: String, state: State<'_, AppState>) -> Result<BlendInfo, String> {
+    let p = path.clone();
+    let (w, h, f16) = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<_> {
+        let (image, _) = decode::load(Path::new(&p))?;
+        let small = decode::downsample(&image, BLEND_PREVIEW_MAX_EDGE);
+        let f16 = decode::to_f16_bytes(&small.data);
+        Ok((small.width, small.height, f16))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+    let name = Path::new(&path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.clone());
+    *state.blend.lock().unwrap() = Some((path.clone(), Arc::new(f16)));
+    Ok(BlendInfo {
+        path,
+        name,
+        width: w,
+        height: h,
+    })
+}
+
+/// The loaded second picture as linear RGB half floats (3 x u16 per pixel),
+/// the same shape as `get_preview`.
+#[tauri::command]
+fn get_blend_pixels(state: State<'_, AppState>) -> Result<Response, String> {
+    let guard = state.blend.lock().unwrap();
+    let (_, b) = guard.as_ref().ok_or("no second picture loaded")?;
+    Ok(Response::new(b.as_ref().clone()))
 }
 
 // ---- develop presets ----
@@ -484,6 +537,8 @@ pub fn run() {
             get_thumbnail,
             open_look,
             get_look_pixels,
+            open_blend,
+            get_blend_pixels,
             list_presets,
             save_preset,
             delete_preset

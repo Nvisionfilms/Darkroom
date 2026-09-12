@@ -3,7 +3,7 @@ use crate::denoise::{self, NoiseParams};
 use crate::detail;
 use crate::pipeline::{self, EditParams};
 use anyhow::{bail, Context, Result};
-use image::{ImageBuffer, Rgb};
+use image::{ImageBuffer, ImageEncoder, Rgb};
 use rayon::prelude::*;
 use serde::Deserialize;
 use std::path::Path;
@@ -72,31 +72,49 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
             std::fs::create_dir_all(parent).ok();
         }
     }
+    // Every file is tagged as sRGB. The preview canvas is colour managed by
+    // the webview, so an untagged export would only match the app in viewers
+    // that happen to assume sRGB; on a calibrated or wide-gamut display the
+    // two drift apart badly.
+    let profile = crate::icc::srgb();
+    let file = std::fs::File::create(out).with_context(|| format!("create {}", out.display()))?;
+    let w8 = std::io::BufWriter::new(file);
     match req.format.as_str() {
         "jpeg" | "jpg" => {
             let bytes = to_u8(&data);
-            let file = std::fs::File::create(out).with_context(|| format!("create {}", out.display()))?;
-            let mut w8 = std::io::BufWriter::new(file);
-            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut w8, req.quality.clamp(1, 100));
+            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(w8, req.quality.clamp(1, 100));
+            enc.set_icc_profile(profile).ok();
             enc.encode(&bytes, w as u32, h as u32, image::ExtendedColorType::Rgb8)
                 .context("encode JPEG")?;
         }
         "png" | "tiff" | "tif" => {
-            let fmt = if req.format.starts_with("png") {
-                image::ImageFormat::Png
-            } else {
-                image::ImageFormat::Tiff
-            };
+            let png = req.format.starts_with("png");
             if req.bit_depth == 16 {
-                let bytes = to_u16(&data);
                 let ib: ImageBuffer<Rgb<u16>, Vec<u16>> =
-                    ImageBuffer::from_raw(w as u32, h as u32, bytes).context("buffer")?;
-                ib.save_with_format(out, fmt).with_context(|| format!("write {}", out.display()))?;
+                    ImageBuffer::from_raw(w as u32, h as u32, to_u16(&data)).context("buffer")?;
+                if png {
+                    let mut enc = image::codecs::png::PngEncoder::new(w8);
+                    enc.set_icc_profile(profile).ok();
+                    ib.write_with_encoder(enc)
+                } else {
+                    let mut enc = image::codecs::tiff::TiffEncoder::new(w8);
+                    enc.set_icc_profile(profile).ok();
+                    ib.write_with_encoder(enc)
+                }
+                .with_context(|| format!("write {}", out.display()))?;
             } else {
-                let bytes = to_u8(&data);
                 let ib: ImageBuffer<Rgb<u8>, Vec<u8>> =
-                    ImageBuffer::from_raw(w as u32, h as u32, bytes).context("buffer")?;
-                ib.save_with_format(out, fmt).with_context(|| format!("write {}", out.display()))?;
+                    ImageBuffer::from_raw(w as u32, h as u32, to_u8(&data)).context("buffer")?;
+                if png {
+                    let mut enc = image::codecs::png::PngEncoder::new(w8);
+                    enc.set_icc_profile(profile).ok();
+                    ib.write_with_encoder(enc)
+                } else {
+                    let mut enc = image::codecs::tiff::TiffEncoder::new(w8);
+                    enc.set_icc_profile(profile).ok();
+                    ib.write_with_encoder(enc)
+                }
+                .with_context(|| format!("write {}", out.display()))?;
             }
         }
         other => bail!("unknown export format {other}"),
@@ -142,7 +160,32 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
     } else {
         None
     };
-    pipeline::develop_buffer_look(&denoised, img.width, maps.as_ref(), params, lut, look.as_ref())
+    // double exposure: the second photograph, read at full resolution. As
+    // with the look, a file that cannot be read is skipped with a warning
+    // rather than failing the whole export.
+    let over = if params.blend.is_active() {
+        match crate::decode::load(Path::new(&params.blend.path)) {
+            Ok((i, _)) => Some(i),
+            Err(e) => {
+                log::warn!("double exposure: {e:#}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+    let over = over
+        .as_ref()
+        .map(|i| crate::blend::Source::new(&params.blend, i, img.width, img.height));
+    pipeline::develop_buffer_full(
+        &denoised,
+        img.width,
+        maps.as_ref(),
+        params,
+        lut,
+        look.as_ref(),
+        over.as_ref(),
+    )
 }
 
 /// Motion Trails uses the legacy `Mirror` storage shape for sidecar
