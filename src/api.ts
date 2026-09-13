@@ -14,8 +14,8 @@ import type {
 
 // ---- tethered capture ----
 
-export async function pickFolder(): Promise<string | null> {
-  const result = await open({ multiple: false, directory: true, title: "Choose the folder your camera software saves into" });
+export async function pickFolder(title = "Choose the folder your camera software saves into"): Promise<string | null> {
+  const result = await open({ multiple: false, directory: true, title });
   if (!result) return null;
   return Array.isArray(result) ? result[0] : result;
 }
@@ -123,11 +123,12 @@ export async function getBlendPixels(): Promise<Uint16Array> {
 }
 
 /** One photo, for the double exposure. */
-export async function pickPhoto(extensions: string[]): Promise<string | null> {
+export async function pickPhoto(extensions: string[], startIn?: string | null): Promise<string | null> {
   const result = await open({
     multiple: false,
     directory: false,
     title: "Choose the second photo",
+    defaultPath: startIn || undefined,
     filters: [
       { name: "Images", extensions },
       { name: "All files", extensions: ["*"] },
@@ -206,10 +207,12 @@ export async function findHealSource(
   return invoke<[number, number]>("find_heal_source", { x, y, radius, avoid });
 }
 
-export async function pickImages(extensions: string[]): Promise<string[]> {
+/** `startIn` is the user's photos folder, when they have set one. */
+export async function pickImages(extensions: string[], startIn?: string | null): Promise<string[]> {
   const result = await open({
     multiple: true,
     directory: false,
+    defaultPath: startIn || undefined,
     filters: [
       { name: "Images", extensions },
       { name: "All files", extensions: ["*"] },

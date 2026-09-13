@@ -229,6 +229,37 @@ await step("double exposure loads, blends and clears", async () => {
     expect(!sidecar()?.blend?.path, "the sidecar still carries a second photo");
   });
 
+// Also the tidy-up: this test opens copies out of a temp folder, and the
+// filmstrip is restored from a saved session, so leaving them in would put
+// throwaway files in front of the user on the next launch.
+await step("right-click removes a photo from the filmstrip", async () => {
+  const before = await js(`document.querySelectorAll('.thumb').length`);
+  expect(before > 0, "no thumbnails to remove");
+  await js(
+    `(() => { const t = document.querySelector('.thumb'); const r = t.getBoundingClientRect(); t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 })); return true; })()`,
+  );
+  expect(await waitFor(`!!document.querySelector('.thumb-menu')`, 4000), "no context menu appeared");
+  await js(`__smoke.button('Remove from filmstrip').click(); true`);
+  expect(
+    await waitFor(`document.querySelectorAll('.thumb').length === ${before - 1}`, 4000),
+    "the photo was not removed from the filmstrip",
+  );
+  // and the rest of this test run's temp photos go too
+  for (let i = 0; i < 12; i++) {
+    const gone = await js(`(() => {
+      const t = [...document.querySelectorAll('.thumb')].find(x => /darkroom-smoke-|\\bTemp\\b/i.test(x.title));
+      if (!t) return true;
+      const r = t.getBoundingClientRect();
+      t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 }));
+      return false;
+    })()`);
+    if (gone) break;
+    await sleep(200);
+    await js(`__smoke.button('Remove from filmstrip')?.click(); true`);
+    await sleep(300);
+  }
+});
+
 await step("no errors at the end", async () => {
   await sleep(500);
 });

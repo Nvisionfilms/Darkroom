@@ -3,6 +3,10 @@ import type { UpdateStatus } from "../updater";
 interface Props {
   version: string;
   status: UpdateStatus;
+  /** the folder the Open Photos dialog starts in, or "" for the last one used */
+  photoFolder: string;
+  onPickPhotoFolder: () => void;
+  onClearPhotoFolder: () => void;
   onCheck: () => void;
   onInstall: () => void;
   onClose: () => void;
@@ -10,7 +14,16 @@ interface Props {
 
 const UPDATE_CHANNEL = "updates.nvisionfilms.com";
 
-export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Props) {
+export function AboutDialog({
+  version,
+  status,
+  photoFolder,
+  onPickPhotoFolder,
+  onClearPhotoFolder,
+  onCheck,
+  onInstall,
+  onClose,
+}: Props) {
   const busy = status.kind === "checking" || status.kind === "installing";
   let line: string;
   switch (status.kind) {
@@ -43,6 +56,24 @@ export function AboutDialog({ version, status, onCheck, onInstall, onClose }: Pr
             <span className="update-bar" style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }} />
           </span>
         )}
+        <div className="setting-row">
+          <div className="setting-label">
+            <strong>Photos folder</strong>
+            <small>Where Open Photos starts. Leave it unset to use the last folder you opened.</small>
+          </div>
+          <div className="setting-value" title={photoFolder || undefined}>
+            {photoFolder || <em>not set</em>}
+          </div>
+          <div className="setting-actions">
+            <button onClick={onPickPhotoFolder}>Choose…</button>
+            {photoFolder && (
+              <button className="tab" onClick={onClearPhotoFolder}>
+                Clear
+              </button>
+            )}
+          </div>
+        </div>
+
         <div className="about-repo" title="Darkroom update channel">
           {UPDATE_CHANNEL}
         </div>

@@ -100,6 +100,7 @@ type InspectorKey =
   | "presets";
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
+const PHOTO_FOLDER_KEY = "darkroom.photoFolder";
 const GUIDE_KEY = "darkroom.guide";
 const AUTO_NR_KEY = "darkroom.autoNr";
 
@@ -222,6 +223,16 @@ export default function App() {
   const [cropMode, setCropMode] = useState(false);
   const [aspectKey, setAspectKey] = useState("free");
   const [showAbout, setShowAbout] = useState(false);
+  // the folder Open Photos starts in; empty means "wherever you were last"
+  const [photoFolder, setPhotoFolder] = useState(() => {
+    try {
+      return localStorage.getItem(PHOTO_FOLDER_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  // right-click menu on a filmstrip thumbnail
+  const [thumbMenu, setThumbMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   const [version, setVersion] = useState("");
   const [openSections, setOpenSections] = useState<Record<InspectorKey, boolean>>({
     tone: true,
@@ -346,8 +357,15 @@ export default function App() {
     };
   }, []);
 
+  // Saving is held back until the previous session has been restored, so an
+  // empty first render cannot wipe it. After that an empty list is a real
+  // state - the user removed the last photo - and must be saved.
+  const sessionReady = useRef(false);
   useEffect(() => {
-    if (!files.length) return;
+    if (!sessionReady.current) {
+      if (!files.length) return;
+      sessionReady.current = true;
+    }
     const t = window.setTimeout(() => {
       saveSession({ files: files.map((f) => f.path), current: current?.path ?? null }).catch(() => {});
     }, 300);
@@ -490,7 +508,7 @@ export default function App() {
   }, [monitor?.active]);
 
   const openFiles = useCallback(async () => {
-    const paths = await pickImages(extensions.length ? extensions : ["*"]);
+    const paths = await pickImages(extensions.length ? extensions : ["*"], photoFolder);
     if (!paths.length) return;
     setFiles((prev) => {
       const next = [...prev];
@@ -498,7 +516,67 @@ export default function App() {
       return next;
     });
     await load(paths[0]);
-  }, [extensions, load]);
+  }, [extensions, load, photoFolder]);
+
+  /**
+   * Take a photo out of the filmstrip and the saved session. The file on disk
+   * is never touched. If it was the one being edited, the neighbour opens so
+   * the viewer is never left showing something the strip no longer lists.
+   */
+  const removeFromFilmstrip = useCallback(
+    (path: string) => {
+      setThumbMenu(null);
+      const at = files.findIndex((f) => f.path === path);
+      if (at < 0) return;
+      const rest = files.filter((f) => f.path !== path);
+      setFiles(rest);
+      if (current?.path !== path) return;
+      if (!rest.length) {
+        setCurrent(null);
+        setPreview(null);
+        return;
+      }
+      void load(rest[Math.min(at, rest.length - 1)].path);
+    },
+    [files, current, load],
+  );
+
+  // the menu closes on the next click, a scroll, or Escape
+  useEffect(() => {
+    if (!thumbMenu) return;
+    const close = () => setThumbMenu(null);
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") close();
+    };
+    window.addEventListener("pointerdown", close);
+    window.addEventListener("wheel", close, { passive: true });
+    window.addEventListener("keydown", onKey);
+    return () => {
+      window.removeEventListener("pointerdown", close);
+      window.removeEventListener("wheel", close);
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [thumbMenu]);
+
+  const choosePhotoFolder = useCallback(async () => {
+    const f = await pickFolder("Choose the folder your photos live in");
+    if (!f) return;
+    setPhotoFolder(f);
+    try {
+      localStorage.setItem(PHOTO_FOLDER_KEY, f);
+    } catch {
+      /* private mode */
+    }
+  }, []);
+
+  const clearPhotoFolder = useCallback(() => {
+    setPhotoFolder("");
+    try {
+      localStorage.removeItem(PHOTO_FOLDER_KEY);
+    } catch {
+      /* private mode */
+    }
+  }, []);
 
   const reset = useCallback(() => setParams(defaultParamsForImage(current)), [current]);
 
@@ -619,7 +697,7 @@ export default function App() {
     async (dropped?: string) => {
       setBlendBusy(true);
       try {
-        const path = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"]));
+        const path = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"], photoFolder));
         if (!path) return;
         const info = await openBlend(path);
         setParams((p) => ({
@@ -633,7 +711,7 @@ export default function App() {
         setBlendBusy(false);
       }
     },
-    [extensions],
+    [extensions, photoFolder],
   );
 
   // Files dragged in from the desktop. Tauri owns the drag and drop, so the
@@ -1447,6 +1525,10 @@ export default function App() {
               className={"thumb" + (current?.path === f.path ? " active" : "")}
               title={f.path}
               onClick={() => current?.path !== f.path && load(f.path)}
+              onContextMenu={(e) => {
+                e.preventDefault();
+                setThumbMenu({ x: e.clientX, y: e.clientY, path: f.path });
+              }}
             >
               {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
               <span className="thumb-name">{fileName(f.path)}</span>
@@ -1455,11 +1537,30 @@ export default function App() {
         </div>
       </footer>
 
+      {thumbMenu && (
+        <div
+          className="thumb-menu"
+          style={{ left: Math.min(thumbMenu.x, window.innerWidth - 220), top: thumbMenu.y - 8 }}
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div className="thumb-menu-path" title={thumbMenu.path}>
+            {fileName(thumbMenu.path)}
+          </div>
+          <button type="button" onClick={() => removeFromFilmstrip(thumbMenu.path)}>
+            Remove from filmstrip
+          </button>
+          <div className="thumb-menu-note">The file stays on disk.</div>
+        </div>
+      )}
+
       {!showAbout && <UpdateBanner status={updater.status} onInstall={updater.install} onDismiss={updater.dismiss} />}
       {showAbout && (
         <AboutDialog
           version={version}
           status={updater.status}
+          photoFolder={photoFolder}
+          onPickPhotoFolder={() => void choosePhotoFolder()}
+          onClearPhotoFolder={clearPhotoFolder}
           onCheck={updater.checkNow}
           onInstall={updater.install}
           onClose={() => setShowAbout(false)}
