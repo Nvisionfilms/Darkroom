@@ -113,12 +113,27 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
         std::mem::discriminant(&raw.photometric)
     );
 
+    // Linear DNGs whose lossless JPEG carries restart markers (Samsung's
+    // Expert RAW) decode into a gradient, because the decoder underneath
+    // ignores those markers. Decode the picture ourselves in that case.
+    let restarts = if matches!(raw.photometric, RawPhotometricInterpretation::LinearRaw) {
+        match crate::lossless::linear_dng_with_restarts(path) {
+            Ok(d) => d,
+            Err(e) => {
+                log::warn!("restart-marker DNG: {e:#}; falling back to the usual decoder");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     // Let rawler do black/white scaling, demosaic (PPG), fuji rotation and the
     // default crop. We deliberately skip WhiteBalance/Calibrate/SRgb: rawler
     // clips those to 0..1 and we want the highlight headroom.
     // rawler's Rescale silently skips linear (already demosaiced) DNGs whose
     // black-level and white-level counts differ, so we scale those ourselves.
-    let manual_scale = matches!(raw.photometric, RawPhotometricInterpretation::LinearRaw);
+    let manual_scale = restarts.is_none() && matches!(raw.photometric, RawPhotometricInterpretation::LinearRaw);
     let mut steps = vec![
         ProcessingStep::Demosaic,
         ProcessingStep::FujiRotate,
@@ -128,19 +143,49 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
     if !manual_scale {
         steps.insert(0, ProcessingStep::Rescale);
     }
-    let dev = RawDevelop::new_with(&steps);
-    let inter = dev
-        .develop_intermediate(&raw)
-        .map_err(|e| anyhow!("RAW develop failed: {e}"))?;
-
-    let mut rgb = match inter {
-        Intermediate::ThreeColor(p) => p,
-        Intermediate::Monochrome(p) => {
-            let d = p.dim();
-            let data: Vec<[f32; 3]> = p.pixels().iter().map(|v| [*v, *v, *v]).collect();
-            rawler::pixarray::RgbF32::new_with(data, d.w, d.h)
+    let mut rgb = if let Some(d) = restarts {
+        // already demosaiced: scale the samples to 0..1 and keep going
+        if d.components < 3 {
+            bail!("linear DNG with {} components is not supported yet", d.components);
         }
-        Intermediate::FourColor(_) => bail!("4-colour sensors (RGBE/CYGM) are not supported yet"),
+        let black = raw.blacklevel.as_vec();
+        let white = raw.whitelevel.as_vec();
+        let level = |v: &[f32], c: usize, default: f32| if v.is_empty() { default } else { v[c % v.len()] };
+        let full = (1u32 << raw.bps.max(1)) as f32 - 1.0;
+        let mut scale = [1.0f32; 3];
+        let mut offset = [0.0f32; 3];
+        for c in 0..3 {
+            offset[c] = level(&black, c, 0.0);
+            scale[c] = 1.0 / (level(&white, c, full) - offset[c]).max(1.0);
+        }
+        let cpp = d.components;
+        let data: Vec<[f32; 3]> = d
+            .samples
+            .par_chunks_exact(cpp)
+            .map(|px| {
+                let mut out = [0.0f32; 3];
+                for c in 0..3 {
+                    out[c] = ((px[c] as f32 - offset[c]) * scale[c]).max(0.0);
+                }
+                out
+            })
+            .collect();
+        rawler::pixarray::RgbF32::new_with(data, d.width, d.height)
+    } else {
+        let dev = RawDevelop::new_with(&steps);
+        let inter = dev
+            .develop_intermediate(&raw)
+            .map_err(|e| anyhow!("RAW develop failed: {e}"))?;
+
+        match inter {
+            Intermediate::ThreeColor(p) => p,
+            Intermediate::Monochrome(p) => {
+                let d = p.dim();
+                let data: Vec<[f32; 3]> = p.pixels().iter().map(|v| [*v, *v, *v]).collect();
+                rawler::pixarray::RgbF32::new_with(data, d.w, d.h)
+            }
+            Intermediate::FourColor(_) => bail!("4-colour sensors (RGBE/CYGM) are not supported yet"),
+        }
     };
 
     if manual_scale {

@@ -12,6 +12,7 @@ pub mod heal;
 pub mod icc;
 pub mod import;
 pub mod lensdb;
+pub mod lossless;
 pub mod lut3d;
 pub mod mask;
 pub mod monitor;

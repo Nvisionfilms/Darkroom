@@ -5,7 +5,8 @@ Tauri 2 shell, Rust core (decode + export), React/TypeScript UI, WebGL2 real-tim
 
 ## Supported input
 
-- **RAW:** Canon CR2/CR3/CRW, Sony ARW/SRF/SR2, Nikon NEF/NRW, Adobe DNG, Fuji RAF, Olympus ORF, Panasonic RW2, Pentax PEF, Phase One IIQ, Hasselblad 3FR and more (via `rawler`).
+- **RAW:** Canon CR2/CR3/CRW, Sony ARW/SRF/SR2, Nikon NEF/NRW, Adobe DNG, Fuji RAF, Olympus ORF, Panasonic RW2, Pentax PEF, Phase One IIQ, Hasselblad 3FR and more (via `rawler`). Linear DNGs whose lossless JPEG uses restart markers - Samsung Expert RAW, for one - are decoded by `lossless.rs`, because the decoder underneath ignores those markers and turns the picture into a gradient.
+- **Not yet:** CinemaDNG from Blackmagic cameras. Those frames are 12-bit DCT JPEG, and no Rust JPEG decoder reads anything but 8-bit. Convert a clip to lossless or uncompressed DNG (DNG Converter, Resolve) and it opens.
 - **Bitmap:** JPEG, PNG, TIFF (8/16-bit). Embedded ICC profiles are ignored; input is assumed sRGB.
 
 ## Output
