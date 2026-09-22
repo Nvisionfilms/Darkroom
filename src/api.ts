@@ -55,6 +55,15 @@ export async function publishFrame(jpeg: Uint8Array): Promise<number> {
   return invoke<number>("publish_frame", jpeg);
 }
 
+/**
+ * A path the decoder can open for whatever the file picker returned. On the
+ * desktop that is the path itself; on Android the picker returns content://
+ * handles, which are copied into the app's own storage first.
+ */
+export async function importPhoto(uri: string, ext?: string): Promise<string> {
+  return invoke<string>("import_photo", { uri, ext: ext ?? null });
+}
+
 export async function openImage(path: string): Promise<ImageInfo> {
   return invoke<ImageInfo>("open_image", { path });
 }

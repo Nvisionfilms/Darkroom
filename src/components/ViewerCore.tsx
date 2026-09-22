@@ -711,19 +711,18 @@ export function Viewer({
     return () => window.removeEventListener("darkroom:zoom", onZoomRequest as EventListener);
   }, [fit, zoom100, requestRender]);
 
-  const onWheel = (e: React.WheelEvent) => {
+  /** Zoom by `k` about a point on screen (client px). Wheel and pinch share it. */
+  const zoomAbout = (k: number, clientX: number, clientY: number) => {
     const r = rendererRef.current;
     const c = canvasRef.current;
     if (!r || !c || !r.imgW) return;
-    e.preventDefault();
     const rect = c.getBoundingClientRect();
     const d = dpr();
-    const mx = (e.clientX - rect.left) * d;
-    const my = (e.clientY - rect.top) * d;
+    const mx = (clientX - rect.left) * d;
+    const my = (clientY - rect.top) * d;
     const v = viewRef.current;
     const dsz = r.displaySize(rotRef.current, cropRef.current, cropModeRef.current);
     const fitScale = Math.min(c.width / dsz.w, c.height / dsz.h);
-    const k = Math.exp(-e.deltaY * 0.0015);
     const ns = Math.max(fitScale * 0.25, Math.min(8 * d, v.scale * k));
     const kk = ns / v.scale;
     v.x = mx - (mx - v.x) * kk;
@@ -734,12 +733,47 @@ export function Viewer({
     requestRender();
   };
 
+  const onWheel = (e: React.WheelEvent) => {
+    e.preventDefault();
+    zoomAbout(Math.exp(-e.deltaY * 0.0015), e.clientX, e.clientY);
+  };
+
+  // Two fingers pinch to zoom and pan together. A mouse only ever has one
+  // pointer, so the desktop never reaches this.
+  const touches = useRef(new Map<number, { x: number; y: number }>());
+  const pinch = useRef<{ dist: number; mx: number; my: number } | null>(null);
+  const pinchState = () => {
+    const [a, b] = [...touches.current.values()];
+    return { dist: Math.hypot(a.x - b.x, a.y - b.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+  };
+
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
-    dragging.current = { x: e.clientX, y: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
+    touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    if (touches.current.size === 2) {
+      // a second finger turns the drag into a pinch
+      dragging.current = null;
+      pinch.current = pinchState();
+      return;
+    }
+    if (touches.current.size > 2) return;
+    dragging.current = { x: e.clientX, y: e.clientY, vx: viewRef.current.x, vy: viewRef.current.y };
   };
   const onPointerMove = (e: React.PointerEvent) => {
+    if (touches.current.has(e.pointerId)) touches.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+    const p = pinch.current;
+    if (p && touches.current.size === 2) {
+      const now = pinchState();
+      if (p.dist > 0) zoomAbout(now.dist / p.dist, now.mx, now.my);
+      const d = dpr();
+      viewRef.current.x += (now.mx - p.mx) * d;
+      viewRef.current.y += (now.my - p.my) * d;
+      clampView();
+      requestRender();
+      pinch.current = now;
+      return;
+    }
     const dgg = dragging.current;
     if (!dgg) return;
     const d = dpr();
@@ -749,7 +783,10 @@ export function Viewer({
     clampView();
     requestRender();
   };
-  const onPointerUp = () => {
+  const onPointerUp = (e: React.PointerEvent) => {
+    touches.current.delete(e.pointerId);
+    if (touches.current.size < 2) pinch.current = null;
+    // lifting one finger of a pinch should not jump into a drag
     dragging.current = null;
   };
   const onDoubleClick = () => {

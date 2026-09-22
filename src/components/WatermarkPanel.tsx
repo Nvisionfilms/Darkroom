@@ -1,4 +1,4 @@
-import { pickWatermark } from "../api";
+import { importPhoto, pickWatermark } from "../api";
 import { defaultWatermark, type Watermark } from "../types";
 import { Slider } from "./Slider";
 
@@ -15,7 +15,8 @@ function fileName(path: string): string {
 export function WatermarkPanel({ watermark, onChange, onError }: Props) {
   const choose = async () => {
     try {
-      const p = await pickWatermark();
+      const picked = await pickWatermark();
+      const p = picked ? await importPhoto(picked) : null;
       if (p) onChange({ ...watermark, path: p, enabled: true });
     } catch (e) {
       onError(`Could not open watermark: ${String(e)}`);

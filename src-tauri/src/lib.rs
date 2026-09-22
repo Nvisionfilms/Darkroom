@@ -10,6 +10,7 @@ pub mod export;
 pub mod geometry;
 pub mod heal;
 pub mod icc;
+pub mod import;
 pub mod lensdb;
 pub mod lut3d;
 pub mod mask;
@@ -27,6 +28,7 @@ use serde::Serialize;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use tauri::ipc::Response;
+use tauri::Manager;
 use tauri::State;
 
 // RAW previews stay bounded because the WebGL develop pipeline keeps several
@@ -314,6 +316,18 @@ fn err(e: anyhow::Error) -> String {
     format!("{e:#}")
 }
 
+/// A path the decoder can open for whatever the file picker returned. On the
+/// desktop that is the path itself; on Android a picked photo is a content://
+/// handle and is copied into the app's own storage first (see import.rs).
+#[tauri::command]
+async fn import_photo(app: tauri::AppHandle, uri: String, ext: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || import::resolve(&app, &uri, ext.as_deref()))
+        .await
+        .map_err(|e| e.to_string())?
+        .map(|p| p.to_string_lossy().into_owned())
+        .map_err(err)
+}
+
 #[tauri::command]
 async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInfo, String> {
     let p = path.clone();
@@ -396,14 +410,36 @@ fn save_edits(path: String, edits: EditParams) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn export_image(req: export::ExportRequest, state: State<'_, AppState>) -> Result<String, String> {
+async fn export_image(
+    app: tauri::AppHandle,
+    req: export::ExportRequest,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
     let image = {
         let guard = state.loaded.lock().unwrap();
         let loaded = guard.as_ref().ok_or("no image loaded")?;
         loaded.image.clone()
     };
     let out = req.out_path.clone();
-    tauri::async_runtime::spawn_blocking(move || export::export(&image, &req))
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        if !import::is_handle(&req.out_path) {
+            return export::export(&image, &req);
+        }
+        // a phone save location: render into app storage, then copy it out
+        let handle = req.out_path.clone();
+        let ext = match req.format.as_str() {
+            "png" => "png",
+            "tiff" | "tif" => "tif",
+            _ => "jpg",
+        };
+        let tmp = app.path().app_cache_dir()?.join(format!("export.{ext}"));
+        let mut req = req;
+        req.out_path = tmp.to_string_lossy().into_owned();
+        export::export(&image, &req)?;
+        import::write_back(&app, &handle, &tmp)?;
+        std::fs::remove_file(&tmp).ok();
+        Ok(())
+    })
         .await
         .map_err(|e| e.to_string())?
         .map_err(err)?;
@@ -507,13 +543,19 @@ fn supported_extensions() -> Vec<String> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    tauri::Builder::default()
+    let builder = tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(tauri_plugin_process::init())
+        // reads the content:// handles Android's photo picker returns
+        .plugin(tauri_plugin_fs::init())
+        .plugin(tauri_plugin_process::init());
+    // phones update through their app stores, so the updater is desktop-only
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    builder
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
+            import_photo,
             open_image,
             get_preview,
             save_edits,

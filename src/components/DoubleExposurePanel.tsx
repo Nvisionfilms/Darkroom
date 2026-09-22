@@ -1,4 +1,5 @@
 import { BLEND_FITS, BLEND_MODES } from "../blend";
+import { usePhone } from "../phone";
 import { defaultBlend, type Blend } from "../types";
 import { Slider } from "./Slider";
 
@@ -21,6 +22,8 @@ interface Props {
  */
 export function DoubleExposurePanel({ blend, busy, dropping, onPick, onChange }: Props) {
   const loaded = !!blend.path;
+  // there is nothing to drag from on a phone
+  const phone = usePhone();
   const set =
     <K extends keyof Blend>(k: K) =>
     (v: Blend[K]) =>
@@ -37,8 +40,8 @@ export function DoubleExposurePanel({ blend, busy, dropping, onPick, onChange }:
           disabled={busy}
         >
           <span className="blend-drop-glyph">◎</span>
-          <strong>{busy ? "Reading the photo…" : dropping ? "Drop it here" : "Drag a photo here"}</strong>
-          <small>or click to choose one. RAW files work too.</small>
+          <strong>{busy ? "Reading the photo…" : dropping ? "Drop it here" : phone ? "Choose a second photo" : "Drag a photo here"}</strong>
+          <small>{phone ? "Tap to pick one. RAW files work too." : "or click to choose one. RAW files work too."}</small>
         </button>
       </div>
     );

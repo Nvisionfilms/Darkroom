@@ -34,6 +34,10 @@ JPEG (quality 50–100), PNG and TIFF (8- or 16-bit), optional resize on the lon
 - **Phone Monitor**: the app serves a live page on the local network (QR code in Tether → Phone Monitor). The phone shows the developed picture as you edit it plus the recent filmstrip. Nothing leaves the LAN and nothing is uploaded.
 - Motion Trails retain the legacy `mirror` sidecar key only for backwards compatibility with existing `.drk.json` edits.
 
+## Phones
+
+Darkroom also builds for Android and iPhone, with a phone layout that switches on for phone-sized screens. See `docs/mobile.md` for what differs on a phone and how to build each one (iPhone builds need the Mac).
+
 ## Development
 
 ```bash

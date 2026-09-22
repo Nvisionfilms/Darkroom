@@ -53,7 +53,8 @@ export function CurveEditor({ curves, onChange }: Props) {
   const onPointerDown = (e: React.PointerEvent<SVGSVGElement>) => {
     if (e.button !== 0) return;
     const p = toLocal(e);
-    const hitRadius = 12 / svgRef.current!.getBoundingClientRect().width;
+    // a fingertip needs a much bigger target than a mouse pointer
+    const hitRadius = (e.pointerType === "touch" ? 28 : 12) / svgRef.current!.getBoundingClientRect().width;
     let idx = points.findIndex((q) => Math.hypot(q[0] - p[0], q[1] - p[1]) < hitRadius);
     let next = points;
     if (idx === -1) {

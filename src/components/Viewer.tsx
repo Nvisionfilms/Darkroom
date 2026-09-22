@@ -4,6 +4,7 @@ import { buildLut } from "../curve";
 import { cropIsIdentity, defaultParams, type EditParams } from "../types";
 import { Viewer as CoreViewer } from "./ViewerCore";
 import "./MotionTrail.css";
+import { usePhone } from "../phone";
 
 type Props = ComponentProps<typeof CoreViewer> & {
   /** Neutral/source defaults used by the Before side of the comparison. */
@@ -31,7 +32,9 @@ export function Viewer(props: Props) {
   const sourceCacheRef = useRef<HTMLCanvasElement | null>(null);
   const maskedSourceRef = useRef<HTMLCanvasElement | null>(null);
   const sourceCacheValidRef = useRef(false);
-  const [comparePosition, setComparePosition] = useState(50);
+  // phones open on the edited picture; the top bar has hold-for-before
+  const phone = usePhone();
+  const [comparePosition, setComparePosition] = useState(() => (phone ? 0 : 50));
   const lastSplitPositionRef = useRef(50);
   const [zoomLabel, setZoomLabel] = useState("Fit");
   const trail = props.mirror ?? props.params.mirror;
@@ -51,10 +54,10 @@ export function Viewer(props: Props) {
     // Every newly loaded image starts with the visible 50/50 comparison. The
     // previous implementation could remain collapsed after a zoom/pan.
     if (props.image) {
-      setComparePosition(50);
+      setComparePosition(phone ? 0 : 50);
       lastSplitPositionRef.current = 50;
     }
-  }, [props.image]);
+  }, [props.image, phone]);
 
   useEffect(() => {
     const wrap = wrapRef.current;

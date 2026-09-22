@@ -1,4 +1,11 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useRef, type ReactNode } from "react";
+
+/**
+ * The section titles to show, or null for all of them. The phone layout sets
+ * this to one tab's sections so its bottom sheet holds only those; the
+ * desktop never provides it.
+ */
+export const SectionFilter = createContext<ReadonlySet<string> | null>(null);
 
 type InspectorSectionProps = {
   title: string;
@@ -11,6 +18,7 @@ type InspectorSectionProps = {
 
 export function InspectorSection({ title, open, onToggle, shortcut, note, children }: InspectorSectionProps) {
   const sectionRef = useRef<HTMLElement>(null);
+  const filter = useContext(SectionFilter);
 
   useEffect(() => {
     const scrollSectionIntoPanel = () => {
@@ -61,6 +69,8 @@ export function InspectorSection({ title, open, onToggle, shortcut, note, childr
     railButton.addEventListener("click", onRailClick);
     return () => railButton.removeEventListener("click", onRailClick);
   }, [title]);
+
+  if (filter && !filter.has(title)) return null;
 
   return (
     <section ref={sectionRef} className={"inspector-section" + (open ? " open" : "")} data-section={title}>

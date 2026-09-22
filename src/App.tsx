@@ -18,6 +18,7 @@ import {
   deletePreset,
   findHealSource,
   listPresets,
+  importPhoto,
   openBlend,
   openLook,
   pickCube,
@@ -50,7 +51,8 @@ import { ExportDialog } from "./components/ExportDialog";
 import { Histogram } from "./components/Histogram";
 import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
-import { InspectorSection } from "./components/InspectorSection";
+import { InspectorSection, SectionFilter } from "./components/InspectorSection";
+import { PHONE_TABS, usePhone, type PhoneTabId } from "./phone";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
@@ -98,6 +100,20 @@ type InspectorKey =
   | "heal"
   | "blend"
   | "presets";
+
+/** The inspector section each phone tab opens, the rest start collapsed. */
+const PHONE_TAB_OPENS: Record<PhoneTabId, InspectorKey> = {
+  light: "tone",
+  color: "color",
+  curves: "curves",
+  detail: "detail",
+  effects: "blend",
+  optics: "lens",
+  crop: "crop",
+  masks: "masks",
+  repair: "heal",
+  presets: "presets",
+};
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
 const PHOTO_FOLDER_KEY = "darkroom.photoFolder";
@@ -231,7 +247,11 @@ export default function App() {
       return "";
     }
   });
-  // right-click menu on a filmstrip thumbnail
+  // phone layout: the open tool sheet, and the photo library screen
+  const phone = usePhone();
+  const [phoneTab, setPhoneTab] = useState<PhoneTabId | null>(null);
+  const [phoneLibrary, setPhoneLibrary] = useState(false);
+  // right-click (long-press on a phone) menu on a filmstrip thumbnail
   const [thumbMenu, setThumbMenu] = useState<{ x: number; y: number; path: string } | null>(null);
   const [version, setVersion] = useState("");
   const [openSections, setOpenSections] = useState<Record<InspectorKey, boolean>>({
@@ -508,8 +528,20 @@ export default function App() {
   }, [monitor?.active]);
 
   const openFiles = useCallback(async () => {
-    const paths = await pickImages(extensions.length ? extensions : ["*"], photoFolder);
+    const picked = await pickImages(extensions.length ? extensions : ["*"], photoFolder);
+    if (!picked.length) return;
+    // One at a time: on a phone each is copied into app storage, and RAW files
+    // are tens of megabytes. On the desktop this returns the paths unchanged.
+    const paths: string[] = [];
+    for (const uri of picked) {
+      try {
+        paths.push(await importPhoto(uri));
+      } catch (e) {
+        setError(`Could not open that photo: ${String(e)}`);
+      }
+    }
     if (!paths.length) return;
+    setPhoneLibrary(false);
     setFiles((prev) => {
       const next = [...prev];
       for (const p of paths) if (!next.some((f) => f.path === p)) next.push(placeholder(p));
@@ -677,8 +709,9 @@ export default function App() {
   const loadLook = useCallback(async () => {
     setLookBusy(true);
     try {
-      const path = await pickCube();
-      if (!path) return;
+      const picked = await pickCube();
+      if (!picked) return;
+      const path = await importPhoto(picked, "cube");
       const info = await openLook(path);
       const input = detectLookInput(`${info.name} ${path.split(/[\\/]/).pop() ?? ""}`);
       setParams((p) => ({ ...p, look: { enabled: true, path, name: info.name, amount: p.look.amount || 100, input } }));
@@ -697,8 +730,9 @@ export default function App() {
     async (dropped?: string) => {
       setBlendBusy(true);
       try {
-        const path = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"], photoFolder));
-        if (!path) return;
+        const picked = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"], photoFolder));
+        if (!picked) return;
+        const path = await importPhoto(picked);
         const info = await openBlend(path);
         setParams((p) => ({
           ...p,
@@ -1057,8 +1091,82 @@ export default function App() {
     return () => window.clearTimeout(t);
   }, [monitorOn, current, preview, params, lut]);
 
+  // ---- phone layout ----
+  const phoneSections = useMemo(
+    () => new Set(phoneTab ? (PHONE_TABS.find((t) => t.id === phoneTab)?.sections ?? []) : []),
+    [phoneTab],
+  );
+  const choosePhoneTab = useCallback(
+    (id: PhoneTabId) => {
+      const next = phoneTab === id ? null : id;
+      // crop is a mode of the viewer, not only a panel
+      if ((next === "crop") !== cropMode) toggleCropMode();
+      setPhoneTab(next);
+      if (next) setOpenSections((prev) => ({ ...prev, [PHONE_TAB_OPENS[next]]: true }));
+    },
+    [phoneTab, cropMode, toggleCropMode],
+  );
+  const closePhoneSheet = useCallback(() => {
+    if (cropMode) toggleCropMode();
+    setPhoneTab(null);
+  }, [cropMode, toggleCropMode]);
+  // no photo open: the phone starts on its library
+  const showPhoneLibrary = phone && (phoneLibrary || (!current && !loading));
+  const phoneTabLabel = PHONE_TABS.find((t) => t.id === phoneTab)?.label ?? "";
+
+  const thumbButton = (f: ImageInfo) => (
+    <button
+      key={f.path}
+      className={"thumb" + (current?.path === f.path ? " active" : "")}
+      title={f.path}
+      onClick={() => {
+        if (current?.path !== f.path) void load(f.path);
+        setPhoneLibrary(false);
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        setThumbMenu({ x: e.clientX, y: e.clientY, path: f.path });
+      }}
+    >
+      {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
+      <span className="thumb-name">{fileName(f.path)}</span>
+    </button>
+  );
+
   return (
-    <div className="app">
+    <div className={"app" + (phone ? " phone" : "") + (phone && phoneTab ? " sheet-open" : "")}>
+      {phone && (
+        <header className="phone-topbar">
+          <button type="button" className="phone-icon" onClick={() => setPhoneLibrary(true)} aria-label="Photos">
+            ▦
+          </button>
+          <div className="phone-title">
+            <strong>{loading ? `Loading ${loading}…` : current ? fileName(current.path) : "Darkroom"}</strong>
+          </div>
+          <button
+            type="button"
+            className={"phone-icon" + (before ? " active" : "")}
+            onPointerDown={() => setBefore(true)}
+            onPointerUp={() => setBefore(false)}
+            onPointerLeave={() => setBefore(false)}
+            onPointerCancel={() => setBefore(false)}
+            disabled={!current}
+            aria-label="Hold to see the original"
+            title="Hold to see the original"
+          >
+            ◧
+          </button>
+          <button type="button" className="phone-icon" onClick={() => rotate(90)} disabled={!current} aria-label="Rotate">
+            ↻
+          </button>
+          <button type="button" className="phone-icon" onClick={autoEdit} disabled={!current} aria-label="Auto edit">
+            ✦
+          </button>
+          <button className="primary phone-export" onClick={() => setShowExport(true)} disabled={!current}>
+            Export
+          </button>
+        </header>
+      )}
       <header className="topbar">
         <div className="brand-lockup">
           <span className="brand-mark" aria-hidden="true">◢</span>
@@ -1216,7 +1324,19 @@ export default function App() {
           />
         </div>
 
+        <SectionFilter.Provider value={phone ? phoneSections : null}>
         <aside className="panel">
+          {phone && (
+            <div className="sheet-head">
+              <strong>{phoneTabLabel}</strong>
+              <button type="button" onClick={reset} disabled={!current}>
+                Reset
+              </button>
+              <button type="button" className="sheet-close" onClick={closePhoneSheet} aria-label="Close">
+                ⌄
+              </button>
+            </div>
+          )}
           <div className="inspector-top">
             <div>
               <strong>Edit</strong>
@@ -1506,7 +1626,49 @@ export default function App() {
             <MonitorPanel info={monitor} onToggle={toggleMonitor} />
           </InspectorSection>
         </aside>
+        </SectionFilter.Provider>
       </div>
+
+      {phone && (
+        <nav className="phone-tabs" aria-label="Edit tools">
+          {PHONE_TABS.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              className={phoneTab === t.id ? "active" : ""}
+              onClick={() => choosePhoneTab(t.id)}
+              disabled={!current}
+            >
+              <span className="tool-glyph">{t.glyph}</span>
+              <span>{t.label}</span>
+            </button>
+          ))}
+        </nav>
+      )}
+
+      {showPhoneLibrary && (
+        <div className="phone-library">
+          <header>
+            <div>
+              <strong>Photos</strong>
+              <span>{files.length ? `${files.length} photo${files.length === 1 ? "" : "s"}` : "Nothing open yet"}</span>
+            </div>
+            <button type="button" className="phone-icon" onClick={() => setShowAbout(true)} aria-label="Settings">
+              ⚙
+            </button>
+            {current && (
+              <button type="button" onClick={() => setPhoneLibrary(false)}>
+                Done
+              </button>
+            )}
+          </header>
+          <button type="button" className="primary phone-open" onClick={openFiles}>
+            + Open photos
+          </button>
+          <div className="phone-library-grid">{files.map(thumbButton)}</div>
+          {files.length > 0 && <div className="hint">Press and hold a photo to remove it.</div>}
+        </div>
+      )}
 
       <footer className="filmstrip">
         <div className="filmstrip-summary">
@@ -1519,28 +1681,18 @@ export default function App() {
         </div>
         <div className="filmstrip-track">
           {files.length === 0 && <span className="hint">Browse to open RAW, JPEG, PNG, or TIFF images.</span>}
-          {files.map((f) => (
-            <button
-              key={f.path}
-              className={"thumb" + (current?.path === f.path ? " active" : "")}
-              title={f.path}
-              onClick={() => current?.path !== f.path && load(f.path)}
-              onContextMenu={(e) => {
-                e.preventDefault();
-                setThumbMenu({ x: e.clientX, y: e.clientY, path: f.path });
-              }}
-            >
-              {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
-              <span className="thumb-name">{fileName(f.path)}</span>
-            </button>
-          ))}
+          {files.map(thumbButton)}
         </div>
       </footer>
 
       {thumbMenu && (
         <div
           className="thumb-menu"
-          style={{ left: Math.min(thumbMenu.x, window.innerWidth - 220), top: thumbMenu.y - 8 }}
+          style={
+            thumbMenu.y > 180
+              ? { left: Math.min(thumbMenu.x, window.innerWidth - 220), top: thumbMenu.y - 8 }
+              : { left: Math.min(thumbMenu.x, window.innerWidth - 220), top: thumbMenu.y + 8, transform: "none" }
+          }
           onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="thumb-menu-path" title={thumbMenu.path}>

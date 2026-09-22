@@ -1533,3 +1533,287 @@ input[type="number"] {
   gap: 6px;
   align-self: center;
 }
+
+/* ================================================================
+   Phone layout (see src/phone.ts). Everything here is scoped to
+   .app.phone, which only applies on phone-sized screens, so the
+   desktop layout above is untouched.
+   ================================================================ */
+.app.phone {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  height: 100dvh;
+}
+.app.phone > .topbar,
+.app.phone > .filmstrip,
+.app.phone .toolrail,
+.app.phone .viewer-toolbar,
+.app.phone .inspector-top,
+.app.phone .histogram-card {
+  display: none;
+}
+
+/* top bar */
+.phone-topbar {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 2px;
+  min-height: 52px;
+  padding: env(safe-area-inset-top) 6px 0;
+  background: #101318;
+  border-bottom: 1px solid var(--border);
+}
+.phone-title {
+  flex: 1;
+  min-width: 0;
+  padding: 0 4px;
+}
+.phone-title strong {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+  font-weight: 600;
+}
+.phone-icon {
+  display: flex;
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text);
+  font-size: 19px;
+  touch-action: manipulation;
+}
+.phone-icon.active,
+.phone-icon:active:not(:disabled) {
+  background: rgba(138, 162, 255, 0.16);
+}
+.phone-icon:disabled {
+  opacity: 0.35;
+}
+.phone-export {
+  height: 36px;
+  margin-left: 4px;
+  padding: 0 14px;
+  border-radius: 10px;
+}
+
+/* photo, then the sheet */
+.app.phone .main {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+.app.phone .viewer-shell {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.app.phone .viewer {
+  touch-action: none;
+}
+.app.phone .panel {
+  display: none;
+}
+.app.phone.sheet-open .panel {
+  display: block;
+  flex: 0 0 auto;
+  max-height: 48%;
+  border-left: 0;
+  border-top: 1px solid var(--border);
+  border-radius: 16px 16px 0 0;
+  box-shadow: 0 -12px 30px rgba(0, 0, 0, 0.45);
+  overscroll-behavior: contain;
+}
+.sheet-head {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 12px;
+  background: #12161b;
+  border-bottom: 1px solid var(--border-soft);
+}
+.sheet-head strong {
+  flex: 1;
+  font-size: 15px;
+}
+.sheet-close {
+  width: 40px;
+  height: 34px;
+  font-size: 18px;
+}
+
+/* finger-sized controls inside the sheet */
+.app.phone .inspector-section-head {
+  min-height: 46px;
+}
+.app.phone .slider-range {
+  height: 4px;
+}
+.app.phone .slider-range::-webkit-slider-thumb {
+  width: 24px;
+  height: 24px;
+}
+.app.phone .panel button,
+.app.phone .panel select {
+  min-height: 36px;
+}
+
+/* tool tabs */
+.phone-tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 2px;
+  overflow-x: auto;
+  padding: 6px 6px calc(6px + env(safe-area-inset-bottom));
+  background: #101318;
+  border-top: 1px solid var(--border);
+  scrollbar-width: none;
+}
+.phone-tabs::-webkit-scrollbar {
+  display: none;
+}
+.phone-tabs button {
+  display: flex;
+  flex: 0 0 62px;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 7px 0 6px;
+  border: 0;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  touch-action: manipulation;
+}
+.phone-tabs .tool-glyph {
+  font-size: 18px;
+}
+.phone-tabs button.active {
+  color: var(--text);
+  background: rgba(138, 162, 255, 0.14);
+}
+.phone-tabs button:disabled {
+  opacity: 0.35;
+}
+
+/* photo library */
+.phone-library {
+  position: fixed;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: calc(14px + env(safe-area-inset-top)) 14px calc(14px + env(safe-area-inset-bottom));
+  background: var(--bg);
+  overflow-y: auto;
+}
+.phone-library header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.phone-library header div {
+  flex: 1;
+}
+.phone-library header strong {
+  display: block;
+  font-size: 22px;
+}
+.phone-library header span {
+  color: var(--muted);
+  font-size: 12px;
+}
+.phone-library header > button:not(.phone-icon) {
+  height: 36px;
+  padding: 0 14px;
+}
+.phone-open {
+  height: 48px;
+  border-radius: 12px;
+  font-size: 15px;
+}
+.phone-library-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(104px, 1fr));
+  gap: 8px;
+}
+.phone-library-grid .thumb {
+  width: auto;
+  flex: none;
+  -webkit-touch-callout: none;
+}
+.phone-library-grid .thumb img,
+.phone-library-grid .thumb-placeholder {
+  width: 100%;
+  height: auto;
+  aspect-ratio: 1;
+}
+.phone-library-grid .thumb-name {
+  font-size: 10px;
+}
+
+/* dialogs fit the screen */
+.app.phone .modal {
+  width: min(390px, calc(100vw - 24px));
+  max-height: calc(100dvh - 32px);
+  overflow-y: auto;
+}
+
+/* landscape phone: the sheet sits beside the photo instead of under it */
+@media (orientation: landscape) {
+  .app.phone .main {
+    flex-direction: row;
+  }
+  .app.phone.sheet-open .panel {
+    width: 46%;
+    max-height: none;
+    border-top: 0;
+    border-left: 1px solid var(--border);
+    border-radius: 0;
+    box-shadow: none;
+  }
+  .phone-topbar {
+    min-height: 44px;
+  }
+  .phone-tabs button {
+    padding: 4px 0;
+  }
+}
+
+/* Touch sliders (Slider.tsx): a vertical swipe scrolls the panel, only a
+   sideways drag moves the value. The padding is the finger's target. */
+.slider-touch {
+  padding: 12px 0;
+  touch-action: pan-y;
+}
+.slider-touch .slider-range {
+  margin: 0;
+  pointer-events: none;
+}
+/* the curve is an editing surface, not somewhere to scroll from */
+@media (pointer: coarse) {
+  .curve-svg {
+    touch-action: none;
+  }
+}
+
+/* phones: pinch and double-tap zoom, the top bar holds for the original */
+.app.phone .compare-tabs,
+.app.phone .compare-zoom-actions {
+  display: none;
+}
