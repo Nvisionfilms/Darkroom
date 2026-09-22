@@ -199,6 +199,16 @@ export async function startupFile(): Promise<string | null> {
   return invoke<string | null>("startup_file");
 }
 
+export interface PlatformInfo {
+  os: string;
+  /** false on phones, which cannot update themselves */
+  updates: boolean;
+}
+
+export async function platform(): Promise<PlatformInfo> {
+  return invoke<PlatformInfo>("platform");
+}
+
 export async function supportedExtensions(): Promise<string[]> {
   return invoke<string[]>("supported_extensions");
 }

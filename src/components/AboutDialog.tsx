@@ -3,6 +3,9 @@ import type { UpdateStatus } from "../updater";
 interface Props {
   version: string;
   status: UpdateStatus;
+  /** false on phones: they are updated by whatever installed them */
+  canUpdate: boolean;
+  os: string;
   /** the folder the Open Photos dialog starts in, or "" for the last one used */
   photoFolder: string;
   onPickPhotoFolder: () => void;
@@ -17,6 +20,8 @@ const UPDATE_CHANNEL = "updates.nvisionfilms.com";
 export function AboutDialog({
   version,
   status,
+  canUpdate,
+  os,
   photoFolder,
   onPickPhotoFolder,
   onClearPhotoFolder,
@@ -24,7 +29,7 @@ export function AboutDialog({
   onInstall,
   onClose,
 }: Props) {
-  const busy = status.kind === "checking" || status.kind === "installing";
+  const busy = canUpdate && (status.kind === "checking" || status.kind === "installing");
   let line: string;
   switch (status.kind) {
     case "checking":
@@ -50,8 +55,14 @@ export function AboutDialog({
       <div className="modal about" onClick={(e) => e.stopPropagation()}>
         <h2>Darkroom</h2>
         <div className="about-version">Version {version}</div>
-        <div className="about-line">{line}</div>
-        {status.kind === "installing" && (
+        <div className="about-line">
+          {canUpdate
+            ? line
+            : os === "ios"
+              ? "Updates arrive through TestFlight, or by installing again from the Mac."
+              : "Updates arrive however you installed the app; it cannot update itself."}
+        </div>
+        {canUpdate && status.kind === "installing" && (
           <span className="update-progress about-progress">
             <span className="update-bar" style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }} />
           </span>
@@ -74,22 +85,25 @@ export function AboutDialog({
           </div>
         </div>
 
-        <div className="about-repo" title="Darkroom update channel">
-          {UPDATE_CHANNEL}
-        </div>
+        {canUpdate && (
+          <div className="about-repo" title="Darkroom update channel">
+            {UPDATE_CHANNEL}
+          </div>
+        )}
         <div className="modal-actions">
           <button onClick={onClose} disabled={busy}>
             Close
           </button>
-          {status.kind === "available" ? (
-            <button className="primary" onClick={onInstall}>
-              Install {status.update.version} and restart
-            </button>
-          ) : (
-            <button className="primary" onClick={onCheck} disabled={busy}>
-              Check for updates
-            </button>
-          )}
+          {canUpdate &&
+            (status.kind === "available" ? (
+              <button className="primary" onClick={onInstall}>
+                Install {status.update.version} and restart
+              </button>
+            ) : (
+              <button className="primary" onClick={onCheck} disabled={busy}>
+                Check for updates
+              </button>
+            ))}
         </div>
       </div>
     </div>

@@ -14,7 +14,8 @@ export type UpdateStatus =
  * Shared update state: checks GitHub Releases (the updater endpoint in
  * tauri.conf.json), downloads the signed bundle and relaunches.
  */
-export function useUpdater(currentVersion: string) {
+/** `enabled` is false on phones, which cannot update themselves. */
+export function useUpdater(currentVersion: string, enabled = true) {
   const [status, setStatus] = useState<UpdateStatus>({ kind: "idle" });
   const updateRef = useRef<Update | null>(null);
 
@@ -57,7 +58,7 @@ export function useUpdater(currentVersion: string) {
 
   // automatic check a few seconds after launch (packaged builds only)
   useEffect(() => {
-    if (import.meta.env.DEV) return;
+    if (import.meta.env.DEV || !enabled) return;
     const t = window.setTimeout(() => {
       check({ timeout: 15000 })
         .then((u) => {
@@ -69,7 +70,7 @@ export function useUpdater(currentVersion: string) {
         .catch(() => {});
     }, 3000);
     return () => window.clearTimeout(t);
-  }, []);
+  }, [enabled]);
 
   return { status, checkNow, install, dismiss };
 }

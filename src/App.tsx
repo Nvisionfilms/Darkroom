@@ -22,6 +22,7 @@ import {
   openBlend,
   openLook,
   pickCube,
+  platform,
   pickPhoto,
   savePreset,
   startupFile,
@@ -274,7 +275,12 @@ export default function App() {
     blend: false,
     presets: false,
   });
-  const updater = useUpdater(version);
+  // phones are updated by whatever installed them, never by themselves
+  const [platformInfo, setPlatformInfo] = useState({ os: "", updates: true });
+  useEffect(() => {
+    platform().then(setPlatformInfo).catch(() => {});
+  }, []);
+  const updater = useUpdater(version, platformInfo.updates);
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
 
@@ -1710,6 +1716,8 @@ export default function App() {
         <AboutDialog
           version={version}
           status={updater.status}
+          canUpdate={platformInfo.updates}
+          os={platformInfo.os}
           photoFolder={photoFolder}
           onPickPhotoFolder={() => void choosePhotoFolder()}
           onClearPhotoFolder={clearPhotoFolder}

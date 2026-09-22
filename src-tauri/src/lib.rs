@@ -531,6 +531,23 @@ fn picture_profiles() -> Vec<String> {
     profiles::IDS.iter().map(|s| s.to_string()).collect()
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PlatformInfo {
+    os: String,
+    /// Whether this build can update itself. Phones cannot: iOS forbids it,
+    /// and the Android build leaves updates to however it was installed.
+    updates: bool,
+}
+
+#[tauri::command]
+fn platform() -> PlatformInfo {
+    PlatformInfo {
+        os: std::env::consts::OS.to_string(),
+        updates: cfg!(desktop),
+    }
+}
+
 #[tauri::command]
 fn supported_extensions() -> Vec<String> {
     decode::RAW_EXTENSIONS
@@ -565,6 +582,7 @@ pub fn run() {
             startup_file,
             load_session,
             save_session,
+            platform,
             supported_extensions,
             start_tether,
             stop_tether,
