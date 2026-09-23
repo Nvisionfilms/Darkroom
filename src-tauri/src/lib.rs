@@ -447,6 +447,79 @@ async fn export_image(
     Ok(out)
 }
 
+/// The edits saved beside a photo, without decoding the photo itself. Batch
+/// work needs every selected photo's settings, and opening each one to read
+/// them would mean demosaicing a whole folder.
+#[tauri::command]
+fn read_edits(path: String) -> Option<EditParams> {
+    sidecar::load(Path::new(&path))
+}
+
+/// Save edits for several photos at once: used to apply a preset to a
+/// selection. Each photo keeps everything the preset does not cover, so its
+/// crop, masks and retouching survive.
+#[tauri::command]
+fn apply_edits(paths: Vec<String>, settings: serde_json::Value) -> Result<usize, String> {
+    let Some(fields) = settings.as_object() else {
+        return Err("a preset must be an object".into());
+    };
+    let mut done = 0;
+    for path in &paths {
+        let p = Path::new(path);
+        let current = sidecar::load(p).unwrap_or_default();
+        let mut merged = match serde_json::to_value(&current) {
+            Ok(serde_json::Value::Object(m)) => m,
+            _ => continue,
+        };
+        for (k, v) in fields {
+            merged.insert(k.clone(), v.clone());
+        }
+        let edits: EditParams = match serde_json::from_value(serde_json::Value::Object(merged)) {
+            Ok(e) => e,
+            Err(e) => {
+                log::warn!("preset does not fit {path}: {e}");
+                continue;
+            }
+        };
+        match sidecar::save(p, &edits) {
+            Ok(()) => done += 1,
+            Err(e) => log::warn!("could not save edits for {path}: {e:#}"),
+        }
+    }
+    Ok(done)
+}
+
+/// Export a photo that is not the one open in the viewer. The open photo is
+/// already decoded and kept in memory; this decodes the file first, which is
+/// what a batch export needs for each of its photos.
+#[tauri::command]
+async fn export_path(app: tauri::AppHandle, path: String, req: export::ExportRequest) -> Result<String, String> {
+    let out = req.out_path.clone();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let (image, _) = decode::load(Path::new(&path))?;
+        if !import::is_handle(&req.out_path) {
+            return export::export(&image, &req);
+        }
+        let handle = req.out_path.clone();
+        let ext = match req.format.as_str() {
+            "png" => "png",
+            "tiff" | "tif" => "tif",
+            _ => "jpg",
+        };
+        let tmp = app.path().app_cache_dir()?.join(format!("export.{ext}"));
+        let mut req = req;
+        req.out_path = tmp.to_string_lossy().into_owned();
+        export::export(&image, &req)?;
+        import::write_back(&app, &handle, &tmp)?;
+        std::fs::remove_file(&tmp).ok();
+        Ok(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+    Ok(out)
+}
+
 /// What was open when the app last closed, restored on the next launch.
 #[derive(Serialize, serde::Deserialize, Default, Clone)]
 #[serde(rename_all = "camelCase", default)]
@@ -578,6 +651,9 @@ pub fn run() {
             get_preview,
             save_edits,
             export_image,
+            export_path,
+            read_edits,
+            apply_edits,
             open_watermark,
             get_watermark_pixels,
             startup_file,

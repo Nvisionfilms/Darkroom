@@ -95,6 +95,21 @@ export async function exportImage(req: ExportRequest): Promise<string> {
   return invoke<string>("export_image", { req });
 }
 
+/** Export a photo other than the one open in the viewer (batch export). */
+export async function exportPath(path: string, req: ExportRequest): Promise<string> {
+  return invoke<string>("export_path", { path, req });
+}
+
+/** The edits saved beside a photo, without decoding the photo. */
+export async function readEdits(path: string): Promise<EditParams | null> {
+  return invoke<EditParams | null>("read_edits", { path });
+}
+
+/** Apply a preset to several photos at once; returns how many were written. */
+export async function applyEdits(paths: string[], settings: unknown): Promise<number> {
+  return invoke<number>("apply_edits", { paths, settings });
+}
+
 /** Decode a watermark image on the Rust side; returns its size. */
 export async function openWatermark(path: string): Promise<WatermarkInfo> {
   return invoke<WatermarkInfo>("open_watermark", { path });

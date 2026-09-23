@@ -72,6 +72,14 @@ await js(`window.__smoke = {
     Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(input, String(value));
     input.dispatchEvent(new Event('input', { bubbles: true }));
   },
+  sliderValue(root, label) {
+    const el = [...root.querySelectorAll('.slider')].find(x => x.querySelector('.slider-label')?.textContent.trim() === label);
+    if (!el) throw new Error('no slider ' + label);
+    return parseFloat(el.querySelector('input[type=range]').value);
+  },
+  iconButton(titleStart) {
+    return [...document.querySelectorAll('.icon-button')].find(b => (b.title || '').startsWith(titleStart));
+  },
   problems() {
     return [document.querySelector('.toast')?.textContent, document.querySelector('.viewer-error')?.textContent].filter(Boolean);
   },
@@ -232,6 +240,45 @@ await step("double exposure loads, blends and clears", async () => {
 // Also the tidy-up: this test opens copies out of a temp folder, and the
 // filmstrip is restored from a saved session, so leaving them in would put
 // throwaway files in front of the user on the next launch.
+await step("undo and redo step through edits", async () => {
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Exposure', 0.5); true`);
+  await sleep(700);
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Contrast', 40); true`);
+  await sleep(700);
+  expect(await js(`__smoke.sliderValue(__smoke.open('Tone'), 'Contrast')`) === 40, "contrast did not take");
+  const undo = `__smoke.iconButton('Undo')`;
+  expect(await js(`!!${undo} && !${undo}.disabled`), "undo is not offered after editing");
+  await js(`${undo}.click(); true`);
+  expect(
+    await waitFor(`__smoke.sliderValue(__smoke.open('Tone'), 'Contrast') === 0`, 4000),
+    "undo did not take back the contrast change",
+  );
+  expect(
+    await js(`__smoke.sliderValue(__smoke.open('Tone'), 'Exposure')`) === 0.5,
+    "undo went back too far: the exposure change should still stand",
+  );
+  const redo = `__smoke.iconButton('Redo')`;
+  expect(await js(`!!${redo} && !${redo}.disabled`), "redo is not offered after an undo");
+  await js(`${redo}.click(); true`);
+  expect(
+    await waitFor(`__smoke.sliderValue(__smoke.open('Tone'), 'Contrast') === 40`, 4000),
+    "redo did not put the contrast change back",
+  );
+  // leave the photo as it was
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Contrast', 0); __smoke.slider(__smoke.open('Tone'), 'Exposure', 1.25); true`);
+  await sleep(900);
+});
+
+await step("the filmstrip offers the batch actions", async () => {
+  expect(await js(`!!document.querySelector('.filmstrip-actions')`), "no filmstrip actions");
+  const before = await js(`document.querySelectorAll('.thumb').length`);
+  await js(`__smoke.button('All').click(); true`);
+  expect(
+    await waitFor(`document.querySelectorAll('.thumb.picked').length === ${before}`, 4000),
+    "Select all did not pick every photo",
+  );
+});
+
 await step("right-click removes a photo from the filmstrip", async () => {
   const before = await js(`document.querySelectorAll('.thumb').length`);
   expect(before > 0, "no thumbnails to remove");
@@ -244,20 +291,11 @@ await step("right-click removes a photo from the filmstrip", async () => {
     await waitFor(`document.querySelectorAll('.thumb').length === ${before - 1}`, 4000),
     "the photo was not removed from the filmstrip",
   );
-  // and the rest of this test run's temp photos go too
-  for (let i = 0; i < 12; i++) {
-    const gone = await js(`(() => {
-      const t = [...document.querySelectorAll('.thumb')].find(x => /darkroom-smoke-|\\bTemp\\b/i.test(x.title));
-      if (!t) return true;
-      const r = t.getBoundingClientRect();
-      t.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, cancelable: true, clientX: r.left + 4, clientY: r.top + 4 }));
-      return false;
-    })()`);
-    if (gone) break;
-    await sleep(200);
-    await js(`__smoke.button('Remove from filmstrip')?.click(); true`);
-    await sleep(300);
-  }
+  // and the rest of this test run's temp photos go with select all + Delete
+  await js(`__smoke.button('All')?.click(); true`);
+  await sleep(300);
+  await js(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })); true`);
+  expect(await waitFor(`document.querySelectorAll('.thumb').length === 0`, 5000), "Delete did not clear the filmstrip");
 });
 
 await step("no errors at the end", async () => {

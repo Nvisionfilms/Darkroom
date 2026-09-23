@@ -1,11 +1,16 @@
 import { useState } from "react";
-import { exportImage, pickSavePath } from "../api";
+import { exportImage, exportPath, pickFolder, pickSavePath, readEdits } from "../api";
 import { buildLut } from "../curve";
-import type { EditParams, ExportFormat, ImageInfo } from "../types";
+import { defaultParams, type EditParams, type ExportFormat, type ImageInfo } from "../types";
 
 interface Props {
   image: ImageInfo;
   params: EditParams;
+  /**
+   * Export these photos instead of the open one, each with the edits saved
+   * beside it. The open photo's settings are not used.
+   */
+  batch?: string[] | null;
   onClose: () => void;
 }
 
@@ -15,7 +20,11 @@ function stripExt(path: string): string {
   return i > slash ? path.slice(0, i) : path;
 }
 
-export function ExportDialog({ image, params, onClose }: Props) {
+function fileName(path: string): string {
+  return path.split(/[\\/]/).pop() || path;
+}
+
+export function ExportDialog({ image, params, batch, onClose }: Props) {
   const [format, setFormat] = useState<ExportFormat>("jpeg");
   const [quality, setQuality] = useState(92);
   const [bitDepth, setBitDepth] = useState<8 | 16>(16);
@@ -26,21 +35,23 @@ export function ExportDialog({ image, params, onClose }: Props) {
 
   const ext = format === "jpeg" ? "jpg" : format === "tiff" ? "tif" : "png";
 
-  const run = async () => {
-    setMessage(null);
+  const settings = {
+    format,
+    quality,
+    bitDepth: (format === "jpeg" ? 8 : bitDepth) as 8 | 16,
+    maxLongEdge: resize ? longEdge : null,
+  };
+
+  const runOne = async () => {
     const out = await pickSavePath(`${stripExt(image.path)}-edit.${ext}`, ext);
     if (!out) return;
     setBusy(true);
     try {
-      const lut = Array.from(buildLut(params.curves));
       const written = await exportImage({
         outPath: out,
-        format,
-        quality,
-        bitDepth: format === "jpeg" ? 8 : bitDepth,
-        maxLongEdge: resize ? longEdge : null,
+        ...settings,
         params,
-        lut,
+        lut: Array.from(buildLut(params.curves)),
       });
       setMessage(`Saved ${written}`);
     } catch (e) {
@@ -50,10 +61,54 @@ export function ExportDialog({ image, params, onClose }: Props) {
     }
   };
 
+  // Each photo is exported with its own saved edits, one at a time: a RAW
+  // takes hundreds of megabytes to develop, so running a folder of them at
+  // once would be a good way to run out of memory.
+  const runBatch = async (paths: string[]) => {
+    const dir = await pickFolder("Choose where to save the exported photos");
+    if (!dir) return;
+    setBusy(true);
+    const failed: string[] = [];
+    let done = 0;
+    for (const path of paths) {
+      setMessage(`Exporting ${done + 1} of ${paths.length}: ${fileName(path)}…`);
+      try {
+        const edits = (await readEdits(path)) ?? defaultParams();
+        const name = fileName(stripExt(path));
+        await exportPath(path, {
+          outPath: `${dir}/${name}-edit.${ext}`,
+          ...settings,
+          params: edits,
+          lut: Array.from(buildLut(edits.curves)),
+        });
+        done += 1;
+      } catch (e) {
+        failed.push(`${fileName(path)}: ${String(e)}`);
+      }
+    }
+    setBusy(false);
+    setMessage(
+      failed.length
+        ? `Exported ${done} of ${paths.length} to ${dir}. Failed: ${failed.join("; ")}`
+        : `Exported ${done} photo${done === 1 ? "" : "s"} to ${dir}`,
+    );
+  };
+
+  const run = async () => {
+    setMessage(null);
+    if (batch && batch.length) await runBatch(batch);
+    else await runOne();
+  };
+
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h2>Export</h2>
+        <h2>{batch && batch.length ? `Export ${batch.length} photos` : "Export"}</h2>
+        {batch && batch.length > 0 && (
+          <div className="hint">
+            Each photo is exported with its own saved edits, into a folder you choose.
+          </div>
+        )}
         <label className="field">
           <span>Format</span>
           <select value={format} onChange={(e) => setFormat(e.target.value as ExportFormat)}>

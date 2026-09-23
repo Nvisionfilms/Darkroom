@@ -696,7 +696,7 @@ input[type="number"] {
 /* Filmstrip */
 .filmstrip {
   display: grid;
-  grid-template-columns: 150px minmax(0, 1fr);
+  grid-template-columns: 268px minmax(0, 1fr);
   min-width: 0;
   align-items: stretch;
   background: #101318;
@@ -704,12 +704,40 @@ input[type="number"] {
 }
 .filmstrip-summary {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  flex-direction: column;
+  justify-content: center;
+  gap: 7px;
   padding: 0 12px;
   color: var(--muted);
   border-right: 1px solid var(--border-soft);
   font-size: 10px;
+}
+.filmstrip-count {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filmstrip-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px;
+}
+.filmstrip-selected {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 6px;
+  color: var(--text);
+}
+.filmstrip-actions button,
+.filmstrip-preset {
+  height: 24px;
+  padding: 0 8px;
+  font-size: 10px;
+}
+.filmstrip-preset {
+  max-width: 110px;
 }
 .filmstrip-grid {
   color: #9dacdb;
@@ -1816,4 +1844,20 @@ input[type="number"] {
 .app.phone .compare-tabs,
 .app.phone .compare-zoom-actions {
   display: none;
+}
+
+/* a photo picked for a batch action, as opposed to the one being edited */
+.thumb.picked {
+  border-color: #46506a;
+  background: rgba(138, 162, 255, 0.1);
+}
+.thumb.picked.active {
+  border-color: var(--accent);
+}
+
+/* the quiet twin of the error toast */
+.toast.notice {
+  border-color: #2f6b3e;
+  background: #16241a;
+  color: var(--text);
 }

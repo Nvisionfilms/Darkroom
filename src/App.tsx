@@ -19,6 +19,7 @@ import {
   findHealSource,
   listPresets,
   importPhoto,
+  applyEdits,
   openBlend,
   openLook,
   pickCube,
@@ -54,6 +55,7 @@ import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
 import { InspectorSection, SectionFilter } from "./components/InspectorSection";
 import { PHONE_TABS, usePhone, type PhoneTabId } from "./phone";
+import { useHistory } from "./history";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
@@ -230,7 +232,10 @@ export default function App() {
   const [files, setFiles] = useState<ImageInfo[]>([]);
   const [current, setCurrent] = useState<ImageInfo | null>(null);
   const [preview, setPreview] = useState<PreviewImage | null>(null);
-  const [params, setParams] = useState<EditParams>(defaultParams());
+  // every change to the develop settings is a step you can take back
+  const history = useHistory<EditParams>(defaultParams());
+  const params = history.value;
+  const setParams = history.set;
   const [before, setBefore] = useState(false);
   const [hist, setHist] = useState<Hist | null>(null);
   const [zoom, setZoom] = useState("");
@@ -248,6 +253,12 @@ export default function App() {
       return "";
     }
   });
+  // filmstrip selection: what the batch actions work on. The photo being
+  // edited is always in it, so the actions apply to what you can see.
+  const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
+  const selectAnchor = useRef<string | null>(null);
+  const [batchExport, setBatchExport] = useState<string[] | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   // phone layout: the open tool sheet, and the photo library screen
   const phone = usePhone();
   const [phoneTab, setPhoneTab] = useState<PhoneTabId | null>(null);
@@ -411,7 +422,10 @@ export default function App() {
       performance.measure("ipc.get_preview", { start: t1 });
       setCurrent(info);
       setPreview(pv);
+      setSelected(new Set([info.path]));
+      selectAnchor.current = info.path;
       setCropMode(false);
+      setAspectKey("free");
       setSelectedMaskId(null);
       setWbPick(false);
       setHealTool(false);
@@ -421,7 +435,7 @@ export default function App() {
       // the lens calibration is derived from the file rather than user data,
       // so always take the freshly resolved one
       p = { ...p, lensProfile: info.lensProfile };
-      setParams(p);
+      history.reset(p);
       setFiles((prev) => {
         const i = prev.findIndex((f) => f.path === info.path);
         if (i === -1) return [...prev, info];
@@ -443,6 +457,7 @@ export default function App() {
     }
   }, []);
   loadRef.current = load;
+
 
   // ---- tethered capture ----
   useEffect(() => {
@@ -557,18 +572,20 @@ export default function App() {
   }, [extensions, load, photoFolder]);
 
   /**
-   * Take a photo out of the filmstrip and the saved session. The file on disk
-   * is never touched. If it was the one being edited, the neighbour opens so
+   * Take photos out of the filmstrip and the saved session. The files on disk
+   * are never touched. If one of them was being edited, a neighbour opens so
    * the viewer is never left showing something the strip no longer lists.
    */
   const removeFromFilmstrip = useCallback(
-    (path: string) => {
+    (paths: string[]) => {
       setThumbMenu(null);
-      const at = files.findIndex((f) => f.path === path);
+      const gone = new Set(paths);
+      const at = files.findIndex((f) => gone.has(f.path));
       if (at < 0) return;
-      const rest = files.filter((f) => f.path !== path);
+      const rest = files.filter((f) => !gone.has(f.path));
       setFiles(rest);
-      if (current?.path !== path) return;
+      setSelected((prev) => new Set([...prev].filter((p) => !gone.has(p))));
+      if (!current || !gone.has(current.path)) return;
       if (!rest.length) {
         setCurrent(null);
         setPreview(null);
@@ -577,6 +594,60 @@ export default function App() {
       void load(rest[Math.min(at, rest.length - 1)].path);
     },
     [files, current, load],
+  );
+
+  /** Ctrl/Cmd click picks photos out, Shift click takes a run of them. */
+  const clickThumb = useCallback(
+    (path: string, e: React.MouseEvent) => {
+      if (e.shiftKey && selectAnchor.current) {
+        const from = files.findIndex((f) => f.path === selectAnchor.current);
+        const to = files.findIndex((f) => f.path === path);
+        if (from >= 0 && to >= 0) {
+          const [lo, hi] = from < to ? [from, to] : [to, from];
+          setSelected(new Set(files.slice(lo, hi + 1).map((f) => f.path)));
+          return;
+        }
+      }
+      if (e.ctrlKey || e.metaKey) {
+        setSelected((prev) => {
+          const next = new Set(prev);
+          if (next.has(path)) next.delete(path);
+          else next.add(path);
+          return next;
+        });
+        selectAnchor.current = path;
+        return;
+      }
+      selectAnchor.current = path;
+      setPhoneLibrary(false);
+      if (current?.path !== path) void load(path);
+      else setSelected(new Set([path]));
+    },
+    [files, current, load],
+  );
+
+  const selectAll = useCallback(() => {
+    setSelected(new Set(files.map((f) => f.path)));
+  }, [files]);
+
+  /**
+   * Apply a preset to every selected photo by rewriting their sidecars, which
+   * needs no decoding. The open photo also gets it in the viewer, so the
+   * change is visible rather than only on disk.
+   */
+  const applyPresetToSelection = useCallback(
+    async (preset: Preset) => {
+      const paths = [...selected];
+      if (!paths.length) return;
+      try {
+        const n = await applyEdits(paths, preset.settings);
+        if (current && selected.has(current.path)) setParams((p) => ({ ...p, ...preset.settings }));
+        setNotice(`Applied "${preset.name}" to ${n} photo${n === 1 ? "" : "s"}`);
+      } catch (e) {
+        setError(`Could not apply the preset: ${String(e)}`);
+      }
+    },
+    [selected, current],
   );
 
   // the menu closes on the next click, a scroll, or Escape
@@ -927,6 +998,8 @@ export default function App() {
       setAspectKey(key);
       if (!current) return;
       const ratio = aspectRatio(key, current.width, current.height);
+      // a ratio is something you frame with, so show the frame
+      if (ratio !== null) setCropMode(true);
       setParams((p) => ({ ...p, crop: fitAspect(ratio, current.width, current.height, { ...p.crop, enabled: true }) }));
     },
     [current],
@@ -982,6 +1055,27 @@ export default function App() {
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "SELECT" || tag === "TEXTAREA") return;
       const command = e.ctrlKey || e.metaKey;
+      if (command && (e.key === "z" || e.key === "Z")) {
+        e.preventDefault();
+        if (e.shiftKey) history.redo();
+        else history.undo();
+        return;
+      }
+      if (command && (e.key === "y" || e.key === "Y")) {
+        e.preventDefault();
+        history.redo();
+        return;
+      }
+      if (command && (e.key === "a" || e.key === "A")) {
+        e.preventDefault();
+        selectAll();
+        return;
+      }
+      if ((e.key === "Delete" || e.key === "Backspace") && selected.size && !cropMode) {
+        e.preventDefault();
+        removeFromFilmstrip([...selected]);
+        return;
+      }
       if (e.key === "\\") {
         setBefore(true);
         e.preventDefault();
@@ -1062,6 +1156,10 @@ export default function App() {
     changeGuide,
     healTool,
     toggleHealTool,
+    history,
+    selected,
+    selectAll,
+    removeFromFilmstrip,
   ]);
 
   const set =
@@ -1123,14 +1221,14 @@ export default function App() {
   const thumbButton = (f: ImageInfo) => (
     <button
       key={f.path}
-      className={"thumb" + (current?.path === f.path ? " active" : "")}
+      className={
+        "thumb" + (current?.path === f.path ? " active" : "") + (selected.has(f.path) ? " picked" : "")
+      }
       title={f.path}
-      onClick={() => {
-        if (current?.path !== f.path) void load(f.path);
-        setPhoneLibrary(false);
-      }}
+      onClick={(e) => clickThumb(f.path, e)}
       onContextMenu={(e) => {
         e.preventDefault();
+        if (!selected.has(f.path)) setSelected(new Set([f.path]));
         setThumbMenu({ x: e.clientX, y: e.clientY, path: f.path });
       }}
     >
@@ -1189,6 +1287,22 @@ export default function App() {
 
         <div className="top-actions">
           <span className="zoom-pill">{zoom || "Fit"}</span>
+          <button
+            className="icon-button"
+            onClick={history.undo}
+            disabled={!current || !history.canUndo}
+            title="Undo (Ctrl+Z)"
+          >
+            ↩
+          </button>
+          <button
+            className="icon-button"
+            onClick={history.redo}
+            disabled={!current || !history.canRedo}
+            title="Redo (Ctrl+Shift+Z)"
+          >
+            ↪
+          </button>
           <button className="icon-button" onClick={() => rotate(-90)} disabled={!current} title="Rotate left">↶</button>
           <button className="icon-button" onClick={() => rotate(90)} disabled={!current} title="Rotate right">↷</button>
           <button
@@ -1678,12 +1792,54 @@ export default function App() {
 
       <footer className="filmstrip">
         <div className="filmstrip-summary">
-          <span className="filmstrip-grid">▦</span>
-          <span>
-            {files.length === 0
-              ? "No photos open"
-              : `${currentIndex >= 0 ? currentIndex + 1 : 0} of ${files.length} photo${files.length === 1 ? "" : "s"}`}
-          </span>
+          <div className="filmstrip-count">
+            <span className="filmstrip-grid">▦</span>
+            <span>
+              {files.length === 0
+                ? "No photos open"
+                : `${currentIndex >= 0 ? currentIndex + 1 : 0} of ${files.length} photo${files.length === 1 ? "" : "s"}`}
+            </span>
+          </div>
+          {files.length > 0 && (
+            <div className="filmstrip-actions">
+              <div className="filmstrip-selected">
+                {selected.size} selected
+                <button type="button" className="tab" onClick={selectAll} title="Ctrl+A">
+                  All
+                </button>
+              </div>
+              <button type="button" onClick={() => setBatchExport([...selected])} disabled={!selected.size}>
+                Export {selected.size > 1 ? selected.size : ""}…
+              </button>
+              <select
+                className="filmstrip-preset"
+                value=""
+                disabled={!selected.size || !presets.length}
+                title={presets.length ? "Apply a preset to the selected photos" : "Save a preset first"}
+                onChange={(e) => {
+                  const p = presets.find((x) => x.name === e.target.value);
+                  e.currentTarget.value = "";
+                  if (p) void applyPresetToSelection(p);
+                }}
+              >
+                <option value="">Apply preset…</option>
+                {presets.map((p) => (
+                  <option key={p.name} value={p.name}>
+                    {p.name}
+                  </option>
+                ))}
+              </select>
+              <button
+                type="button"
+                className="tab"
+                onClick={() => removeFromFilmstrip([...selected])}
+                disabled={!selected.size}
+                title="Take them out of the filmstrip. The files stay on disk."
+              >
+                Remove
+              </button>
+            </div>
+          )}
         </div>
         <div className="filmstrip-track">
           {files.length === 0 && <span className="hint">Browse to open RAW, JPEG, PNG, or TIFF images.</span>}
@@ -1702,9 +1858,12 @@ export default function App() {
           onPointerDown={(e) => e.stopPropagation()}
         >
           <div className="thumb-menu-path" title={thumbMenu.path}>
-            {fileName(thumbMenu.path)}
+            {selected.size > 1 ? `${selected.size} photos` : fileName(thumbMenu.path)}
           </div>
-          <button type="button" onClick={() => removeFromFilmstrip(thumbMenu.path)}>
+          <button
+            type="button"
+            onClick={() => removeFromFilmstrip(selected.size > 1 ? [...selected] : [thumbMenu.path])}
+          >
             Remove from filmstrip
           </button>
           <div className="thumb-menu-note">The file stays on disk.</div>
@@ -1732,6 +1891,14 @@ export default function App() {
         </div>
       )}
       {showExport && current && <ExportDialog image={current} params={params} onClose={() => setShowExport(false)} />}
+      {batchExport && current && (
+        <ExportDialog image={current} params={params} batch={batchExport} onClose={() => setBatchExport(null)} />
+      )}
+      {notice && (
+        <div className="toast notice" onClick={() => setNotice(null)}>
+          {notice}
+        </div>
+      )}
     </div>
   );
 }

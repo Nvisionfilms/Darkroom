@@ -37,25 +37,29 @@ export function aspectRatio(key: string, imageWidth: number, imageHeight: number
   return a.ratio;
 }
 
-/** Largest centred rectangle of the given pixel aspect, in normalised units. */
+/**
+ * The biggest rectangle of this aspect that fits the whole image, kept over
+ * the current crop's centre.
+ *
+ * It is sized against the image rather than against the current crop on
+ * purpose: fitting each new ratio inside the previous rectangle shrank the
+ * frame a little every time, so cycling through the ratios wound the crop
+ * down to nothing instead of showing each one.
+ */
 export function fitAspect(ratio: number | null, imageWidth: number, imageHeight: number, base: Crop): Crop {
   if (!ratio) return base;
-  const curW = base.w * imageWidth;
-  const curH = base.h * imageHeight;
-  let w = curW;
-  let h = curW / ratio;
-  if (h > curH) {
-    h = curH;
-    w = curH * ratio;
+  let w = imageWidth;
+  let h = imageWidth / ratio;
+  if (h > imageHeight) {
+    h = imageHeight;
+    w = imageHeight * ratio;
   }
-  const cx = (base.x + base.w / 2) * imageWidth;
-  const cy = (base.y + base.h / 2) * imageHeight;
-  let x = (cx - w / 2) / imageWidth;
-  let y = (cy - h / 2) / imageHeight;
   const nw = w / imageWidth;
   const nh = h / imageHeight;
-  x = Math.max(0, Math.min(1 - nw, x));
-  y = Math.max(0, Math.min(1 - nh, y));
+  const cx = base.x + base.w / 2;
+  const cy = base.y + base.h / 2;
+  const x = Math.max(0, Math.min(1 - nw, cx - nw / 2));
+  const y = Math.max(0, Math.min(1 - nh, cy - nh / 2));
   return { ...base, x, y, w: nw, h: nh };
 }
 
