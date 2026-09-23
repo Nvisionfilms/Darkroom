@@ -45,10 +45,11 @@ iOS apps can only be built on a Mac with Xcode.
 4. **The code:**
 
    ```bash
-   cd ~/Darkroom
-   git status            # should be clean; commit or stash anything first
+   cd ~/Desktop/Darkroom   # wherever the clone lives
+   git status              # should be clean; commit or stash anything first
    git fetch origin
    git checkout mobile
+   git pull
    bun install
    ```
 
@@ -71,6 +72,23 @@ iOS apps can only be built on a Mac with Xcode.
 6. **The iPhone:** plug it into the Mac, unlock it and tap **Trust**. Then on the
    phone turn on **Settings > Privacy & Security > Developer Mode** (it only
    appears after the phone has been connected to Xcode once) and let it restart.
+
+### Register the iPhone (first time only)
+
+A new phone is not in your signing team yet, and the build stops with:
+
+> Device "..." isn't registered in your developer account.
+
+Open the generated project, let Xcode add it, and run once from there:
+
+```bash
+open src-tauri/gen/apple/darkroom.xcodeproj
+```
+
+Pick the blue **darkroom** project > the **darkroom_iOS** target >
+**Signing & Capabilities**. Tick **Automatically manage signing**, choose your
+**Team**, and click **Register Device** next to the error. Then choose the phone
+in the device menu and press Run.
 
 ### Build and install
 
