@@ -50,9 +50,7 @@ pub fn log_luma(rgb: &[f32]) -> Vec<f32> {
 
 fn kernel(sigma: f32) -> Vec<f32> {
     let r = (3.0 * sigma).ceil().max(1.0) as i32;
-    let mut k: Vec<f32> = (-r..=r)
-        .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
-        .collect();
+    let mut k: Vec<f32> = (-r..=r).map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp()).collect();
     let s: f32 = k.iter().sum();
     for v in k.iter_mut() {
         *v /= s;

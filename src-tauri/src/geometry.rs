@@ -182,11 +182,7 @@ impl Warp {
         let dist_on = use_prof && p.has_distortion() && l.distortion_amount > 0.0;
         let tca_on = use_prof && l.ca && p.has_tca();
         let vig_on = use_prof && p.has_vignetting() && l.vignette_amount > 0.0;
-        let cs = if use_prof && p.crop_scale > 0.0 {
-            p.crop_scale
-        } else {
-            1.0
-        };
+        let cs = if use_prof && p.crop_scale > 0.0 { p.crop_scale } else { 1.0 };
         Self {
             w: wf,
             h: hf,
@@ -208,10 +204,8 @@ impl Warp {
             dist_amount: (l.distortion_amount / 100.0).clamp(0.0, 1.0),
             cs,
             km: l.manual_distortion / 100.0 * MANUAL_DISTORTION_K,
-            tca_r: (if tca_on { p.tca[0] } else { 1.0 })
-                * (1.0 + l.manual_ca_r / 100.0 * MANUAL_CA_K),
-            tca_b: (if tca_on { p.tca[1] } else { 1.0 })
-                * (1.0 + l.manual_ca_b / 100.0 * MANUAL_CA_K),
+            tca_r: (if tca_on { p.tca[0] } else { 1.0 }) * (1.0 + l.manual_ca_r / 100.0 * MANUAL_CA_K),
+            tca_b: (if tca_on { p.tca[1] } else { 1.0 }) * (1.0 + l.manual_ca_b / 100.0 * MANUAL_CA_K),
             vig: if vig_on { p.vig } else { [0.0; 3] },
             vig_amount: (l.vignette_amount / 100.0).clamp(0.0, 1.0),
             mv: l.manual_vignette / 100.0,
@@ -222,11 +216,7 @@ impl Warp {
 
     /// True when the resampling step can be skipped entirely.
     pub fn is_identity(&self) -> bool {
-        !self.transform_on
-            && self.dist_model == 0
-            && self.km == 0.0
-            && self.tca_r == 1.0
-            && self.tca_b == 1.0
+        !self.transform_on && self.dist_model == 0 && self.km == 0.0 && self.tca_r == 1.0 && self.tca_b == 1.0
     }
 
     pub fn has_vignette(&self) -> bool {
@@ -265,10 +255,7 @@ impl Warp {
             py *= self.inv_scale;
             px /= self.ax;
             py /= self.ay;
-            let (rx, ry) = (
-                self.cos_r * px - self.sin_r * py,
-                self.sin_r * px + self.cos_r * py,
-            );
+            let (rx, ry) = (self.cos_r * px - self.sin_r * py, self.sin_r * px + self.cos_r * py);
             let wq = (1.0 + self.ph * rx + self.pv * ry).max(0.05);
             px = rx / wq;
             py = ry / wq;
@@ -306,22 +293,14 @@ impl Warp {
         }
         if self.mv != 0.0 {
             let r = r2.sqrt();
-            g *= 1.0
-                + self.mv * smooth01((r - self.mv_start) / (self.rmax - self.mv_start).max(1e-3));
+            g *= 1.0 + self.mv * smooth01((r - self.mv_start) / (self.rmax - self.mv_start).max(1e-3));
         }
         g.max(0.0)
     }
 }
 
 #[inline]
-fn sample_channel(
-    img: &[f32],
-    width: usize,
-    height: usize,
-    x: f32,
-    y: f32,
-    c: usize,
-) -> Option<f32> {
+fn sample_channel(img: &[f32], width: usize, height: usize, x: f32, y: f32, c: usize) -> Option<f32> {
     let (wf, hf) = (width as f32, height as f32);
     if x < 0.0 || y < 0.0 || x >= wf || y >= hf {
         return None;
@@ -369,23 +348,21 @@ pub fn geometry_pass(
     let (cx, cy) = (wf / 2.0, hf / 2.0);
     let (ca, sa) = (ang.cos(), ang.sin());
     let mut out = vec![0.0f32; ow * oh * 3];
-    out.par_chunks_mut(ow * 3)
-        .enumerate()
-        .for_each(|(oy, row)| {
-            let sy = y0 + oy as f32 + 0.5 - cy;
-            for ox in 0..ow {
-                let sx = x0 + ox as f32 + 0.5 - cx;
-                // straightened canvas -> canvas (rotate about the centre)
-                let px = cx + ca * sx - sa * sy;
-                let py = cy + sa * sx + ca * sy;
-                let pos = warp.map_rgb(px, py);
-                for c in 0..3 {
-                    if let Some(v) = sample_channel(img, width, height, pos[c].0, pos[c].1, c) {
-                        row[ox * 3 + c] = v;
-                    }
+    out.par_chunks_mut(ow * 3).enumerate().for_each(|(oy, row)| {
+        let sy = y0 + oy as f32 + 0.5 - cy;
+        for ox in 0..ow {
+            let sx = x0 + ox as f32 + 0.5 - cx;
+            // straightened canvas -> canvas (rotate about the centre)
+            let px = cx + ca * sx - sa * sy;
+            let py = cy + sa * sx + ca * sy;
+            let pos = warp.map_rgb(px, py);
+            for c in 0..3 {
+                if let Some(v) = sample_channel(img, width, height, pos[c].0, pos[c].1, c) {
+                    row[ox * 3 + c] = v;
                 }
             }
-        });
+        }
+    });
     (out, ow, oh)
 }
 
@@ -415,10 +392,7 @@ pub fn source_to_canvas(warp: &Warp, sx: f32, sy: f32) -> (f32, f32) {
         let den = (1.0 - warp.ph * px - warp.pv * py).max(0.05);
         px /= den;
         py /= den;
-        let (rx, ry) = (
-            warp.cos_r * px + warp.sin_r * py,
-            -warp.sin_r * px + warp.cos_r * py,
-        );
+        let (rx, ry) = (warp.cos_r * px + warp.sin_r * py, -warp.sin_r * px + warp.cos_r * py);
         px = rx * warp.ax / warp.inv_scale + warp.ox;
         py = ry * warp.ay / warp.inv_scale + warp.oy;
     }
@@ -449,10 +423,7 @@ mod tests {
             let (px, py) = w.map_norm(x, y);
             let (sx, sy) = (w.cx + px * w.hs, w.cy + py * w.hs);
             let (bx, by) = source_to_canvas(&w, sx, sy);
-            assert!(
-                (bx - x).abs() < 0.05 && (by - y).abs() < 0.05,
-                "{x},{y} -> {bx},{by}"
-            );
+            assert!((bx - x).abs() < 0.05 && (by - y).abs() < 0.05, "{x},{y} -> {bx},{by}");
         }
     }
 }

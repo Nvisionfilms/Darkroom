@@ -32,8 +32,7 @@ const EXPAND_1D: usize = 33;
 
 impl Lut3d {
     pub fn load(path: &Path) -> Result<Self> {
-        let text =
-            std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
+        let text = std::fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
         let name = path
             .file_stem()
             .and_then(|s| s.to_str())
@@ -86,10 +85,7 @@ impl Lut3d {
                 }
                 _ => {
                     // a data row: three floats
-                    let vals: Vec<f32> = line
-                        .split_whitespace()
-                        .filter_map(|v| v.parse::<f32>().ok())
-                        .collect();
+                    let vals: Vec<f32> = line.split_whitespace().filter_map(|v| v.parse::<f32>().ok()).collect();
                     if vals.len() >= 3 {
                         data.extend_from_slice(&vals[0..3]);
                     }
@@ -130,13 +126,7 @@ impl Lut3d {
     }
 
     /// Expand a per-channel curve into a 3D lattice.
-    fn from_1d(
-        name: String,
-        size: usize,
-        data: &[f32],
-        domain_min: [f32; 3],
-        domain_max: [f32; 3],
-    ) -> Self {
+    fn from_1d(name: String, size: usize, data: &[f32], domain_min: [f32; 3], domain_max: [f32; 3]) -> Self {
         let n = EXPAND_1D;
         let mut out = vec![0.0f32; n * n * n * 3];
         let sample = |c: usize, t: f32| -> f32 {
@@ -178,21 +168,9 @@ impl Lut3d {
             let t = ((rgb[c] - self.domain_min[c]) / span).clamp(0.0, 1.0);
             p[c] = t * last;
         }
-        let i0 = [
-            p[0].floor() as usize,
-            p[1].floor() as usize,
-            p[2].floor() as usize,
-        ];
-        let i1 = [
-            (i0[0] + 1).min(n - 1),
-            (i0[1] + 1).min(n - 1),
-            (i0[2] + 1).min(n - 1),
-        ];
-        let f = [
-            p[0] - i0[0] as f32,
-            p[1] - i0[1] as f32,
-            p[2] - i0[2] as f32,
-        ];
+        let i0 = [p[0].floor() as usize, p[1].floor() as usize, p[2].floor() as usize];
+        let i1 = [(i0[0] + 1).min(n - 1), (i0[1] + 1).min(n - 1), (i0[2] + 1).min(n - 1)];
+        let f = [p[0] - i0[0] as f32, p[1] - i0[1] as f32, p[2] - i0[2] as f32];
         let at = |r: usize, g: usize, b: usize| -> &[f32] {
             let i = ((b * n + g) * n + r) * 3;
             &self.data[i..i + 3]
@@ -259,12 +237,7 @@ mod tests {
             for g in 0..n {
                 for r in 0..n {
                     let s = (n - 1) as f32;
-                    text.push_str(&format!(
-                        "{} {} {}\n",
-                        r as f32 / s,
-                        g as f32 / s,
-                        b as f32 / s
-                    ));
+                    text.push_str(&format!("{} {} {}\n", r as f32 / s, g as f32 / s, b as f32 / s));
                 }
             }
         }

@@ -153,7 +153,7 @@ pub fn srgb() -> Vec<u8> {
     p.extend_from_slice(b"mntr"); // display device
     p.extend_from_slice(b"RGB "); // data colour space
     p.extend_from_slice(b"XYZ "); // profile connection space
-                                  // creation date: fixed, so exports stay reproducible
+    // creation date: fixed, so exports stay reproducible
     for v in [2026u16, 1, 1, 0, 0, 0] {
         p.extend_from_slice(&v.to_be_bytes());
     }
@@ -193,11 +193,7 @@ mod tests {
     #[test]
     fn header_is_a_valid_icc_profile() {
         let p = srgb();
-        assert_eq!(
-            be32(&p, 0) as usize,
-            p.len(),
-            "size field must match the file"
-        );
+        assert_eq!(be32(&p, 0) as usize, p.len(), "size field must match the file");
         assert_eq!(&p[36..40], b"acsp", "missing the ICC file signature");
         assert_eq!(&p[12..16], b"mntr");
         assert_eq!(&p[16..20], b"RGB ");
@@ -220,9 +216,7 @@ mod tests {
             assert_eq!(off % 4, 0, "{sig} is not aligned");
             seen.push(sig);
         }
-        for want in [
-            "rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC", "wtpt", "desc", "cprt",
-        ] {
+        for want in ["rXYZ", "gXYZ", "bXYZ", "rTRC", "gTRC", "bTRC", "wtpt", "desc", "cprt"] {
             assert!(seen.iter().any(|s| s == want), "missing {want}");
         }
     }
@@ -261,16 +255,10 @@ mod tests {
             u16::from_be_bytes([p[a], p[a + 1]]) as f64 / 65535.0
         };
         assert!(point(0) < 1e-6, "black must stay black");
-        assert!(
-            (point(TRC_POINTS - 1) - 1.0).abs() < 1e-6,
-            "white must stay white"
-        );
+        assert!((point(TRC_POINTS - 1) - 1.0).abs() < 1e-6, "white must stay white");
         // mid grey: sRGB 0.5 is 0.2140 linear
         let mid = point(TRC_POINTS / 2);
-        assert!(
-            (mid - srgb_to_linear(0.5)).abs() < 2e-3,
-            "mid grey is {mid}"
-        );
+        assert!((mid - srgb_to_linear(0.5)).abs() < 2e-3, "mid grey is {mid}");
         // monotonic
         for i in 1..TRC_POINTS {
             assert!(point(i) >= point(i - 1), "the curve dips at {i}");
@@ -282,11 +270,7 @@ mod tests {
         // a correct matrix profile maps white (1,1,1) onto the PCS white
         for c in 0..3 {
             let sum: f64 = PRIMARIES.iter().map(|p| p[c]).sum();
-            assert!(
-                (sum - D50[c]).abs() < 1e-3,
-                "channel {c} sums to {sum}, want {}",
-                D50[c]
-            );
+            assert!((sum - D50[c]).abs() < 1e-3, "channel {c} sums to {sum}, want {}", D50[c]);
         }
     }
 }

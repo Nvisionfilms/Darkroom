@@ -133,8 +133,7 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
     // clips those to 0..1 and we want the highlight headroom.
     // rawler's Rescale silently skips linear (already demosaiced) DNGs whose
     // black-level and white-level counts differ, so we scale those ourselves.
-    let manual_scale =
-        restarts.is_none() && matches!(raw.photometric, RawPhotometricInterpretation::LinearRaw);
+    let manual_scale = restarts.is_none() && matches!(raw.photometric, RawPhotometricInterpretation::LinearRaw);
     let mut steps = vec![
         ProcessingStep::Demosaic,
         ProcessingStep::FujiRotate,
@@ -147,20 +146,11 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
     let mut rgb = if let Some(d) = restarts {
         // already demosaiced: scale the samples to 0..1 and keep going
         if d.components < 3 {
-            bail!(
-                "linear DNG with {} components is not supported yet",
-                d.components
-            );
+            bail!("linear DNG with {} components is not supported yet", d.components);
         }
         let black = raw.blacklevel.as_vec();
         let white = raw.whitelevel.as_vec();
-        let level = |v: &[f32], c: usize, default: f32| {
-            if v.is_empty() {
-                default
-            } else {
-                v[c % v.len()]
-            }
-        };
+        let level = |v: &[f32], c: usize, default: f32| if v.is_empty() { default } else { v[c % v.len()] };
         let full = (1u32 << raw.bps.max(1)) as f32 - 1.0;
         let mut scale = [1.0f32; 3];
         let mut offset = [0.0f32; 3];
@@ -194,9 +184,7 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
                 let data: Vec<[f32; 3]> = p.pixels().iter().map(|v| [*v, *v, *v]).collect();
                 rawler::pixarray::RgbF32::new_with(data, d.w, d.h)
             }
-            Intermediate::FourColor(_) => {
-                bail!("4-colour sensors (RGBE/CYGM) are not supported yet")
-            }
+            Intermediate::FourColor(_) => bail!("4-colour sensors (RGBE/CYGM) are not supported yet"),
         }
     };
 
@@ -264,10 +252,7 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
             Some(m) if illu == Illuminant::D65 => m,
             Some(m) => adapt_bradford(&illu, &Illuminant::D65, &m),
             None => {
-                log::warn!(
-                    "colour matrix has {} entries, expected 9; using identity",
-                    matrix.len()
-                );
+                log::warn!("colour matrix has {} entries, expected 9; using identity", matrix.len());
                 IDENTITY_MATRIX_3
             }
         };
@@ -323,11 +308,7 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
 
     let mut meta = Metadata {
         kind: "raw".into(),
-        camera: Some(
-            format!("{} {}", raw.clean_make, raw.clean_model)
-                .trim()
-                .to_string(),
-        ),
+        camera: Some(format!("{} {}", raw.clean_make, raw.clean_model).trim().to_string()),
         ..Default::default()
     };
     if let Some(md) = md {
@@ -335,27 +316,17 @@ fn load_raw(path: &Path) -> Result<(LinearImage, Metadata)> {
         meta.lens = md
             .lens
             .as_ref()
-            .map(|l| {
-                format!("{} {}", l.lens_make, l.lens_model)
-                    .trim()
-                    .to_string()
-            })
+            .map(|l| format!("{} {}", l.lens_make, l.lens_model).trim().to_string())
             .or_else(|| ex.lens_model.clone());
         meta.iso = ex
             .iso_speed_ratings
             .map(|v| v as u32)
             .or(ex.iso_speed)
             .or(ex.recommended_exposure_index);
-        meta.exposure_time = ex
-            .exposure_time
-            .as_ref()
-            .and_then(|r| format_exposure(r.n, r.d));
+        meta.exposure_time = ex.exposure_time.as_ref().and_then(|r| format_exposure(r.n, r.d));
         meta.f_number = ex.fnumber.as_ref().and_then(rational_f32);
         meta.focal_length = ex.focal_length.as_ref().and_then(rational_f32);
-        meta.date_taken = ex
-            .date_time_original
-            .clone()
-            .or_else(|| ex.create_date.clone());
+        meta.date_taken = ex.date_time_original.clone().or_else(|| ex.create_date.clone());
     }
     Ok((image, meta))
 }
@@ -399,13 +370,10 @@ fn load_image(path: &Path) -> Result<(LinearImage, Metadata)> {
                     .map(|f| f.display_value().to_string().trim_matches('"').to_string())
             };
             let field_f32 = |tag: exif::Tag| {
-                exif.get_field(tag, exif::In::PRIMARY)
-                    .and_then(|f| match &f.value {
-                        exif::Value::Rational(v) if !v.is_empty() && v[0].denom != 0 => {
-                            Some(v[0].to_f32())
-                        }
-                        _ => None,
-                    })
+                exif.get_field(tag, exif::In::PRIMARY).and_then(|f| match &f.value {
+                    exif::Value::Rational(v) if !v.is_empty() && v[0].denom != 0 => Some(v[0].to_f32()),
+                    _ => None,
+                })
             };
             if let Some(f) = exif.get_field(exif::Tag::Orientation, exif::In::PRIMARY) {
                 orientation = f.value.get_uint(0).unwrap_or(1);
@@ -423,9 +391,7 @@ fn load_image(path: &Path) -> Result<(LinearImage, Metadata)> {
             meta.exposure_time = exif
                 .get_field(exif::Tag::ExposureTime, exif::In::PRIMARY)
                 .and_then(|f| match &f.value {
-                    exif::Value::Rational(v) if !v.is_empty() => {
-                        format_exposure(v[0].num, v[0].denom)
-                    }
+                    exif::Value::Rational(v) if !v.is_empty() => format_exposure(v[0].num, v[0].denom),
                     _ => None,
                 });
             meta.f_number = field_f32(exif::Tag::FNumber);
@@ -488,26 +454,24 @@ pub fn downsample(img: &LinearImage, max_edge: usize) -> LinearImage {
     let oh = img.height / f;
     let mut out = vec![0.0f32; ow * oh * 3];
     let inv = 1.0 / (f * f) as f32;
-    out.par_chunks_mut(ow * 3)
-        .enumerate()
-        .for_each(|(oy, row)| {
-            for ox in 0..ow {
-                let mut acc = [0.0f32; 3];
-                for dy in 0..f {
-                    let y = oy * f + dy;
-                    let base = (y * img.width + ox * f) * 3;
-                    let src = &img.data[base..base + f * 3];
-                    for px in src.chunks_exact(3) {
-                        acc[0] += px[0];
-                        acc[1] += px[1];
-                        acc[2] += px[2];
-                    }
+    out.par_chunks_mut(ow * 3).enumerate().for_each(|(oy, row)| {
+        for ox in 0..ow {
+            let mut acc = [0.0f32; 3];
+            for dy in 0..f {
+                let y = oy * f + dy;
+                let base = (y * img.width + ox * f) * 3;
+                let src = &img.data[base..base + f * 3];
+                for px in src.chunks_exact(3) {
+                    acc[0] += px[0];
+                    acc[1] += px[1];
+                    acc[2] += px[2];
                 }
-                row[ox * 3] = acc[0] * inv;
-                row[ox * 3 + 1] = acc[1] * inv;
-                row[ox * 3 + 2] = acc[2] * inv;
             }
-        });
+            row[ox * 3] = acc[0] * inv;
+            row[ox * 3 + 1] = acc[1] * inv;
+            row[ox * 3 + 2] = acc[2] * inv;
+        }
+    });
     LinearImage {
         width: ow,
         height: oh,

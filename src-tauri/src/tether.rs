@@ -76,9 +76,7 @@ fn is_candidate(path: &Path) -> bool {
     };
     let ext = ext.to_ascii_lowercase();
     let ext = ext.as_str();
-    if !(crate::decode::RAW_EXTENSIONS.contains(&ext)
-        || crate::decode::IMAGE_EXTENSIONS.contains(&ext))
-    {
+    if !(crate::decode::RAW_EXTENSIONS.contains(&ext) || crate::decode::IMAGE_EXTENSIONS.contains(&ext)) {
         return false;
     }
     // Ignore dot files and the hidden partial files some transfer tools write.

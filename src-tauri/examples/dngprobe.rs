@@ -24,8 +24,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("ljpeg: {w} samples per row x {h} rows, {comps} components");
 
     let mut buf = vec![0u16; w * h];
-    d.decode(&mut buf, 0, w, w, h, false)
-        .map_err(|e| format!("decode: {e}"))?;
+    d.decode(&mut buf, 0, w, w, h, false).map_err(|e| format!("decode: {e}"))?;
 
     let mut min = u16::MAX;
     let mut max = 0u16;
@@ -35,10 +34,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         max = max.max(*v);
         sum += *v as u64;
     }
-    println!(
-        "samples: min {min} max {max} mean {:.1}",
-        sum as f64 / buf.len() as f64
-    );
+    println!("samples: min {min} max {max} mean {:.1}", sum as f64 / buf.len() as f64);
     println!("row 0, first 12: {:?}", &buf[..12]);
     println!("row 1000, first 12: {:?}", &buf[1000 * w..1000 * w + 12]);
     println!("row 2999, first 12: {:?}", &buf[2999 * w..2999 * w + 12]);
@@ -57,11 +53,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             for x in 0..pw {
                 let i = y * w + x * comps;
                 let px = |c: usize| (buf.get(i + c).copied().unwrap_or(0) >> 8) as u8;
-                img.put_pixel(
-                    x as u32,
-                    y as u32,
-                    image::Rgb([px(0), px(1 % comps), px(2 % comps)]),
-                );
+                img.put_pixel(x as u32, y as u32, image::Rgb([px(0), px(1 % comps), px(2 % comps)]));
             }
         }
         img.save(out)?;

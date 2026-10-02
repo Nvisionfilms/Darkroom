@@ -98,16 +98,7 @@ fn disc_mean(img: &[f32], w: usize, h: usize, cx: f32, cy: f32, r: f32) -> [f32;
 
 /// The smooth colour/brightness difference between a spot's destination and
 /// its source surroundings. Twin of `healOffset` in src/heal.ts.
-pub fn heal_offset(
-    img: &[f32],
-    w: usize,
-    h: usize,
-    dx: f32,
-    dy: f32,
-    sx: f32,
-    sy: f32,
-    r: f32,
-) -> [f32; 3] {
+pub fn heal_offset(img: &[f32], w: usize, h: usize, dx: f32, dy: f32, sx: f32, sy: f32, r: f32) -> [f32; 3] {
     let md = disc_mean(img, w, h, dx, dy, r * 1.35);
     let ms = disc_mean(img, w, h, sx, sy, r * 1.35);
     [md[0] - ms[0], md[1] - ms[1], md[2] - ms[2]]
