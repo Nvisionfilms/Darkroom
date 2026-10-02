@@ -520,6 +520,43 @@ await step("trail distances are measured against the photo, not the window", asy
   expect(Math.abs(t.fade - 0.98) < 1e-9, `full fade should retain 0.98, got ${t.fade}`);
 });
 
+await step("the subject matte is pulled onto the picture's own edges", async () => {
+  // The model sees a 320-pixel copy, so its matte knows where the subject is but
+  // not exactly where it ends. Here the picture has a hard edge down the middle
+  // and the matte's edge is a soft ramp sitting six pixels late; refining it has
+  // to move the matte onto the real edge and tighten it, without eating into the
+  // subject or filling in the background.
+  const r = await js(`import('/src/subject.ts').then(m => {
+    const w = 640, h = 420, at = 320;
+    const guide = new Uint8Array(w * h);
+    const mask = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) {
+      for (let x = 0; x < w; x++) {
+        guide[y * w + x] = x < at ? 230 : 40;
+        const t = Math.max(0, Math.min(1, (at + 12 - x) / 12));
+        mask[y * w + x] = Math.round(t * 255);
+      }
+    }
+    const out = m.refineMatte(mask, guide, w, h);
+    const row = (v) => Array.from({ length: w }, (_, x) => v[210 * w + x]);
+    const edge = (v) => { const r = row(v); for (let x = 1; x < w; x++) if (r[x] < 128 && r[x - 1] >= 128) return x; return -1; };
+    // steepness at the boundary: a tighter matte has a sharper step in it
+    const steep = (v) => { const r = row(v); let m = 0; for (let x = 1; x < w; x++) m = Math.max(m, Math.abs(r[x] - r[x - 1])); return m; };
+    return JSON.stringify({ before: edge(mask), after: edge(out), sBefore: steep(mask), sAfter: steep(out), inside: out[210 * w + 40], outside: out[210 * w + 600] });
+  })`);
+  const g = JSON.parse(r);
+  expect(g.before >= 325, `the test's own matte should start late, it was at ${g.before}`);
+  // how far the window can pull the edge depends on its size, which scales with
+  // the picture, so what is asserted is that most of the error goes away - on a
+  // real photo the matte is larger still and it lands exactly
+  const errBefore = Math.abs(g.before - 320);
+  const errAfter = Math.abs(g.after - 320);
+  expect(errAfter <= errBefore / 2, `the matte barely moved: ${errBefore}px out -> ${errAfter}px out`);
+  expect(g.sAfter > g.sBefore * 1.2, `the matte did not tighten: step ${g.sBefore} -> ${g.sAfter}`);
+  expect(g.inside > 240, `the inside of the subject was eaten: ${g.inside}`);
+  expect(g.outside < 15, `the background was filled in: ${g.outside}`);
+});
+
 await step("the look exports as a .cube LUT and says what it left behind", async () => {
   const cube = join(dir, "look.cube").split("\\").join("/");
   // a colour setting a LUT can carry, and a spatial one it cannot
