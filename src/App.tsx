@@ -17,7 +17,9 @@ import {
   startTether,
   deletePreset,
   findHealSource,
+  exportCube,
   listPresets,
+  pickSavePath,
   importPhoto,
   applyEdits,
   markedPhotos,
@@ -355,6 +357,7 @@ export default function App() {
   const [blendDrop, setBlendDrop] = useState(false);
   const blendZone = useRef<HTMLDivElement | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
+  const [cubeBusy, setCubeBusy] = useState(false);
   const autoNrRef = useRef(autoNr);
   autoNrRef.current = autoNr;
 
@@ -938,6 +941,34 @@ export default function App() {
   }, [loadBlend]);
 
   // ---- develop presets ----
+  /**
+   * Write the look as a .cube 3D LUT. A LUT is a colour-for-colour lookup, so it
+   * can only carry what depends on a pixel's own colour; whatever had to be left
+   * behind is named in the notice rather than quietly dropped.
+   */
+  const saveCube = useCallback(
+    async (size: number) => {
+      if (!current) return;
+      const base = fileName(current.path).replace(/\.[^.]+$/, "");
+      const out = await pickSavePath(`${base}.cube`, "cube");
+      if (!out) return;
+      setCubeBusy(true);
+      try {
+        const left = await exportCube(out, params, [...buildLut(params.curves)], size, base);
+        setNotice(
+          left.length
+            ? `Wrote ${fileName(out)}. A LUT cannot carry ${left.join(", ")} - those stay in Darkroom.`
+            : `Wrote ${fileName(out)}. It carries the whole look.`,
+        );
+      } catch (e) {
+        setError(`Could not write the LUT: ${String(e)}`);
+      } finally {
+        setCubeBusy(false);
+      }
+    },
+    [current, params],
+  );
+
   const refreshPresets = useCallback(() => {
     listPresets()
       .then(setPresets)
@@ -1713,6 +1744,8 @@ export default function App() {
               onApply={applyPreset}
               onSave={storePreset}
               onDelete={removePreset}
+              onExportCube={(size) => void saveCube(size)}
+              cubeBusy={cubeBusy}
             />
           </InspectorSection>
 

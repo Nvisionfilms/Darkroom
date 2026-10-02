@@ -17,7 +17,7 @@ interface Props {
  */
 export function MirrorPanel({ mirror, masks, onChange }: Props) {
   const set = <K extends keyof Mirror>(key: K) => (v: Mirror[K]) => onChange({ ...mirror, [key]: v });
-  const copies = Math.max(1, Math.min(8, Math.round(mirror.cx * 10)));
+  const copies = Math.max(1, Math.min(24, Math.round(mirror.cx * 10)));
   // only ordinary masks can head a trail; a subtraction belongs to the one above it
   const sources = masks.filter((m) => m.mode !== "subtract");
   const chosen = sources.find((m) => m.id === mirror.mask) ?? null;
@@ -77,20 +77,26 @@ export function MirrorPanel({ mirror, masks, onChange }: Props) {
         label="Copies"
         value={copies}
         min={1}
-        max={8}
+        max={24}
         step={1}
         defaultValue={4}
         onChange={(v) => set("cx")(Math.round(v) / 10)}
       />
       <Slider label="Fade" value={mirror.feather} min={0} max={100} defaultValue={65} onChange={set("feather")} />
       <Slider
-        label="Edge Feather"
+        label={chosen ? "Subject Feather" : "Edge Feather"}
         value={mirror.offset * 100}
         min={0}
         max={25}
         defaultValue={8}
         onChange={(v) => set("offset")(v / 100)}
       />
+      <div className="hint">
+        {chosen
+          ? "Subject Feather softens the edge of the mask the trail is cut from, so the echoes fade off the subject instead of ending on a cut line."
+          : "Edge Feather softens the frame boundary, so translated copies do not show a hard rectangular seam."}{" "}
+        A cut-out subject echoes as separate ghosts until there are enough Copies to join up — try 12 or more.
+      </div>
       <Slider
         label="Blur"
         value={mirror.rx * 100}

@@ -317,6 +317,62 @@ pub fn weight_map(masks: &[Mask], id: &str, w: usize, h: usize, luma: &[f32]) ->
     Some(out)
 }
 
+/// Gaussian blur of a weight map in place, `sigma` in pixels. This is what
+/// softens the edge of a mask the motion trail is cut from, and it matches the
+/// `filter: blur(<sigma>px)` the preview applies to the same mask - CSS defines
+/// that filter as a Gaussian of exactly this standard deviation.
+pub fn blur_weights(w: &mut [f32], width: usize, height: usize, sigma: f32) {
+    if sigma < 0.3 || width < 2 || height < 2 {
+        return;
+    }
+    let radius = (sigma * 3.0).ceil() as isize;
+    let kernel: Vec<f32> = {
+        let mut k: Vec<f32> = (-radius..=radius)
+            .map(|i| (-(i * i) as f32 / (2.0 * sigma * sigma)).exp())
+            .collect();
+        let sum: f32 = k.iter().sum();
+        for v in &mut k {
+            *v /= sum;
+        }
+        k
+    };
+    let tap = |v: &[f32], i: isize, lo: isize, hi: isize, stride: usize, base: usize| {
+        v[base + (i.clamp(lo, hi) as usize) * stride]
+    };
+
+    let mut tmp = vec![0.0f32; width * height];
+    tmp.par_chunks_mut(width).enumerate().for_each(|(y, row)| {
+        for (x, o) in row.iter_mut().enumerate() {
+            let mut acc = 0.0;
+            for (j, k) in kernel.iter().enumerate() {
+                let xx = x as isize + j as isize - radius;
+                acc += tap(w, xx, 0, width as isize - 1, 1, y * width) * k;
+            }
+            *o = acc;
+        }
+    });
+    let cols: Vec<f32> = (0..width)
+        .into_par_iter()
+        .flat_map_iter(|x| {
+            let kernel = &kernel;
+            let tmp = &tmp;
+            (0..height).map(move |y| {
+                let mut acc = 0.0;
+                for (j, k) in kernel.iter().enumerate() {
+                    let yy = y as isize + j as isize - radius;
+                    acc += tmp[(yy.clamp(0, height as isize - 1) as usize) * width + x] * k;
+                }
+                acc
+            })
+        })
+        .collect();
+    for x in 0..width {
+        for y in 0..height {
+            w[y * width + x] = cols[x * height + y];
+        }
+    }
+}
+
 /// Bilinear sample of a raster of size (rw, rh) at normalised (u, v).
 #[inline]
 pub fn sample_norm(r: &[f32], rw: usize, rh: usize, u: f32, v: f32) -> f32 {
@@ -431,4 +487,48 @@ pub fn prepare<'a>(masks: &'a [Mask], w: usize, h: usize) -> Vec<Prepared<'a>> {
             p
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: usize = 64;
+    const H: usize = 32;
+
+    /// A hard mask edge has to come back as a ramp, without the mask growing or
+    /// shrinking: this is what softens the edge a motion trail is cut from.
+    #[test]
+    fn blurring_a_weight_map_softens_its_edge_without_moving_it() {
+        let mut w = vec![0.0f32; W * H];
+        for y in 0..H {
+            for x in 0..W / 2 {
+                w[y * W + x] = 1.0;
+            }
+        }
+        let before: f32 = w.iter().sum();
+        let sharp = (w[16 * W + W / 2 - 1] - w[16 * W + W / 2]).abs();
+        blur_weights(&mut w, W, H, 3.0);
+
+        let after: f32 = w.iter().sum();
+        assert!((after - before).abs() / before < 0.01, "the mask changed size: {before} -> {after}");
+        let soft = (w[16 * W + W / 2 - 1] - w[16 * W + W / 2]).abs();
+        assert!(soft < sharp * 0.4, "the edge is still hard: {sharp} -> {soft}");
+        // the edge stays where it was: half weight right at the boundary
+        let mid = w[16 * W + W / 2 - 1];
+        assert!((mid - 0.5).abs() < 0.1, "the edge moved: {mid}");
+        // far from the edge nothing changed
+        assert!(w[16 * W + 2] > 0.99 && w[16 * W + W - 3] < 0.01);
+        for v in &w {
+            assert!(*v >= -1e-6 && *v <= 1.0 + 1e-6, "weight left 0..1: {v}");
+        }
+    }
+
+    #[test]
+    fn a_tiny_blur_is_left_alone() {
+        let mut w: Vec<f32> = (0..W * H).map(|i| (i % 7) as f32 / 7.0).collect();
+        let before = w.clone();
+        blur_weights(&mut w, W, H, 0.2);
+        assert_eq!(w, before);
+    }
 }

@@ -16,6 +16,10 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 /** Long edge of the grid a trail mask is rasterised on. */
 const ALPHA_EDGE = 768;
 
+/** Twins of export.rs: how many echoes, and what Edge Feather means for a mask. */
+const MAX_TRAIL_COPIES = 24;
+const TRAIL_MASK_FEATHER = 0.06;
+
 /** A weight map as a white canvas whose alpha is the weight. */
 function alphaCanvas(a: AlphaMap): HTMLCanvasElement {
   const c = document.createElement("canvas");
@@ -108,7 +112,13 @@ export function Viewer(props: Props) {
   useEffect(() => {
     const wrap = wrapRef.current;
     const overlay = overlayRef.current;
-    if (!wrap || !overlay || !trail.enabled || trail.opacity <= 0) {
+    // While the red mask overlay is up, the viewer canvas has the overlay
+    // painted into it - echoing that would smear red across the photo. The
+    // trail steps aside until the mask is hidden again, and the cached source
+    // frame is thrown away so a red one can never be reused.
+    const inspectingMask = !!props.showMask && !!props.selectedMaskId;
+    if (!wrap || !overlay || !trail.enabled || trail.opacity <= 0 || inspectingMask) {
+      if (inspectingMask) sourceCacheValidRef.current = false;
       if (overlay) overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
       return;
     }
@@ -257,6 +267,10 @@ export function Viewer(props: Props) {
       // A trail cut from a mask: rasterise the mask's area once and keep it
       // until the mask or the fitted rectangle changes.
       let maskCanvas: HTMLCanvasElement | null = null;
+      // Edge Feather softens the mask's own edge here: a cut-out subject never
+      // touches the frame boundary the slider feathers otherwise.
+      const maskSigma = clamp(trail.offset, 0, 0.25) * TRAIL_MASK_FEATHER * Math.max(bounds.w, bounds.h);
+      const maskBlur = maskSigma > 0.3 ? `blur(${maskSigma.toFixed(2)}px)` : "none";
       if (trail.mask) {
         const key = `${maskGroupKey(props.params.masks, trail.mask)}@${Math.round(bounds.w)}x${Math.round(bounds.h)}`;
         if (!key.startsWith("@")) {
@@ -299,14 +313,16 @@ export function Viewer(props: Props) {
           sctx.filter = "none";
           sctx.drawImage(trailSource, 0, 0);
           sctx.globalCompositeOperation = "destination-in";
+          sctx.filter = maskBlur;
           sctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+          sctx.filter = "none";
           sctx.globalCompositeOperation = "source-over";
           trailSource = subj;
         }
       }
 
       const long = Math.max(W, H);
-      const copies = Math.round(clamp(trail.cx * 10, 1, 8));
+      const copies = Math.round(clamp(trail.cx * 10, 1, MAX_TRAIL_COPIES));
       const amount = clamp(trail.ry, 0, 1);
       const opacity = clamp(trail.opacity / 100, 0, 1);
       const fade = clamp(trail.feather / 100, 0, 1);
@@ -344,8 +360,9 @@ export function Viewer(props: Props) {
         // trail only shows around it (twin of motion_trail_pass in export.rs)
         ctx.globalCompositeOperation = "destination-out";
         ctx.globalAlpha = 1;
-        ctx.filter = "none";
+        ctx.filter = maskBlur;
         ctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+        ctx.filter = "none";
         ctx.globalCompositeOperation = "source-over";
       }
     };
@@ -364,6 +381,8 @@ export function Viewer(props: Props) {
     trail.opacity,
     trail.mask,
     props.params.masks,
+    props.showMask,
+    props.selectedMaskId,
     props.image,
     props.crop,
     props.cropMode,

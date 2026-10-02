@@ -680,8 +680,10 @@ impl Uniforms {
 const HSL_CENTERS: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 310.0];
 const LOG_MID: f32 = -2.473931188; // log2(0.18)
 
+/// sRGB OETF: linear light to display code value. `cube.rs` has to undo exactly
+/// this to turn a lattice point back into light.
 #[inline]
-fn srgb_enc(x: f32) -> f32 {
+pub fn srgb_enc(x: f32) -> f32 {
     if x <= 0.0031308 {
         12.92 * x
     } else {

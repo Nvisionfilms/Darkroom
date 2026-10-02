@@ -421,6 +421,38 @@ await step("motion trails can be cut from a mask", async () => {
   await sleep(1500);
 });
 
+await step("the look exports as a .cube LUT and says what it left behind", async () => {
+  const cube = join(dir, "look.cube").split("\\").join("/");
+  // a colour setting a LUT can carry, and a spatial one it cannot
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Exposure', 0.8); true`);
+  await js(`__smoke.slider(__smoke.open('Detail'), 'Clarity', 40); true`);
+  await sleep(1200);
+  const left = await js(`import('/src/api.ts').then(async m => {
+    const c = await import('/src/curve.ts');
+    const e = await m.readEdits(${JSON.stringify(photo)});
+    return m.exportCube(${JSON.stringify(cube)}, e, [...c.buildLut(e.curves)], 33, 'smoke');
+  })`);
+  expect(Array.isArray(left), `exportCube did not return a list: ${JSON.stringify(left)}`);
+  expect(left.includes("Clarity"), `Clarity should have been reported as excluded: ${JSON.stringify(left)}`);
+
+  const text = readFileSync(cube, "utf8");
+  const lines = text.split(/\r?\n/).filter((l) => l.trim() && !l.startsWith("#"));
+  expect(/^TITLE "smoke"$/m.test(text), "the cube has no TITLE");
+  expect(/^LUT_3D_SIZE 33$/m.test(text), "the cube has no LUT_3D_SIZE");
+  const rows = lines.filter((l) => /^[\d.]/.test(l));
+  expect(rows.length === 33 ** 3, `the cube has ${rows.length} entries, expected ${33 ** 3}`);
+  const bad = rows.find((l) => l.split(/\s+/).length !== 3 || l.split(/\s+/).some((v) => !Number.isFinite(parseFloat(v))));
+  expect(!bad, `a malformed row: ${bad}`);
+  // an exposure lift has to show: mid grey comes out brighter than it went in
+  const mid = rows[(16 * 33 + 16) * 33 + 16].split(/\s+/).map(Number);
+  expect(mid[1] > 0.5, `mid grey did not brighten through the LUT: ${mid.join(" ")}`);
+
+  await js(`__smoke.slider(__smoke.open('Detail'), 'Clarity', 0); true`);
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Exposure', 0); true`);
+  // let the debounced sidecar write land before the filmstrip steps start
+  await sleep(1800);
+});
+
 await step("the filmstrip offers the batch actions", async () => {
   expect(await js(`!!document.querySelector('.filmstrip-actions')`), "no filmstrip actions");
   const before = await js(`document.querySelectorAll('.thumb').length`);

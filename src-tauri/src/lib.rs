@@ -21,6 +21,7 @@ pub mod pipeline;
 pub mod preset;
 pub mod profiles;
 pub mod sidecar;
+pub mod cube;
 pub mod star;
 pub mod tether;
 pub mod thumb;
@@ -424,6 +425,41 @@ fn save_edits(path: String, edits: EditParams) -> Result<(), String> {
     sidecar::save(Path::new(&path), &edits).map_err(err)
 }
 
+/// Write the current look as a .cube 3D LUT, for Resolve and anything else
+/// that loads one. Returns the settings it could not carry, so the app can say
+/// so rather than letting the photographer assume the file holds everything.
+#[tauri::command]
+async fn export_cube(
+    out_path: String,
+    params: pipeline::EditParams,
+    lut: Vec<f32>,
+    size: usize,
+    title: String,
+) -> Result<Vec<String>, String> {
+    let left = cube::excluded(&params).iter().map(|s| s.to_string()).collect();
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
+        let lut = if lut.len() == 1024 { lut } else { pipeline::identity_lut() };
+        // the creative look is part of the colour, so it belongs in the cube; a
+        // look that cannot be read is skipped with a warning, as on export
+        let look = if params.look.is_active() {
+            match lut3d::Lut3d::load(Path::new(&params.look.path)) {
+                Ok(l) => Some(l),
+                Err(e) => {
+                    log::warn!("look: {e:#}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        cube::write(Path::new(&out_path), &params, &lut, size, &title, look.as_ref())
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
+    Ok(left)
+}
+
 #[tauri::command]
 async fn export_image(
     app: tauri::AppHandle,
@@ -683,6 +719,7 @@ pub fn run() {
             get_preview,
             save_edits,
             export_image,
+            export_cube,
             export_path,
             read_edits,
             marked_photos,

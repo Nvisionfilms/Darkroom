@@ -234,7 +234,13 @@ pub(crate) fn motion_trail_pass(
             .chunks_exact(3)
             .map(|p| p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722)
             .collect();
-        crate::mask::weight_map(masks, &m.mask, width, height, &luma)
+        let mut w = crate::mask::weight_map(masks, &m.mask, width, height, &luma);
+        if let Some(v) = w.as_mut() {
+            // the frame edge is not where a cut-out subject ends; its own edge is
+            let sigma = m.offset.clamp(0.0, 0.25) * TRAIL_MASK_FEATHER * width.max(height) as f32;
+            crate::mask::blur_weights(v, width, height, sigma);
+        }
+        w
     };
     // a trail asked to come from a mask that is gone or switched off has no
     // source, so it draws nothing rather than falling back to the whole frame
@@ -242,7 +248,7 @@ pub(crate) fn motion_trail_pass(
         return img.to_vec();
     }
 
-    let copies = ((m.cx * 10.0).round() as i32).clamp(1, 8) as usize;
+    let copies = ((m.cx * 10.0).round() as i32).clamp(1, MAX_TRAIL_COPIES as i32) as usize;
     let amount = m.ry.clamp(0.0, 1.0);
     let opacity = (m.opacity / 100.0).clamp(0.0, 1.0);
     if amount <= 0.0 || opacity <= 0.0 {
@@ -345,6 +351,16 @@ fn sample_weight(w: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 
     let b = w[y1 * width + x0] * (1.0 - tx) + w[y1 * width + x1] * tx;
     a * (1.0 - ty) + b * ty
 }
+
+/// A masked trail needs many more echoes than a whole-frame one: a frame-wide
+/// echo overlaps itself and reads as a smear, while a cut-out subject echoes as
+/// separate ghosts until there are enough of them to join up.
+pub const MAX_TRAIL_COPIES: usize = 24;
+
+/// Edge Feather, for a trail cut from a mask, softens the mask's own edge
+/// instead of the frame boundary, which a cut-out subject never touches. The
+/// slider's 0..0.25 maps to this fraction of the long edge.
+pub const TRAIL_MASK_FEATHER: f32 = 0.06;
 
 #[inline]
 fn source_edge_alpha(x: f32, y: f32, width: usize, height: usize, feather: f32) -> f32 {

@@ -95,6 +95,14 @@ export async function exportImage(req: ExportRequest): Promise<string> {
   return invoke<string>("export_image", { req });
 }
 
+/**
+ * Write the current look as a .cube 3D LUT. Returns the names of the settings a
+ * LUT cannot carry that this photo was actually using, so the caller can say so.
+ */
+export async function exportCube(outPath: string, params: EditParams, lut: number[], size: number, title: string): Promise<string[]> {
+  return invoke<string[]>("export_cube", { outPath, params, lut, size, title });
+}
+
 /** Export a photo other than the one open in the viewer (batch export). */
 export async function exportPath(path: string, req: ExportRequest): Promise<string> {
   return invoke<string>("export_path", { path, req });
