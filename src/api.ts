@@ -105,6 +105,11 @@ export async function readEdits(path: string): Promise<EditParams | null> {
   return invoke<EditParams | null>("read_edits", { path });
 }
 
+/** Which of these photos are flagged for export. */
+export async function markedPhotos(paths: string[]): Promise<string[]> {
+  return invoke<string[]>("marked_photos", { paths });
+}
+
 /** Apply a preset to several photos at once; returns how many were written. */
 export async function applyEdits(paths: string[], settings: unknown): Promise<number> {
   return invoke<number>("apply_edits", { paths, settings });

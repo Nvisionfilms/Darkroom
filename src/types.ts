@@ -491,6 +491,8 @@ export interface EditParams {
   heal: HealSpot[];
   /** double exposure: a second photograph composited onto this one */
   blend: Blend;
+  /** flagged as finished and wanted in the next export */
+  marked: boolean;
   hsl: HslParams;
   curves: Curves;
 }
@@ -623,6 +625,7 @@ export function defaultParams(): EditParams {
     lensProfile: null,
     heal: [],
     blend: defaultBlend(),
+    marked: false,
     hsl: {
       hue: new Array(8).fill(0),
       saturation: new Array(8).fill(0),

@@ -20,6 +20,7 @@ import {
   listPresets,
   importPhoto,
   applyEdits,
+  markedPhotos,
   openBlend,
   openLook,
   pickCube,
@@ -258,6 +259,8 @@ export default function App() {
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
   const selectAnchor = useRef<string | null>(null);
   const [batchExport, setBatchExport] = useState<string[] | null>(null);
+  // photos flagged as finished and wanted in the next export
+  const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
   // phone layout: the open tool sheet, and the photo library screen
   const phone = usePhone();
@@ -629,6 +632,50 @@ export default function App() {
   const selectAll = useCallback(() => {
     setSelected(new Set(files.map((f) => f.path)));
   }, [files]);
+
+  const refreshMarks = useCallback(() => {
+    const paths = files.map((f) => f.path);
+    if (!paths.length) {
+      setMarked(new Set());
+      return;
+    }
+    markedPhotos(paths)
+      .then((m) => setMarked(new Set(m)))
+      .catch(() => {});
+  }, [files]);
+
+  useEffect(refreshMarks, [refreshMarks]);
+
+  /**
+   * Flag the selection as finished, so you can move on to the next photo and
+   * still find everything that is ready to export. The flag is written into
+   * each photo's sidecar, which needs no decoding.
+   */
+  const toggleMark = useCallback(async () => {
+    const paths = [...selected];
+    if (!paths.length) return;
+    const turningOn = !paths.every((p) => marked.has(p));
+    try {
+      await applyEdits(paths, { marked: turningOn });
+      setMarked((prev) => {
+        const next = new Set(prev);
+        for (const p of paths) {
+          if (turningOn) next.add(p);
+          else next.delete(p);
+        }
+        return next;
+      });
+      // the open photo keeps its flag in the settings it is editing
+      if (current && selected.has(current.path)) setParams((p) => ({ ...p, marked: turningOn }));
+      setNotice(turningOn ? `Marked ${paths.length} for export` : `Unmarked ${paths.length}`);
+    } catch (e) {
+      setError(`Could not mark: ${String(e)}`);
+    }
+  }, [selected, marked, current]);
+
+  const selectMarked = useCallback(() => {
+    setSelected(new Set(files.map((f) => f.path).filter((p) => marked.has(p))));
+  }, [files, marked]);
 
   /**
    * Apply a preset to every selected photo by rewriting their sidecars, which
@@ -1066,6 +1113,11 @@ export default function App() {
         history.redo();
         return;
       }
+      if (!command && (e.key === "m" || e.key === "M") && selected.size) {
+        e.preventDefault();
+        void toggleMark();
+        return;
+      }
       if (command && (e.key === "a" || e.key === "A")) {
         e.preventDefault();
         selectAll();
@@ -1160,6 +1212,7 @@ export default function App() {
     selected,
     selectAll,
     removeFromFilmstrip,
+    toggleMark,
   ]);
 
   const set =
@@ -1233,6 +1286,11 @@ export default function App() {
       }}
     >
       {f.thumbnail ? <img src={f.thumbnail} alt="" /> : <span className="thumb-placeholder">…</span>}
+      {marked.has(f.path) && (
+        <span className="thumb-mark" title="Marked for export">
+          ⚑
+        </span>
+      )}
       <span className="thumb-name">{fileName(f.path)}</span>
     </button>
   );
@@ -1808,6 +1866,24 @@ export default function App() {
                   All
                 </button>
               </div>
+              <button
+                type="button"
+                className={selected.size && [...selected].every((p) => marked.has(p)) ? "active" : ""}
+                onClick={() => void toggleMark()}
+                disabled={!selected.size}
+                title="Flag as finished and ready to export (M)"
+              >
+                ⚑ Mark
+              </button>
+              <button
+                type="button"
+                className="tab"
+                onClick={selectMarked}
+                disabled={!marked.size}
+                title="Select everything flagged for export"
+              >
+                Marked {marked.size || ""}
+              </button>
               <button type="button" onClick={() => setBatchExport([...selected])} disabled={!selected.size}>
                 Export {selected.size > 1 ? selected.size : ""}…
               </button>

@@ -1861,3 +1861,24 @@ input[type="number"] {
   background: #16241a;
   color: var(--text);
 }
+
+/* flag on a thumbnail: marked as finished and wanted in the next export */
+.thumb {
+  position: relative;
+}
+.thumb-mark {
+  position: absolute;
+  top: 5px;
+  right: 5px;
+  padding: 0 3px;
+  border-radius: 3px;
+  background: rgba(10, 12, 16, 0.72);
+  color: #ffc96b;
+  font-size: 11px;
+  line-height: 1.3;
+  pointer-events: none;
+}
+.filmstrip-actions button.active {
+  border-color: var(--accent);
+  color: var(--text);
+}

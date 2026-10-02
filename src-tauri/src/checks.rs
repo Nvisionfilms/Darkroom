@@ -293,7 +293,7 @@ fn presets_never_carry_frame_specific_fields() {
     let full = serde_json::to_value(EditParams::default()).unwrap();
     let preset = crate::preset::filter(&full);
     let obj = preset.as_object().unwrap();
-    for k in ["crop", "rotation", "transform", "masks", "heal", "lensProfile", "watermark", "mirror", "blend"] {
+    for k in ["crop", "rotation", "transform", "masks", "heal", "lensProfile", "watermark", "mirror", "blend", "marked"] {
         assert!(!obj.contains_key(k), "preset carries {k}");
     }
     for k in ["exposure", "curves", "profile", "look", "lens"] {

@@ -455,6 +455,16 @@ fn read_edits(path: String) -> Option<EditParams> {
     sidecar::load(Path::new(&path))
 }
 
+/// Which of these photos are flagged for export. Reads the sidecars only,
+/// so a whole folder can be checked without decoding anything.
+#[tauri::command]
+fn marked_photos(paths: Vec<String>) -> Vec<String> {
+    paths
+        .into_iter()
+        .filter(|p| sidecar::load(Path::new(p)).map(|e| e.marked).unwrap_or(false))
+        .collect()
+}
+
 /// Save edits for several photos at once: used to apply a preset to a
 /// selection. Each photo keeps everything the preset does not cover, so its
 /// crop, masks and retouching survive.
@@ -653,6 +663,7 @@ pub fn run() {
             export_image,
             export_path,
             read_edits,
+            marked_photos,
             apply_edits,
             open_watermark,
             get_watermark_pixels,

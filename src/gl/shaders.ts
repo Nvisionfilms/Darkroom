@@ -368,7 +368,7 @@ float softclip(float x) { return 1.5 * tanh(x / 1.5); }
 float toneLog(float l, Tone t) {
   float ws = smooth01(-l / 5.0);
   float wh = smooth01(l / 3.0);
-  float wb = smooth01((-l - 2.0) / 5.0);
+  float wb = smooth01((-l - 0.5) / 3.5);
   float ww = smooth01((l - 1.0) / 3.0);
   l += t.shadows * 1.5 * ws;
   l += t.highlights * 1.5 * wh;

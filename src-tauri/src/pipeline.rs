@@ -107,6 +107,10 @@ pub struct EditParams {
     /// double exposure: a second photograph composited onto this one
     #[serde(default)]
     pub blend: Blend,
+    /// flagged as finished and wanted in the next export. Kept with the photo
+    /// rather than the session so it survives closing the app.
+    #[serde(default)]
+    pub marked: bool,
     pub hsl: HslParams,
     pub curves: Curves,
 }
@@ -466,6 +470,7 @@ impl Default for EditParams {
             lens_profile: None,
             heal: Vec::new(),
             blend: Blend::default(),
+            marked: false,
             hsl: HslParams {
                 hue: [0.0; 8],
                 saturation: [0.0; 8],
@@ -679,7 +684,7 @@ pub fn display_encode(c: [f32; 3]) -> [f32; 3] {
 fn tone_log(l: f32, t: &Tone) -> f32 {
     let ws = smooth01(-l / 5.0);
     let wh = smooth01(l / 3.0);
-    let wb = smooth01((-l - 2.0) / 5.0);
+    let wb = smooth01((-l - 0.5) / 3.5);
     let ww = smooth01((l - 1.0) / 3.0);
     let mut l = l;
     l += t.shadows * 1.5 * ws;
