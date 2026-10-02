@@ -857,7 +857,10 @@ void main() {
     b += sharpLuma(uv + uTexel * vec2( 0.0,  1.0)) * 2.0;
     b += sharpLuma(uv + uTexel * vec2( 1.0,  1.0)) * 1.0;
     b /= 16.0;
-    c += (dot(c, LUMA) - b) * uSharpen;
+    float sy = dot(c, LUMA);
+    float sd = (sy - b) * uSharpen;
+    // a gain, not an offset: brightness moves, hue and saturation do not
+    c *= clamp((sy + sd) / max(sy, 1e-4), 0.0, 4.0);
   }
   outColor = vec4(clamp(c, 0.0, 1.0), 1.0);
 }`;

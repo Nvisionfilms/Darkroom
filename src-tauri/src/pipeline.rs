@@ -1088,11 +1088,14 @@ pub fn sharpen(img: &mut [f32], width: usize, height: usize, amount: f32) {
         let y2 = (y + 1).min(height - 1);
         for x in 0..width {
             let blur = (tmp[y0 * width + x] + 2.0 * tmp[y * width + x] + tmp[y2 * width + x]) * 0.25;
-            let delta = (luma[y * width + x] - blur) * k;
+            let y0v = luma[y * width + x];
+            let delta = (y0v - blur) * k;
+            // a gain, not an offset, so only brightness moves
+            let gain = ((y0v + delta) / y0v.max(1e-4)).clamp(0.0, 4.0);
             let p = &mut row[x * 3..x * 3 + 3];
-            p[0] = (p[0] + delta).clamp(0.0, 1.0);
-            p[1] = (p[1] + delta).clamp(0.0, 1.0);
-            p[2] = (p[2] + delta).clamp(0.0, 1.0);
+            p[0] = (p[0] * gain).clamp(0.0, 1.0);
+            p[1] = (p[1] * gain).clamp(0.0, 1.0);
+            p[2] = (p[2] * gain).clamp(0.0, 1.0);
         }
     });
 }

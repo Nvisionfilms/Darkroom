@@ -470,3 +470,56 @@ fn exports_are_tagged_as_srgb() {
         std::fs::remove_file(&out).ok();
     }
 }
+
+// ---- output sharpening ----
+
+/// Sharpening must move brightness only. It used to add its luma delta to
+/// each channel, and adding the same number to R, G and B does not keep their
+/// ratios: the bright side of a halo lost saturation and the dark side gained
+/// it, which on a coloured edge reads as a colour fringe.
+#[test]
+fn sharpening_a_coloured_edge_keeps_its_hue() {
+    const W: usize = 32;
+    const H: usize = 8;
+    // a saturated red block against a dark one: a hard, coloured edge
+    let mut img = vec![0.0f32; W * H * 3];
+    for y in 0..H {
+        for x in 0..W {
+            let i = (y * W + x) * 3;
+            let bright = x < W / 2;
+            img[i] = if bright { 0.60 } else { 0.10 };
+            img[i + 1] = if bright { 0.12 } else { 0.02 };
+            img[i + 2] = if bright { 0.09 } else { 0.015 };
+        }
+    }
+    let before = img.clone();
+    crate::pipeline::sharpen(&mut img, W, H, 100.0);
+
+    let mut worst = 0.0f32;
+    let mut changed = 0.0f32;
+    let mut looked = 0;
+    for y in 1..H - 1 {
+        for x in 1..W - 1 {
+            let i = (y * W + x) * 3;
+            changed = changed.max((img[i + 1] - before[i + 1]).abs());
+            // a halo that overshoots to black or white has no hue left to
+            // keep, and clipping is a brightness limit rather than a tint
+            let clipped = (0..3).any(|c| img[i + c] <= 0.0005 || img[i + c] >= 0.9995);
+            if clipped {
+                continue;
+            }
+            let ratio = |p: &[f32]| (p[i] / p[i + 1].max(1e-6), p[i + 2] / p[i + 1].max(1e-6));
+            let (r0, b0) = ratio(&before);
+            let (r1, b1) = ratio(&img);
+            worst = worst.max((r1 - r0).abs() / r0).max((b1 - b0).abs() / b0);
+            looked += 1;
+        }
+    }
+    assert!(changed > 0.01, "the edge was not sharpened at all ({changed})");
+    assert!(looked > 20, "not enough unclipped pixels to judge ({looked})");
+    assert!(
+        worst < 0.02,
+        "sharpening shifted the colour of the edge by {:.1}% - it should only change brightness",
+        worst * 100.0
+    );
+}
