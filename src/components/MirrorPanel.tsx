@@ -44,7 +44,7 @@ export function MirrorPanel({ mirror, masks, onChange }: Props) {
       ) : chosen ? (
         <div className="hint">
           The trail is cut from <strong>{chosen.name}</strong> and streaks around it. That area keeps its own pixels, so
-          the subject stays sharp. Judge the alignment at Fit; the exported file is exact at any zoom.
+          the subject stays sharp.
         </div>
       ) : (
         <div className="hint">The whole frame echoes. Pick a mask above to trail one subject instead.</div>

@@ -56,6 +56,14 @@ interface Props {
   /** filled in with a CaptureFn while the viewer is mounted (phone monitor) */
   captureRef?: React.MutableRefObject<CaptureFn | null>;
   maskApiRef?: React.MutableRefObject<MaskApi | null>;
+  /**
+   * Filled in with the image-to-screen mapping while the viewer is mounted, for
+   * a parent that has to line something up with the photo on screen - the
+   * Motion Trails compositor lining a mask up with it. `needMapper` asks for it
+   * to be built even when no tool of this viewer's own needs it.
+   */
+  mapperRef?: React.MutableRefObject<Mapper | null>;
+  needMapper?: boolean;
   /** mask being edited: its handles are shown and it can be painted */
   selectedMaskId?: string | null;
   /** paint the selected mask's weight in red */
@@ -109,6 +117,8 @@ export function Viewer({
   lut,
   captureRef,
   maskApiRef,
+  mapperRef: outerMapperRef,
+  needMapper = false,
   selectedMaskId = null,
   showMask = false,
   brush,
@@ -801,7 +811,7 @@ export function Viewer({
   const maskTool = !cropMode && !!selectedMask;
   const healActive = !cropMode && (healTool || params.heal.length > 0);
   if (
-    (cropMode || mirror?.enabled || (watermark?.enabled && watermark.path) || maskTool || wbPick || healActive) &&
+    (cropMode || needMapper || mirror?.enabled || (watermark?.enabled && watermark.path) || maskTool || wbPick || healActive) &&
     rr &&
     rr.imgW &&
     image
@@ -882,6 +892,7 @@ export function Viewer({
     };
   }
   mapperRef.current = mapper;
+  if (outerMapperRef) outerMapperRef.current = mapper;
   const brushRadiusCss = mapper && brush ? ((brush.size * Math.max(mapper.width, mapper.height)) / 2) * mapper.scale : 0;
 
   return (

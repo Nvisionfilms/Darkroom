@@ -53,15 +53,22 @@ const groups = [
   {
     what: "motion trails",
     rust: read("src-tauri/src/export.rs"),
-    glsl: read("src/components/Viewer.tsx"),
+    glsl: read("src/trail.ts"),
     pairs: [
       ["MAX_TRAIL_COPIES: usize = 24", "MAX_TRAIL_COPIES = 24"],
       ["TRAIL_MASK_FEATHER: f32 = 0.06", "TRAIL_MASK_FEATHER = 0.06"],
-      ["0.2 + fade * 0.78", "0.2 + fade * 0.78"],
+      ["0.2 + fade * 0.78", "0.2 + clamp(feather / 100, 0, 1) * 0.78"],
       ["* 0.72", "* 0.72"],
-      ["0.35 + t * 0.65", "0.35 + t * 0.65"],
-      ["clamp(0.0, 0.7)", "clamp(trail.length, 0, 0.7)"],
+      ["clamp(0.0, 0.7)", "clamp(length, 0, 0.7)"],
+      ["(long * 0.006).clamp(2.0, 32.0)", "clamp(imgLong * 0.006, 2, 32)"],
+      ["fade_retention.powi(i as i32 - 1)", "fadeRetention ** (i - 1)"],
     ],
+  },
+  {
+    what: "motion trail echo blur",
+    rust: read("src-tauri/src/export.rs"),
+    glsl: read("src/components/Viewer.tsx"),
+    pairs: [["0.35 + t * 0.65", "0.35 + t * 0.65"]],
   },
   {
     what: "cross-screen filter sliders",

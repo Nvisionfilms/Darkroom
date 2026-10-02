@@ -2,8 +2,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { buildLut } from "../curve";
 import { maskGroupAlpha, maskGroupKey, type AlphaMap } from "../mask";
+import { TRAIL_MASK_FEATHER, trailAlpha, trailBlur, trailCopies, trailDistance, trailFadeRetention } from "../trail";
 import { cropIsIdentity, defaultParams, type EditParams } from "../types";
 import { Viewer as CoreViewer } from "./ViewerCore";
+import type { Mapper } from "./MirrorOverlay";
 import "./MotionTrail.css";
 
 type Props = ComponentProps<typeof CoreViewer> & {
@@ -16,9 +18,32 @@ const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v
 /** Long edge of the grid a trail mask is rasterised on. */
 const ALPHA_EDGE = 768;
 
-/** Twins of export.rs: how many echoes, and what Edge Feather means for a mask. */
-const MAX_TRAIL_COPIES = 24;
-const TRAIL_MASK_FEATHER = 0.06;
+/**
+ * Where the photo is on the viewer canvas, as the affine transform that takes a
+ * `w` x `h` grid laid over the whole image to canvas device pixels. This is
+ * what lets a mask be lined up with the photo at any zoom, pan, crop or
+ * rotation rather than only when the photo is fitted to the window.
+ */
+type Affine = [number, number, number, number, number, number];
+
+function imageToCanvas(m: Mapper, w: number, h: number, dpr: number): Affine {
+  const p = (ix: number, iy: number) => {
+    const [x, y] = m.toScreen(ix, iy);
+    return [x * dpr, y * dpr] as const;
+  };
+  const o0 = p(0, 0);
+  const ox = p(m.width, 0);
+  const oy = p(0, m.height);
+  return [(ox[0] - o0[0]) / w, (ox[1] - o0[1]) / w, (oy[0] - o0[0]) / h, (oy[1] - o0[1]) / h, o0[0], o0[1]];
+}
+
+/** The inverse of an affine, for going the other way. Null if it is degenerate. */
+function invert(t: Affine): Affine | null {
+  const [a, b, c, d, e, f] = t;
+  const det = a * d - b * c;
+  if (Math.abs(det) < 1e-12) return null;
+  return [d / det, -b / det, -c / det, a / det, (c * f - d * e) / det, (b * e - a * f) / det];
+}
 
 /** A weight map as a white canvas whose alpha is the weight. */
 function alphaCanvas(a: AlphaMap): HTMLCanvasElement {
@@ -37,14 +62,16 @@ function alphaCanvas(a: AlphaMap): HTMLCanvasElement {
   return c;
 }
 
-/** The developed luminance inside `b`, resampled onto an `aw` x `ah` grid. */
-function lumaOf(src: HTMLCanvasElement, b: { x: number; y: number; w: number; h: number }, aw: number, ah: number): Uint8Array | null {
+/** The developed luminance, resampled onto an `aw` x `ah` grid over the image. */
+function lumaOf(src: HTMLCanvasElement, into: Affine | null, aw: number, ah: number): Uint8Array | null {
   const c = document.createElement("canvas");
   c.width = aw;
   c.height = ah;
   const g = c.getContext("2d", { willReadFrequently: true });
-  if (!g) return null;
-  g.drawImage(src, b.x, b.y, b.w, b.h, 0, 0, aw, ah);
+  if (!g || !into) return null;
+  g.setTransform(into[0], into[1], into[2], into[3], into[4], into[5]);
+  g.drawImage(src, 0, 0);
+  g.setTransform(1, 0, 0, 1, 0, 0);
   const d = g.getImageData(0, 0, aw, ah).data;
   const out = new Uint8Array(aw * ah);
   for (let i = 0; i < out.length; i++) {
@@ -67,9 +94,11 @@ type PhotoRect = { x: number; y: number; w: number; h: number };
  * Every echo is a translated copy of pixels that are already there; this
  * effect does not use generative AI.
  *
- * The preview composites in viewer-canvas space, so the mask is lined up with
- * the fitted photo rectangle. At Fit - where the effect is judged - that is
- * exact; zoomed in it is approximate, and the export is always exact.
+ * The mask is placed with the same transform the viewer draws the photo with,
+ * read back from it, so it lines up at Fit, at 1:1, panned, cropped or rotated
+ * alike. It used to be fitted to the photo rectangle, which only exists at Fit;
+ * anywhere else the mask sat over the wrong part of the picture and only some
+ * of the subject was cut out.
  */
 export function Viewer(props: Props) {
   const { beforeParams: beforeOverride, ...coreProps } = props;
@@ -81,6 +110,8 @@ export function Viewer(props: Props) {
   // the trail mask, rasterised once per change rather than once per frame
   const maskAlphaRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
   const maskBuildingRef = useRef("");
+  // where the photo actually sits on the canvas, whatever the zoom and pan
+  const mapperRef = useRef<Mapper | null>(null);
   const sourceCacheValidRef = useRef(false);
   // every photo opens on the edited picture; Before and Split are there when
   // you want them, and the top bar has hold-for-before
@@ -265,30 +296,39 @@ export function Viewer(props: Props) {
       // A trail cut from a mask: rasterise the mask's area once and keep it
       // until the mask or the fitted rectangle changes.
       let maskCanvas: HTMLCanvasElement | null = null;
+      let maskPlace: Affine | null = null;
       // Edge Feather softens the mask's own edge here: a cut-out subject never
       // touches the frame boundary the slider feathers otherwise.
       const maskSigma = clamp(trail.offset, 0, 0.25) * TRAIL_MASK_FEATHER * Math.max(bounds.w, bounds.h);
       const maskBlur = maskSigma > 0.3 ? `blur(${maskSigma.toFixed(2)}px)` : "none";
       if (trail.mask) {
-        const key = `${maskGroupKey(props.params.masks, trail.mask)}@${Math.round(bounds.w)}x${Math.round(bounds.h)}`;
-        if (!key.startsWith("@")) {
+        const mapper = mapperRef.current;
+        // the mask lives in image coordinates, so it is placed with the same
+        // transform the viewer draws the photo with - at Fit, at 1:1, panned,
+        // cropped or rotated alike
+        const grid =
+          mapper && mapper.width > 0
+            ? mapper.width >= mapper.height
+              ? { w: ALPHA_EDGE, h: Math.max(1, Math.round((ALPHA_EDGE * mapper.height) / mapper.width)) }
+              : { w: Math.max(1, Math.round((ALPHA_EDGE * mapper.width) / mapper.height)), h: ALPHA_EDGE }
+            : null;
+        const key = grid ? `${maskGroupKey(props.params.masks, trail.mask)}@${grid.w}x${grid.h}` : "";
+        if (mapper && grid && !key.startsWith("@")) {
+          maskPlace = imageToCanvas(mapper, grid.w, grid.h, source.width / Math.max(1, rect.width));
           const cached = maskAlphaRef.current;
           if (cached && cached.key === key) maskCanvas = cached.canvas;
           else if (maskBuildingRef.current !== key) {
             maskBuildingRef.current = key;
-            const landscape = bounds.w >= bounds.h;
-            const aw = Math.max(1, Math.round(landscape ? ALPHA_EDGE : (ALPHA_EDGE * bounds.w) / Math.max(1, bounds.h)));
-            const ah = Math.max(1, Math.round(landscape ? (ALPHA_EDGE * bounds.h) / Math.max(1, bounds.w) : ALPHA_EDGE));
             // luminance masks read the developed picture, so sample it on the
             // same grid the mask is being built on
-            const lum = lumaOf(cache, bounds, aw, ah);
-            void maskGroupAlpha(props.params.masks, trail.mask, aw, ah, lum).then((a) => {
+            const lum = lumaOf(cache, invert(maskPlace), grid.w, grid.h);
+            void maskGroupAlpha(props.params.masks, trail.mask, grid.w, grid.h, lum).then((a) => {
               if (maskBuildingRef.current !== key) return;
               maskAlphaRef.current = a ? { key, canvas: alphaCanvas(a) } : null;
             });
           }
         }
-        if (!maskCanvas) {
+        if (!maskCanvas || !maskPlace) {
           // nothing to streak from yet, or the mask is gone: show no trail
           // rather than a stale one
           ctx.clearRect(0, 0, overlay.width, overlay.height);
@@ -312,25 +352,33 @@ export function Viewer(props: Props) {
           sctx.drawImage(trailSource, 0, 0);
           sctx.globalCompositeOperation = "destination-in";
           sctx.filter = maskBlur;
-          sctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+          sctx.setTransform(...maskPlace);
+          sctx.drawImage(maskCanvas, 0, 0);
+          sctx.setTransform(1, 0, 0, 1, 0, 0);
           sctx.filter = "none";
           sctx.globalCompositeOperation = "source-over";
           trailSource = subj;
         }
       }
 
-      const long = Math.max(W, H);
-      const copies = Math.round(clamp(trail.cx * 10, 1, MAX_TRAIL_COPIES));
+      // Distance and blur are fractions of the PHOTO's long edge, which is what
+      // export.rs measures them against. Measuring them against the canvas
+      // instead made the echoes keep their size in screen pixels while the photo
+      // under them grew and shrank, so the trail slid about as you zoomed and
+      // panned - and the preview only matched the export at Fit.
+      const cssScale = rect.width > 0 ? W / rect.width : 1;
+      const mapperNow = mapperRef.current;
+      const imgLong = mapperNow ? Math.max(mapperNow.width, mapperNow.height) : 0;
+      const pxPerImage = mapperNow ? mapperNow.scale * cssScale : 0;
+      const long = imgLong > 0 && pxPerImage > 0 ? imgLong * pxPerImage : Math.max(W, H);
+      const copies = trailCopies(trail.cx);
       const amount = clamp(trail.ry, 0, 1);
-      const opacity = clamp(trail.opacity / 100, 0, 1);
-      const fade = clamp(trail.feather / 100, 0, 1);
-      const fadeRetention = 0.2 + fade * 0.78;
-      const distance = clamp(trail.length, 0, 0.7) * long;
+      const fadeRetention = trailFadeRetention(trail.feather);
+      const distance = imgLong > 0 ? trailDistance(trail.length, imgLong, pxPerImage) : clamp(trail.length, 0, 0.7) * long;
       const angle = (trail.direction * Math.PI) / 180;
       const dx = Math.cos(angle);
       const dy = Math.sin(angle);
-      const cssScale = rect.width > 0 ? W / rect.width : 1;
-      const blurPx = clamp(trail.rx, 0, 1) * 14 * cssScale;
+      const blurPx = imgLong > 0 ? trailBlur(trail.rx, imgLong, pxPerImage) : clamp(trail.rx, 0, 1) * 14 * cssScale;
 
       ctx.clearRect(0, 0, W, H);
       ctx.save();
@@ -345,7 +393,7 @@ export function Viewer(props: Props) {
       ctx.imageSmoothingEnabled = true;
       for (let i = copies; i >= 1; i--) {
         const t = i / copies;
-        const alpha = opacity * amount * Math.pow(fadeRetention, i - 1) * 0.72;
+        const alpha = trailAlpha(trail.opacity, amount, fadeRetention, i);
         if (alpha <= 0.002) continue;
         ctx.globalAlpha = alpha;
         ctx.filter = blurPx > 0.1 ? `blur(${(blurPx * (0.35 + t * 0.65)).toFixed(2)}px)` : "none";
@@ -362,7 +410,11 @@ export function Viewer(props: Props) {
         ctx.globalCompositeOperation = "destination-out";
         ctx.globalAlpha = 1;
         ctx.filter = "none";
-        ctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+        if (maskPlace) {
+          ctx.setTransform(...maskPlace);
+          ctx.drawImage(maskCanvas, 0, 0);
+          ctx.setTransform(1, 0, 0, 1, 0, 0);
+        }
         ctx.globalCompositeOperation = "source-over";
       }
     };
@@ -443,7 +495,15 @@ export function Viewer(props: Props) {
   return (
     <div className="motion-trail-viewer compare-viewer" ref={wrapRef}>
       <div className="motion-trail-edited">
-        <CoreViewer {...coreProps} params={coreParams} mirror={null} onMirrorChange={undefined} onZoom={handleZoom} />
+        <CoreViewer
+          {...coreProps}
+          params={coreParams}
+          mirror={null}
+          onMirrorChange={undefined}
+          onZoom={handleZoom}
+          mapperRef={mapperRef}
+          needMapper={trail.enabled}
+        />
       </div>
 
       <canvas ref={overlayRef} className="motion-trail-preview" aria-hidden="true" />

@@ -127,12 +127,22 @@ await js(`window.__smoke = {
       n++;
       if (d[i] > 8) lit++;
     }
+    let x0 = c.width, x1 = -1;
+    for (let y = 0; y < c.height; y++) {
+      for (let x = 0; x < c.width; x++) {
+        if (d[(y * c.width + x) * 4 + 3] > 8) {
+          if (x < x0) x0 = x;
+          if (x > x1) x1 = x;
+        }
+      }
+    }
+    const span = x1 >= x0 ? x1 - x0 : 0;
     const cx = Math.max(0, Math.floor(c.width / 2) - 8);
     const cy = Math.max(0, Math.floor(c.height / 2) - 8);
     const mid = g.getImageData(cx, cy, 16, 16).data;
     let centre = 0;
     for (let i = 3; i < mid.length; i += 4) centre = Math.max(centre, mid[i]);
-    return { w: c.width, h: c.height, lit: lit / n, centre };
+    return { w: c.width, h: c.height, lit: lit / n, centre, span };
   },
 }; true`);
 
@@ -458,6 +468,20 @@ await step("motion trails can be cut from a mask", async () => {
   const o = await js(`__smoke.overlay()`);
   expect(o.centre < 24, `the trail covered the masked subject instead of streaking around it (centre alpha ${o.centre})`);
 
+  // and at 1:1, where the photo rectangle the mask used to be fitted to does
+  // not exist: the mask has to follow the viewer's own transform instead
+  await js(`window.dispatchEvent(new CustomEvent('darkroom:zoom', { detail: '100' })); true`);
+  await sleep(2000);
+  const z = await js(`__smoke.overlay()`);
+  expect(z && z.lit > 0.004, `no trail at 1:1: ${JSON.stringify(z)}`);
+  expect(z.centre < 24, `at 1:1 the trail covered the subject (centre alpha ${z.centre})`);
+  // the trail is a fraction of the PHOTO, so zooming in makes it bigger on
+  // screen too (the span saturates against the canvas edge, hence the modest
+  // factor - the arithmetic itself is pinned in the next step)
+  expect(z.span > o.span * 1.2, `the trail did not grow with the photo: ${o.span}px at Fit, ${z.span}px at 1:1`);
+  await js(`window.dispatchEvent(new CustomEvent('darkroom:zoom', { detail: 'fit' })); true`);
+  await sleep(1500);
+
   // and the whole frame still trails when asked to
   await js(`(() => { const s = document.querySelector('#trail-source'); const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; d.call(s, ''); s.dispatchEvent(new Event('change', { bubbles: true })); })(); true`);
   expect(
@@ -469,6 +493,31 @@ await step("motion trails can be cut from a mask", async () => {
   await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
   // let the debounced sidecar write land before the filmstrip steps start
   await sleep(1500);
+});
+
+await step("trail distances are measured against the photo, not the window", async () => {
+  // This is what made the trail float: with the distance measured against the
+  // canvas, the echoes kept their size in screen pixels while the photo under
+  // them grew and shrank. Pinned here as arithmetic, because on screen the
+  // trail runs off the edge of the canvas before the difference is obvious.
+  const r = await js(`import('/src/trail.ts').then(t => JSON.stringify({
+    fit: t.trailDistance(0.2, 6000, 0.25),
+    oneToOne: t.trailDistance(0.2, 6000, 1),
+    clamped: t.trailDistance(5, 6000, 1),
+    blurFit: t.trailBlur(1, 6000, 0.25),
+    blurOne: t.trailBlur(1, 6000, 1),
+    copies: [t.trailCopies(0.4), t.trailCopies(2.4), t.trailCopies(9)],
+    fade: t.trailFadeRetention(100),
+  }))`);
+  const t = JSON.parse(r);
+  expect(t.oneToOne === 1200, `distance at 1:1 should be 0.2 x 6000 = 1200, got ${t.oneToOne}`);
+  expect(t.fit === 300, `distance zoomed out 4x should be a quarter of that, got ${t.fit}`);
+  expect(t.oneToOne === t.fit * 4, "the distance did not follow the zoom");
+  expect(t.clamped === 0.7 * 6000, `length should clamp at 0.7, got ${t.clamped}`);
+  expect(t.blurOne === t.blurFit * 4, "the blur did not follow the zoom");
+  expect(t.blurOne === 32, `blur should clamp at 32 photo pixels, got ${t.blurOne}`);
+  expect(JSON.stringify(t.copies) === "[4,24,24]", `copies: ${JSON.stringify(t.copies)}`);
+  expect(Math.abs(t.fade - 0.98) < 1e-9, `full fade should retain 0.98, got ${t.fade}`);
 });
 
 await step("the look exports as a .cube LUT and says what it left behind", async () => {
