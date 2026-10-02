@@ -91,7 +91,8 @@ impl Monitor {
         let viewers = {
             let mut live = self.shared.live.lock().unwrap();
             let now = Instant::now();
-            live.viewers.retain(|_, t| now.duration_since(*t) < VIEWER_WINDOW);
+            live.viewers
+                .retain(|_, t| now.duration_since(*t) < VIEWER_WINDOW);
             live.viewers.len()
         };
         MonitorInfo {
@@ -149,9 +150,14 @@ pub fn start() -> anyhow::Result<Monitor> {
             Err(e) => log::debug!("monitor: port {port} busy: {e}"),
         }
     }
-    let (server, port) = bound.ok_or_else(|| anyhow::anyhow!("no free port between {} and {}", PORTS.start, PORTS.end))?;
+    let (server, port) = bound
+        .ok_or_else(|| anyhow::anyhow!("no free port between {} and {}", PORTS.start, PORTS.end))?;
     let server = Arc::new(server);
-    let ip = lan_ip().ok_or_else(|| anyhow::anyhow!("no network connection: join the same Wi‑Fi as your phone (or a hotspot) first"))?;
+    let ip = lan_ip().ok_or_else(|| {
+        anyhow::anyhow!(
+            "no network connection: join the same Wi‑Fi as your phone (or a hotspot) first"
+        )
+    })?;
     let url = match ip {
         IpAddr::V4(v4) => format!("http://{v4}:{port}/"),
         IpAddr::V6(v6) => format!("http://[{v6}]:{port}/"),
@@ -263,7 +269,10 @@ fn handle(req: Request, sh: Arc<Shared>) {
             let len = frame.len();
             let r = Response::new(
                 StatusCode(200),
-                vec![header("Content-Type", "image/jpeg"), header("Cache-Control", "no-store")],
+                vec![
+                    header("Content-Type", "image/jpeg"),
+                    header("Cache-Control", "no-store"),
+                ],
                 std::io::Cursor::new(frame.as_slice().to_vec()),
                 Some(len),
                 None,

@@ -28,11 +28,19 @@ fn main() -> anyhow::Result<()> {
         if let Ok(src) = rawler::rawsource::RawSource::new(input) {
             if let Ok(dec) = rawler::get_decoder(&src) {
                 let p = rawler::decoders::RawDecodeParams::default();
-                if let Ok(Some(prev)) = dec.preview_image(&src, &p).or_else(|_| dec.full_image(&src, &p)) {
+                if let Ok(Some(prev)) = dec
+                    .preview_image(&src, &p)
+                    .or_else(|_| dec.full_image(&src, &p))
+                {
                     let cam_path = format!("{}_camera.jpg", output.trim_end_matches(".jpg"));
                     let small = prev.resize(1600, 1600, image::imageops::FilterType::Triangle);
                     small.to_rgb8().save(&cam_path)?;
-                    println!("camera preview {}x{} -> {}", prev.width(), prev.height(), cam_path);
+                    println!(
+                        "camera preview {}x{} -> {}",
+                        prev.width(),
+                        prev.height(),
+                        cam_path
+                    );
                 }
             }
         }
@@ -40,7 +48,12 @@ fn main() -> anyhow::Result<()> {
 
     let t = Instant::now();
     let (img, meta) = decode::load(input)?;
-    println!("decoded {}x{} in {:.2}s", img.width, img.height, t.elapsed().as_secs_f32());
+    println!(
+        "decoded {}x{} in {:.2}s",
+        img.width,
+        img.height,
+        t.elapsed().as_secs_f32()
+    );
     println!("{}", serde_json::to_string_pretty(&meta)?);
     let (mut mn, mut mx, mut sum) = (f32::MAX, f32::MIN, 0.0f64);
     for v in &img.data {
@@ -48,7 +61,10 @@ fn main() -> anyhow::Result<()> {
         mx = mx.max(*v);
         sum += *v as f64;
     }
-    println!("linear range: min {mn:.4} max {mx:.4} mean {:.4}", sum / img.data.len() as f64);
+    println!(
+        "linear range: min {mn:.4} max {mx:.4} mean {:.4}",
+        sum / img.data.len() as f64
+    );
 
     let t = Instant::now();
     export(

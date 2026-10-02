@@ -44,11 +44,17 @@ pub fn resolve<R: Runtime>(app: &AppHandle<R>, uri: &str, ext: Option<&str>) -> 
             "photos",
         ),
     };
-    let dir = app.path().app_data_dir().context("no app data folder")?.join(folder);
+    let dir = app
+        .path()
+        .app_data_dir()
+        .context("no app data folder")?
+        .join(folder);
     std::fs::create_dir_all(&dir).with_context(|| format!("create {}", dir.display()))?;
     let dest = dir.join(format!("{}.{ext}", media_name(uri)));
     // the same photo picked again keeps its copy, and so its edits
-    let same = std::fs::metadata(&dest).map(|m| m.len() == bytes.len() as u64).unwrap_or(false);
+    let same = std::fs::metadata(&dest)
+        .map(|m| m.len() == bytes.len() as u64)
+        .unwrap_or(false);
     if !same {
         std::fs::write(&dest, &bytes).with_context(|| format!("write {}", dest.display()))?;
     }
@@ -65,7 +71,12 @@ pub fn is_handle(uri: &str) -> bool {
 /// HEIF/HEIC, the iPhone camera's default format. Its brand sits in the
 /// ISO-BMFF `ftyp` box, the same place CR3 declares itself.
 fn is_heic(b: &[u8]) -> bool {
-    b.len() > 12 && &b[4..8] == b"ftyp" && matches!(&b[8..12], b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1")
+    b.len() > 12
+        && &b[4..8] == b"ftyp"
+        && matches!(
+            &b[8..12],
+            b"heic" | b"heix" | b"hevc" | b"heim" | b"heis" | b"mif1" | b"msf1"
+        )
 }
 
 /// Copy a finished file out through a content:// handle. Android's save
@@ -131,14 +142,25 @@ fn raw_extension(make: &str) -> &'static str {
 /// A stable file name for a content handle: its last segment (the media id),
 /// kept to characters every file system accepts.
 fn media_name(uri: &str) -> String {
-    let last = uri.trim_end_matches('/').rsplit('/').next().unwrap_or("photo");
+    let last = uri
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .unwrap_or("photo");
     let last = percent_decode(last);
     // an iOS file URL keeps the real name: use it, without its extension
     if uri.starts_with("file://") {
         let stem = last.rsplit_once('.').map(|(s, _)| s).unwrap_or(&last);
-        let clean: String = stem.chars().map(|c| if c.is_ascii_alphanumeric() { c } else { '-' }).collect();
+        let clean: String = stem
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
         let clean = clean.trim_matches('-');
-        return if clean.is_empty() { "photo".into() } else { clean.to_string() };
+        return if clean.is_empty() {
+            "photo".into()
+        } else {
+            clean.to_string()
+        };
     }
     let clean: String = last
         .chars()
@@ -196,7 +218,10 @@ mod tests {
 
     #[test]
     fn ios_file_urls_keep_their_real_name() {
-        assert_eq!(media_name("file:///private/var/mobile/tmp/IMG_1234.JPG"), "IMG-1234");
+        assert_eq!(
+            media_name("file:///private/var/mobile/tmp/IMG_1234.JPG"),
+            "IMG-1234"
+        );
         assert_eq!(media_name("file:///x/DSC09673.ARW"), "DSC09673");
     }
 

@@ -69,7 +69,11 @@ fn db() -> Option<&'static Db> {
         let text = include_str!("../data/lensfun.json");
         match serde_json::from_str::<Db>(text) {
             Ok(d) => {
-                log::info!("lensfun: {} cameras, {} lenses", d.cameras.len(), d.lenses.len());
+                log::info!(
+                    "lensfun: {} cameras, {} lenses",
+                    d.cameras.len(),
+                    d.lenses.len()
+                );
                 Some(d)
             }
             Err(e) => {
@@ -87,13 +91,19 @@ fn tokens(s: &str) -> Vec<String> {
         .replace("f/", "f")
         .split(|c: char| c.is_whitespace() || c == ',' || c == '(' || c == ')' || c == '/')
         .filter(|t| !t.is_empty())
-        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-').to_string())
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric() && c != '.' && c != '-')
+                .to_string()
+        })
         .filter(|t| !t.is_empty())
         .collect()
 }
 
 fn norm(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_ascii_lowercase()
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase()
 }
 
 /// Similarity of two names in 0..1 (token overlap, with focal-range tokens weighted).
@@ -103,7 +113,15 @@ fn score(a: &str, b: &str) -> f32 {
     if ta.is_empty() || tb.is_empty() {
         return 0.0;
     }
-    let weight = |t: &str| if t.contains("mm") || t.starts_with('f') && t.chars().nth(1).map_or(false, |c| c.is_ascii_digit()) { 3.0 } else { 1.0 };
+    let weight = |t: &str| {
+        if t.contains("mm")
+            || t.starts_with('f') && t.chars().nth(1).map_or(false, |c| c.is_ascii_digit())
+        {
+            3.0
+        } else {
+            1.0
+        }
+    };
     let mut hit = 0.0;
     let mut total = 0.0;
     for t in &ta {
@@ -131,8 +149,15 @@ fn camera_crop(db: &Db, camera: &str) -> Option<(f32, String)> {
         return None;
     }
     // exact normalised match first, then containment
-    let exact = db.cameras.iter().find(|c| norm(&c.model) == n || norm(&format!("{} {}", c.maker, c.model)) == n);
-    let cam = exact.or_else(|| db.cameras.iter().find(|c| n.contains(&norm(&c.model)) && norm(&c.model).len() >= 6))?;
+    let exact = db
+        .cameras
+        .iter()
+        .find(|c| norm(&c.model) == n || norm(&format!("{} {}", c.maker, c.model)) == n);
+    let cam = exact.or_else(|| {
+        db.cameras
+            .iter()
+            .find(|c| n.contains(&norm(&c.model)) && norm(&c.model).len() >= 6)
+    })?;
     Some((cam.crop, cam.mount.clone()))
 }
 
@@ -157,7 +182,11 @@ fn pick2<'a, T>(items: &'a [T], focal: f32, f: impl Fn(&T) -> f32) -> Option<(&'
     for w in sorted.windows(2) {
         let (a, b) = (w[0], w[1]);
         if focal >= f(a) && focal <= f(b) {
-            let t = if f(b) > f(a) { (focal - f(a)) / (f(b) - f(a)) } else { 0.0 };
+            let t = if f(b) > f(a) {
+                (focal - f(a)) / (f(b) - f(a))
+            } else {
+                0.0
+            };
             return Some((a, b, t));
         }
     }
@@ -165,13 +194,20 @@ fn pick2<'a, T>(items: &'a [T], focal: f32, f: impl Fn(&T) -> f32) -> Option<(&'
 }
 
 /// Find the calibration for a photo. Returns None when the lens is unknown.
-pub fn lookup(camera: Option<&str>, lens: Option<&str>, focal: Option<f32>, aperture: Option<f32>) -> Option<LensProfile> {
+pub fn lookup(
+    camera: Option<&str>,
+    lens: Option<&str>,
+    focal: Option<f32>,
+    aperture: Option<f32>,
+) -> Option<LensProfile> {
     let db = db()?;
     let lens_name = lens?.trim();
     if lens_name.is_empty() {
         return None;
     }
-    let (cam_crop, cam_mount) = camera.and_then(|c| camera_crop(db, c)).unwrap_or((0.0, String::new()));
+    let (cam_crop, cam_mount) = camera
+        .and_then(|c| camera_crop(db, c))
+        .unwrap_or((0.0, String::new()));
     let mut best: Option<(&LensEntry, f32)> = None;
     for l in &db.lenses {
         let mut s = score(lens_name, &l.model);
@@ -190,13 +226,20 @@ pub fn lookup(camera: Option<&str>, lens: Option<&str>, focal: Option<f32>, aper
     }
     let (l, s) = best?;
     if s < 0.6 {
-        log::info!("lensfun: no confident match for {lens_name:?} (best {:?} at {s:.2})", l.model);
+        log::info!(
+            "lensfun: no confident match for {lens_name:?} (best {:?} at {s:.2})",
+            l.model
+        );
         return None;
     }
     let focal = focal.unwrap_or_else(|| l.dist.first().map(|d| d.f).unwrap_or(50.0));
     let mut p = LensProfile {
         name: l.model.clone(),
-        crop_scale: if cam_crop > 0.0 { l.crop / cam_crop } else { 1.0 },
+        crop_scale: if cam_crop > 0.0 {
+            l.crop / cam_crop
+        } else {
+            1.0
+        },
         tca: [1.0, 1.0],
         ..Default::default()
     };
@@ -230,7 +273,11 @@ pub fn lookup(camera: Option<&str>, lens: Option<&str>, focal: Option<f32>, aper
             let mina = cands.iter().map(|v| da(v)).fold(f32::MAX, f32::min);
             cands.retain(|v| da(v) <= mina + 0.01);
         }
-        cands.sort_by(|a, b| b.d.unwrap_or(0.0).partial_cmp(&a.d.unwrap_or(0.0)).unwrap_or(std::cmp::Ordering::Equal));
+        cands.sort_by(|a, b| {
+            b.d.unwrap_or(0.0)
+                .partial_cmp(&a.d.unwrap_or(0.0))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
         if let Some(v) = cands.first() {
             for i in 0..3 {
                 p.vig[i] = *v.k.get(i).unwrap_or(&0.0);
@@ -238,7 +285,11 @@ pub fn lookup(camera: Option<&str>, lens: Option<&str>, focal: Option<f32>, aper
         }
     }
     if let Some((a, b, t)) = pick2(&l.tca, focal, |c| c.f) {
-        let kr = lerp(*a.p.first().unwrap_or(&1.0), *b.p.first().unwrap_or(&1.0), t);
+        let kr = lerp(
+            *a.p.first().unwrap_or(&1.0),
+            *b.p.first().unwrap_or(&1.0),
+            t,
+        );
         let kb = lerp(*a.p.get(1).unwrap_or(&1.0), *b.p.get(1).unwrap_or(&1.0), t);
         if kr > 0.9 && kr < 1.1 && kb > 0.9 && kb < 1.1 {
             p.tca = [kr, kb];

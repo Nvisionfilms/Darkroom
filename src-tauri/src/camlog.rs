@@ -25,7 +25,11 @@ const DWG: [[f64; 2]; 3] = [[0.8000, 0.3130], [0.1682, 0.9877], [0.0790, -0.1155
 const S_GAMUT3_CINE: [[f64; 2]; 3] = [[0.766, 0.275], [0.225, 0.800], [0.089, -0.087]];
 const S_GAMUT3: [[f64; 2]; 3] = [[0.730, 0.280], [0.140, 0.855], [0.100, -0.050]];
 const CINEMA_GAMUT: [[f64; 2]; 3] = [[0.74, 0.27], [0.17, 1.14], [0.08, -0.10]];
-const BMD_WG_GEN5: [[f64; 2]; 3] = [[0.717_721_5, 0.317_118_1], [0.228_041_0, 0.861_569_0], [0.100_584_1, -0.082_045_2]];
+const BMD_WG_GEN5: [[f64; 2]; 3] = [
+    [0.717_721_5, 0.317_118_1],
+    [0.228_041_0, 0.861_569_0],
+    [0.100_584_1, -0.082_045_2],
+];
 const BMD_WG_GEN5_WHITE: [f64; 2] = [0.312_717_0, 0.329_031_2];
 
 /// Look input ids as stored in the sidecar, with their display names.
@@ -55,20 +59,38 @@ fn invert(m: &M64) -> M64 {
     let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
     let k = 1.0 / det;
     [
-        [(e * i - f * h) * k, (c * h - b * i) * k, (b * f - c * e) * k],
-        [(f * g - d * i) * k, (a * i - c * g) * k, (c * d - a * f) * k],
-        [(d * h - e * g) * k, (b * g - a * h) * k, (a * e - b * d) * k],
+        [
+            (e * i - f * h) * k,
+            (c * h - b * i) * k,
+            (b * f - c * e) * k,
+        ],
+        [
+            (f * g - d * i) * k,
+            (a * i - c * g) * k,
+            (c * d - a * f) * k,
+        ],
+        [
+            (d * h - e * g) * k,
+            (b * g - a * h) * k,
+            (a * e - b * d) * k,
+        ],
     ]
 }
 
 /// Normalised primary matrix: RGB with the given primaries and white -> XYZ.
 fn npm(p: [[f64; 2]; 3], white: [f64; 2]) -> M64 {
     let xyz = |x: f64, y: f64| [x / y, 1.0, (1.0 - x - y) / y];
-    let (r, g, b) = (xyz(p[0][0], p[0][1]), xyz(p[1][0], p[1][1]), xyz(p[2][0], p[2][1]));
+    let (r, g, b) = (
+        xyz(p[0][0], p[0][1]),
+        xyz(p[1][0], p[1][1]),
+        xyz(p[2][0], p[2][1]),
+    );
     let m = [[r[0], g[0], b[0]], [r[1], g[1], b[1]], [r[2], g[2], b[2]]];
     let w = xyz(white[0], white[1]);
     let inv = invert(&m);
-    let s: Vec<f64> = (0..3).map(|i| (0..3).map(|k| inv[i][k] * w[k]).sum()).collect();
+    let s: Vec<f64> = (0..3)
+        .map(|i| (0..3).map(|k| inv[i][k] * w[k]).sum())
+        .collect();
     let mut o = [[0.0; 3]; 3];
     for i in 0..3 {
         for j in 0..3 {
@@ -159,13 +181,21 @@ pub fn encode_channel(enc: u8, x: f32) -> f32 {
 
 #[inline]
 pub fn encode(enc: u8, rgb: [f32; 3]) -> [f32; 3] {
-    [encode_channel(enc, rgb[0]), encode_channel(enc, rgb[1]), encode_channel(enc, rgb[2])]
+    [
+        encode_channel(enc, rgb[0]),
+        encode_channel(enc, rgb[1]),
+        encode_channel(enc, rgb[2]),
+    ]
 }
 
 /// Guess a look's input from its file name or TITLE, the way LUT packs are
 /// usually named ("SLog3SGamut3.CineToLC-709", "CanonLog3_to_709", ...).
 pub fn detect(name: &str) -> &'static str {
-    let n: String = name.chars().filter(|c| c.is_ascii_alphanumeric()).collect::<String>().to_ascii_lowercase();
+    let n: String = name
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .collect::<String>()
+        .to_ascii_lowercase();
     if n.contains("slog3") {
         if n.contains("cine") {
             "slog3-sgamut3cine"
@@ -174,7 +204,11 @@ pub fn detect(name: &str) -> &'static str {
         }
     } else if n.contains("clog3") || n.contains("canonlog3") {
         "clog3-cinema"
-    } else if n.contains("bmdfilm") || n.contains("blackmagicfilm") || n.contains("gen5") || n.contains("bmdwg") {
+    } else if n.contains("bmdfilm")
+        || n.contains("blackmagicfilm")
+        || n.contains("gen5")
+        || n.contains("bmdwg")
+    {
         "bmdfilm5-bmdwg5"
     } else if n.contains("davinciintermediate") || n.contains("dwg") || n.contains("davinciwide") {
         "di-dwg"
@@ -208,19 +242,33 @@ mod tests {
         assert!(close(slog3(0.0), 95.0 / 1023.0, 1e-5));
         assert!(close(clog3(0.18), 0.3434, 1e-3), "{}", clog3(0.18));
         assert!(close(bmdfilm5(0.18), 0.3836, 1e-3), "{}", bmdfilm5(0.18));
-        assert!(close(crate::color::davinci_intermediate_encode(0.18), 0.3360, 1e-3));
+        assert!(close(
+            crate::color::davinci_intermediate_encode(0.18),
+            0.3360,
+            1e-3
+        ));
     }
 
     #[test]
     fn curves_are_continuous_at_their_cuts() {
         assert!(close(slog3(0.011_249), slog3(0.011_251), 1e-4));
-        assert!(close(clog3(0.014 * 0.9 - 1e-6), clog3(0.014 * 0.9 + 1e-6), 1e-4));
+        assert!(close(
+            clog3(0.014 * 0.9 - 1e-6),
+            clog3(0.014 * 0.9 + 1e-6),
+            1e-4
+        ));
         assert!(close(bmdfilm5(0.004_999), bmdfilm5(0.005_001), 1e-4));
     }
 
     #[test]
     fn gamut_matrices_keep_white_neutral() {
-        for id in ["slog3-sgamut3cine", "slog3-sgamut3", "clog3-cinema", "bmdfilm5-bmdwg5", "di-dwg"] {
+        for id in [
+            "slog3-sgamut3cine",
+            "slog3-sgamut3",
+            "clog3-cinema",
+            "bmdfilm5-bmdwg5",
+            "di-dwg",
+        ] {
             let (_, m) = input(id);
             let w = crate::color::mul3(&m, [1.0, 1.0, 1.0]);
             for c in w {

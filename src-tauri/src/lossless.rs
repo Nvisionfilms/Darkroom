@@ -153,7 +153,11 @@ pub fn decode(strip: &[u8]) -> Result<Decoded> {
         Vec::new()
     };
     // one MCU per pixel at 1x1 sampling, so the interval is a whole number of rows
-    let rows_per_band = if h.restart_interval > 0 { h.restart_interval / h.width.max(1) } else { 0 };
+    let rows_per_band = if h.restart_interval > 0 {
+        h.restart_interval / h.width.max(1)
+    } else {
+        0
+    };
 
     if bands.len() < 2 || rows_per_band == 0 {
         // no restarts: the existing decoder handles the whole stream
@@ -272,7 +276,11 @@ fn find_strip(b: &[u8]) -> Option<Strip> {
                 _ => 8,
             } * count;
             let value = if size <= 4 {
-                if typ == 3 { u16at(e + 8) } else { u32at(e + 8) }
+                if typ == 3 {
+                    u16at(e + 8)
+                } else {
+                    u32at(e + 8)
+                }
             } else {
                 u32at(e + 8)
             };
@@ -291,14 +299,28 @@ fn find_strip(b: &[u8]) -> Option<Strip> {
     let (root, subs) = read_ifd(first);
     let mut best: Option<Strip> = None;
     for at in std::iter::once(first).chain(subs.into_iter()) {
-        let (tags, _) = if at == first { (root.clone(), Vec::new()) } else { read_ifd(at) };
-        let get = |t: usize| tags.iter().find(|(tag, ..)| *tag == t).map(|(_, _, c, v)| (*c, *v));
-        let (Some((_, width)), Some((_, height))) = (get(256), get(257)) else { continue };
+        let (tags, _) = if at == first {
+            (root.clone(), Vec::new())
+        } else {
+            read_ifd(at)
+        };
+        let get = |t: usize| {
+            tags.iter()
+                .find(|(tag, ..)| *tag == t)
+                .map(|(_, _, c, v)| (*c, *v))
+        };
+        let (Some((_, width)), Some((_, height))) = (get(256), get(257)) else {
+            continue;
+        };
         let compression = get(259).map(|(_, v)| v).unwrap_or(0);
         let photometric = get(262).map(|(_, v)| v).unwrap_or(0);
         // one strip only: several would need stitching, which these files do not use
-        let Some((1, offset)) = get(273) else { continue };
-        let Some((1, length)) = get(279) else { continue };
+        let Some((1, offset)) = get(273) else {
+            continue;
+        };
+        let Some((1, length)) = get(279) else {
+            continue;
+        };
         let candidate = Strip {
             offset,
             length,
@@ -307,7 +329,10 @@ fn find_strip(b: &[u8]) -> Option<Strip> {
             compression,
             photometric,
         };
-        if best.as_ref().is_none_or(|b| b.width * b.height < width * height) {
+        if best
+            .as_ref()
+            .is_none_or(|b| b.width * b.height < width * height)
+        {
             best = Some(candidate);
         }
     }
@@ -319,7 +344,9 @@ fn find_strip(b: &[u8]) -> Option<Strip> {
 /// shape, leaving it to the normal path.
 pub fn linear_dng_with_restarts(path: &Path) -> Result<Option<Decoded>> {
     let bytes = std::fs::read(path).with_context(|| format!("read {}", path.display()))?;
-    let Some(strip) = find_strip(&bytes) else { return Ok(None) };
+    let Some(strip) = find_strip(&bytes) else {
+        return Ok(None);
+    };
     // lossless JPEG holding an already demosaiced picture
     if strip.compression != 7 || strip.photometric != 34892 {
         return Ok(None);
@@ -362,7 +389,13 @@ mod tests {
         // SOF3: 8 bytes plus 3 per component
         let sof_len = 8 + 3 * comps;
         b.extend_from_slice(&[0xff, SOF3, (sof_len >> 8) as u8, sof_len as u8, 12]);
-        b.extend_from_slice(&[(height >> 8) as u8, height as u8, (width >> 8) as u8, width as u8, comps as u8]);
+        b.extend_from_slice(&[
+            (height >> 8) as u8,
+            height as u8,
+            (width >> 8) as u8,
+            width as u8,
+            comps as u8,
+        ]);
         for c in 0..comps {
             b.extend_from_slice(&[c as u8, 0x11, 0x00]);
         }
@@ -401,8 +434,16 @@ mod tests {
         let bands = split_at_restarts(&b, at);
         assert_eq!(bands.len(), 3, "two markers make three bands");
         assert_eq!(&b[bands[0].0..bands[0].1], &[1, 2, 3]);
-        assert_eq!(&b[bands[1].0..bands[1].1], &[4, 5, 0xff, 0x00, 6], "stuffing is not a marker");
-        assert_eq!(&b[bands[2].0..bands[2].1], &[7, 8], "stops at the end of image");
+        assert_eq!(
+            &b[bands[1].0..bands[1].1],
+            &[4, 5, 0xff, 0x00, 6],
+            "stuffing is not a marker"
+        );
+        assert_eq!(
+            &b[bands[2].0..bands[2].1],
+            &[7, 8],
+            "stops at the end of image"
+        );
     }
 
     #[test]

@@ -207,7 +207,10 @@ fn invert_linear(c: [f32; 3]) -> [f32; 3] {
         1.0 - srgb_enc(s[1].clamp(0.0, 1.0)),
         1.0 - srgb_enc(s[2].clamp(0.0, 1.0)),
     ];
-    mul3(&SRGB_TO_DWG, [srgb_dec(d[0]), srgb_dec(d[1]), srgb_dec(d[2])])
+    mul3(
+        &SRGB_TO_DWG,
+        [srgb_dec(d[0]), srgb_dec(d[1]), srgb_dec(d[2])],
+    )
 }
 
 /// The display-referred layer blends, on gamma-encoded 0..1 values.

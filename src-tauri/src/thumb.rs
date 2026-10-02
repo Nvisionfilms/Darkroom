@@ -80,8 +80,13 @@ pub fn thumbnail(path: &Path) -> Result<String> {
     let mut jpeg = Vec::new();
     {
         let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80);
-        enc.encode(&small, small.width(), small.height(), image::ExtendedColorType::Rgb8)
-            .context("encode thumbnail")?;
+        enc.encode(
+            &small,
+            small.width(),
+            small.height(),
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("encode thumbnail")?;
     }
     use base64::Engine;
     Ok(format!(
