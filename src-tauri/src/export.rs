@@ -34,6 +34,12 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
 
     // 1. denoise + local-contrast maps + develop at full resolution
     let mut developed = develop_full(img, &req.params, &lut);
+    // the cross-screen filter sits on the lens, so it comes before anything
+    // that is added to the picture afterwards - the watermark included - and
+    // before the crop, exactly as the preview applies it to the whole frame
+    if req.params.star.is_active() {
+        developed = crate::star::apply(&developed, img.width, img.height, &req.params.star);
+    }
     let wmp = &req.params.watermark;
     if wmp.enabled && !wmp.path.is_empty() {
         let wm = pipeline::WatermarkImage::load(Path::new(&wmp.path))?;
@@ -41,7 +47,8 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     }
     // crop + straighten + perspective + lens distortion/CA in one resample
     let warp = req.params.warp(img.width, img.height);
-    let (developed, cw, ch) = crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
+    let (developed, cw, ch) =
+        crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
     let (developed, dw, dh) = pipeline::rotate(&developed, cw, ch, req.params.rotation);
     let mut buf: ImageBuffer<Rgb<f32>, Vec<f32>> =
         ImageBuffer::from_raw(dw as u32, dh as u32, developed).context("buffer size mismatch")?;
@@ -63,7 +70,7 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     let (w, h) = (buf.width() as usize, buf.height() as usize);
     let mut data = buf.into_raw();
     pipeline::sharpen(&mut data, w, h, req.params.sharpen);
-    data = motion_trail_pass(&data, w, h, &req.params.mirror);
+    data = motion_trail_pass(&data, w, h, &req.params.mirror, &req.params.masks);
 
     // 4. quantise + encode
     let out = Path::new(&req.out_path);
@@ -82,7 +89,8 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     match req.format.as_str() {
         "jpeg" | "jpg" => {
             let bytes = to_u8(&data);
-            let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(w8, req.quality.clamp(1, 100));
+            let mut enc =
+                image::codecs::jpeg::JpegEncoder::new_with_quality(w8, req.quality.clamp(1, 100));
             enc.set_icc_profile(profile).ok();
             enc.encode(&bytes, w as u32, h as u32, image::ExtendedColorType::Rgb8)
                 .context("encode JPEG")?;
@@ -134,13 +142,19 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
     } else {
         std::borrow::Cow::Borrowed(&img.data)
     };
-    let np = NoiseParams::from_sliders(params.denoise_luma, params.denoise_chroma, params.denoise_detail);
+    let np = NoiseParams::from_sliders(
+        params.denoise_luma,
+        params.denoise_chroma,
+        params.denoise_detail,
+    );
     let denoised: std::borrow::Cow<[f32]> = if np.is_noop() {
         healed
     } else {
         let sigma = denoise::estimate_sigma(&healed, img.width, img.height);
         log::info!("export denoise sigma={sigma:.5}");
-        std::borrow::Cow::Owned(denoise::denoise_image(&healed, img.width, img.height, sigma, &np))
+        std::borrow::Cow::Owned(denoise::denoise_image(
+            &healed, img.width, img.height, sigma, &np,
+        ))
     };
     let maps = if params.needs_maps() {
         Some(detail::build(&denoised, img.width, img.height))
@@ -196,8 +210,35 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
 /// The blend is intentionally deterministic and non-generative. Each echo is
 /// a translated sample of the already-developed image, combined with a Screen
 /// blend so black/dark background areas do not stamp over the original.
-fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mirror) -> Vec<f32> {
+///
+/// When `m.mask` names a mask, the echoes are cut from that mask's area alone,
+/// and the area itself is left untouched: the trail streaks out from behind a
+/// selected subject while the subject keeps all of its own detail. Twin of the
+/// trail compositor in src/components/Viewer.tsx.
+pub(crate) fn motion_trail_pass(
+    img: &[f32],
+    width: usize,
+    height: usize,
+    m: &pipeline::Mirror,
+    masks: &[crate::mask::Mask],
+) -> Vec<f32> {
     if !m.enabled || m.opacity <= 0.0 || width == 0 || height == 0 {
+        return img.to_vec();
+    }
+
+    let weights = if m.mask.is_empty() {
+        None
+    } else {
+        // luminance masks read the developed luminance of the finished picture
+        let luma: Vec<f32> = img
+            .chunks_exact(3)
+            .map(|p| p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722)
+            .collect();
+        crate::mask::weight_map(masks, &m.mask, width, height, &luma)
+    };
+    // a trail asked to come from a mask that is gone or switched off has no
+    // source, so it draws nothing rather than falling back to the whole frame
+    if !m.mask.is_empty() && weights.is_none() {
         return img.to_vec();
     }
 
@@ -218,62 +259,115 @@ fn motion_trail_pass(img: &[f32], width: usize, height: usize, m: &pipeline::Mir
     let blur_spread = m.rx.clamp(0.0, 1.0) * (long * 0.006).clamp(2.0, 32.0);
 
     let mut out = img.to_vec();
-    out.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
-        for x in 0..width {
-            let mut base = [img[(y * width + x) * 3], img[(y * width + x) * 3 + 1], img[(y * width + x) * 3 + 2]];
+    out.par_chunks_mut(width * 3)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..width {
+                let mut base = [
+                    img[(y * width + x) * 3],
+                    img[(y * width + x) * 3 + 1],
+                    img[(y * width + x) * 3 + 2],
+                ];
 
-            // Far echoes first, matching the preview compositor.
-            for i in (1..=copies).rev() {
-                let t = i as f32 / copies as f32;
-                let base_alpha = opacity * amount * fade_retention.powi(i as i32 - 1) * 0.72;
-                if base_alpha <= 0.002 {
-                    continue;
-                }
-                let sx = x as f32 - dx * distance * t;
-                let sy = y as f32 - dy * distance * t;
-                let edge_alpha = source_edge_alpha(sx, sy, width, height, edge_feather);
-                let alpha = base_alpha * edge_alpha;
-                if alpha <= 0.002 {
-                    continue;
-                }
-                let spread = blur_spread * (0.35 + t * 0.65);
+                // Far echoes first, matching the preview compositor.
+                for i in (1..=copies).rev() {
+                    let t = i as f32 / copies as f32;
+                    let base_alpha = opacity * amount * fade_retention.powi(i as i32 - 1) * 0.72;
+                    if base_alpha <= 0.002 {
+                        continue;
+                    }
+                    let sx = x as f32 - dx * distance * t;
+                    let sy = y as f32 - dy * distance * t;
+                    let edge_alpha = source_edge_alpha(sx, sy, width, height, edge_feather);
+                    // only the masked subject casts a trail
+                    let from_mask = match &weights {
+                        Some(v) => sample_weight(v, width, height, sx, sy),
+                        None => 1.0,
+                    };
+                    let alpha = base_alpha * edge_alpha * from_mask;
+                    if alpha <= 0.002 {
+                        continue;
+                    }
+                    let spread = blur_spread * (0.35 + t * 0.65);
 
-                let s0 = sample_rgb(img, width, height, sx, sy);
-                let sm = if spread > 0.2 {
-                    let a = sample_rgb(img, width, height, sx - dx * spread, sy - dy * spread);
-                    let b = sample_rgb(img, width, height, sx + dx * spread, sy + dy * spread);
-                    [
-                        (a[0] + s0[0] + b[0]) / 3.0,
-                        (a[1] + s0[1] + b[1]) / 3.0,
-                        (a[2] + s0[2] + b[2]) / 3.0,
-                    ]
-                } else {
-                    s0
-                };
+                    let s0 = sample_rgb(img, width, height, sx, sy);
+                    let sm = if spread > 0.2 {
+                        let a = sample_rgb(img, width, height, sx - dx * spread, sy - dy * spread);
+                        let b = sample_rgb(img, width, height, sx + dx * spread, sy + dy * spread);
+                        [
+                            (a[0] + s0[0] + b[0]) / 3.0,
+                            (a[1] + s0[1] + b[1]) / 3.0,
+                            (a[2] + s0[2] + b[2]) / 3.0,
+                        ]
+                    } else {
+                        s0
+                    };
 
-                for c in 0..3 {
-                    let d = base[c].clamp(0.0, 1.0);
-                    let s = (sm[c].clamp(0.0, 1.0) * alpha).clamp(0.0, 1.0);
-                    base[c] = 1.0 - (1.0 - d) * (1.0 - s);
+                    for c in 0..3 {
+                        let d = base[c].clamp(0.0, 1.0);
+                        let s = (sm[c].clamp(0.0, 1.0) * alpha).clamp(0.0, 1.0);
+                        base[c] = 1.0 - (1.0 - d) * (1.0 - s);
+                    }
                 }
+
+                if let Some(v) = &weights {
+                    // the subject keeps its own pixels: the trail only shows
+                    // around it, which is what keeps the subject sharp
+                    let keep = 1.0 - v[y * width + x].clamp(0.0, 1.0);
+                    for c in 0..3 {
+                        let orig = img[(y * width + x) * 3 + c];
+                        base[c] = orig + (base[c] - orig) * keep;
+                    }
+                }
+                row[x * 3..x * 3 + 3].copy_from_slice(&base);
             }
-
-            row[x * 3..x * 3 + 3].copy_from_slice(&base);
-        }
-    });
+        });
     out
+}
+
+/// Bilinear sample of a single-channel weight map.
+#[inline]
+fn sample_weight(w: &[f32], width: usize, height: usize, x: f32, y: f32) -> f32 {
+    if x < 0.0
+        || y < 0.0
+        || x > (width.saturating_sub(1)) as f32
+        || y > (height.saturating_sub(1)) as f32
+    {
+        return 0.0;
+    }
+    let x0 = x.floor() as usize;
+    let y0 = y.floor() as usize;
+    let x1 = (x0 + 1).min(width - 1);
+    let y1 = (y0 + 1).min(height - 1);
+    let tx = x - x0 as f32;
+    let ty = y - y0 as f32;
+    let a = w[y0 * width + x0] * (1.0 - tx) + w[y0 * width + x1] * tx;
+    let b = w[y1 * width + x0] * (1.0 - tx) + w[y1 * width + x1] * tx;
+    a * (1.0 - ty) + b * ty
 }
 
 #[inline]
 fn source_edge_alpha(x: f32, y: f32, width: usize, height: usize, feather: f32) -> f32 {
-    if x < 0.0 || y < 0.0 || x > (width.saturating_sub(1)) as f32 || y > (height.saturating_sub(1)) as f32 {
+    if x < 0.0
+        || y < 0.0
+        || x > (width.saturating_sub(1)) as f32
+        || y > (height.saturating_sub(1)) as f32
+    {
         return 0.0;
     }
     if feather <= 0.0001 {
         return 1.0;
     }
-    let nx = if width > 1 { x / (width - 1) as f32 } else { 0.5 };
-    let ny = if height > 1 { y / (height - 1) as f32 } else { 0.5 };
+    let nx = if width > 1 {
+        x / (width - 1) as f32
+    } else {
+        0.5
+    };
+    let ny = if height > 1 {
+        y / (height - 1) as f32
+    } else {
+        0.5
+    };
     let dx = nx.min(1.0 - nx);
     let dy = ny.min(1.0 - ny);
     smoothstep01(dx / feather) * smoothstep01(dy / feather)
@@ -287,7 +381,11 @@ fn smoothstep01(v: f32) -> f32 {
 
 #[inline]
 fn sample_rgb(img: &[f32], width: usize, height: usize, x: f32, y: f32) -> [f32; 3] {
-    if x < 0.0 || y < 0.0 || x > (width.saturating_sub(1)) as f32 || y > (height.saturating_sub(1)) as f32 {
+    if x < 0.0
+        || y < 0.0
+        || x > (width.saturating_sub(1)) as f32
+        || y > (height.saturating_sub(1)) as f32
+    {
         return [0.0; 3];
     }
     let x0 = x.floor() as usize;
@@ -329,8 +427,13 @@ pub fn thumbnail_data_url(img: &LinearImage, max_edge: usize) -> Result<String> 
     let mut jpeg = Vec::new();
     {
         let mut enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 80);
-        enc.encode(&bytes, small.width as u32, small.height as u32, image::ExtendedColorType::Rgb8)
-            .context("thumbnail encode")?;
+        enc.encode(
+            &bytes,
+            small.width as u32,
+            small.height as u32,
+            image::ExtendedColorType::Rgb8,
+        )
+        .context("thumbnail encode")?;
     }
     Ok(format!(
         "data:image/jpeg;base64,{}",

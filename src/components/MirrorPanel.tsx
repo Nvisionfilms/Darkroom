@@ -1,8 +1,10 @@
-import { defaultMirror, type Mirror } from "../types";
+import { defaultMirror, type Mask, type Mirror } from "../types";
 import { Slider } from "./Slider";
 
 interface Props {
   mirror: Mirror;
+  /** masks on this photo, any of which can be the source of the trail */
+  masks: Mask[];
   onChange: (m: Mirror) => void;
 }
 
@@ -11,19 +13,42 @@ interface Props {
  * to load. The old geometry fields are intentionally repurposed:
  *   cx -> copies / 10, rx -> blur / 100, ry -> amount / 100,
  *   feather -> fade, offset -> image-edge feather, length -> distance,
- *   direction/opacity keep their meaning.
+ *   direction/opacity keep their meaning. `mask` is new.
  */
-export function MirrorPanel({ mirror, onChange }: Props) {
+export function MirrorPanel({ mirror, masks, onChange }: Props) {
   const set = <K extends keyof Mirror>(key: K) => (v: Mirror[K]) => onChange({ ...mirror, [key]: v });
   const copies = Math.max(1, Math.min(8, Math.round(mirror.cx * 10)));
+  // only ordinary masks can head a trail; a subtraction belongs to the one above it
+  const sources = masks.filter((m) => m.mode !== "subtract");
+  const chosen = sources.find((m) => m.id === mirror.mask) ?? null;
 
   return (
     <div className={"mirror-panel" + (mirror.enabled ? "" : " disabled")}>
       <div className="hint">
-        Repeats the developed photo in one direction like a long-exposure motion echo. Edge Feather removes the hard
-        rectangular frame line from translated copies. Current source is still the full image; true person/object trails
-        need a subject segmentation mask rather than generative AI.
+        Repeats part of the developed photo in one direction, like a long-exposure motion echo. Every echo is made from
+        pixels that are already in the picture - no generative AI.
       </div>
+      <div className="field">
+        <label htmlFor="trail-source">Trail from</label>
+        <select id="trail-source" value={chosen ? chosen.id : ""} onChange={(e) => set("mask")(e.target.value)}>
+          <option value="">Whole photo</option>
+          {sources.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {sources.length === 0 ? (
+        <div className="hint">Add a mask under Masks to trail just one subject instead of the whole frame.</div>
+      ) : chosen ? (
+        <div className="hint">
+          The trail is cut from <strong>{chosen.name}</strong> and streaks around it. That area keeps its own pixels, so
+          the subject stays sharp. Judge the alignment at Fit; the exported file is exact at any zoom.
+        </div>
+      ) : (
+        <div className="hint">The whole frame echoes. Pick a mask above to trail one subject instead.</div>
+      )}
       <Slider
         label="Amount"
         value={mirror.ry * 100}
@@ -77,7 +102,7 @@ export function MirrorPanel({ mirror, onChange }: Props) {
       <Slider label="Opacity" value={mirror.opacity} min={0} max={100} defaultValue={65} onChange={set("opacity")} />
       <div className="curve-tabs">
         <span className="spacer" />
-        <button className="tab" onClick={() => onChange({ ...defaultMirror(), enabled: mirror.enabled })}>
+        <button className="tab" onClick={() => onChange({ ...defaultMirror(), enabled: mirror.enabled, mask: mirror.mask })}>
           Reset
         </button>
       </div>

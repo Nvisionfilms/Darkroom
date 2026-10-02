@@ -619,6 +619,7 @@ input[type="number"] {
   height: 12px;
   border: 1px solid #000;
 }
+.star-panel.disabled .slider,
 .mirror-panel.disabled .slider,
 .watermark-panel.disabled .slider {
   opacity: 0.42;
@@ -1087,6 +1088,16 @@ input[type="number"] {
 .mask-row.off .mask-name {
   color: var(--muted-2);
   text-decoration: line-through;
+}
+/* a subtraction belongs to the mask above it, so it sits under it indented */
+.mask-row.subtract {
+  margin-left: 18px;
+}
+.mask-row.subtract .mask-glyph {
+  color: var(--muted-2);
+}
+.mask-row.subtract .mask-name {
+  color: var(--muted);
 }
 .mask-name {
   flex: 1;

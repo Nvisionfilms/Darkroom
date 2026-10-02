@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { buildLut } from "../curve";
+import { maskGroupAlpha, maskGroupKey, type AlphaMap } from "../mask";
 import { cropIsIdentity, defaultParams, type EditParams } from "../types";
 import { Viewer as CoreViewer } from "./ViewerCore";
 import "./MotionTrail.css";
@@ -12,6 +13,42 @@ type Props = ComponentProps<typeof CoreViewer> & {
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+/** Long edge of the grid a trail mask is rasterised on. */
+const ALPHA_EDGE = 768;
+
+/** A weight map as a white canvas whose alpha is the weight. */
+function alphaCanvas(a: AlphaMap): HTMLCanvasElement {
+  const c = document.createElement("canvas");
+  c.width = a.w;
+  c.height = a.h;
+  const g = c.getContext("2d")!;
+  const img = g.createImageData(a.w, a.h);
+  for (let i = 0; i < a.w * a.h; i++) {
+    img.data[i * 4] = 255;
+    img.data[i * 4 + 1] = 255;
+    img.data[i * 4 + 2] = 255;
+    img.data[i * 4 + 3] = a.data[i];
+  }
+  g.putImageData(img, 0, 0);
+  return c;
+}
+
+/** The developed luminance inside `b`, resampled onto an `aw` x `ah` grid. */
+function lumaOf(src: HTMLCanvasElement, b: { x: number; y: number; w: number; h: number }, aw: number, ah: number): Uint8Array | null {
+  const c = document.createElement("canvas");
+  c.width = aw;
+  c.height = ah;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(src, b.x, b.y, b.w, b.h, 0, 0, aw, ah);
+  const d = g.getImageData(0, 0, aw, ah).data;
+  const out = new Uint8Array(aw * ah);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Math.round(d[i * 4] * 0.2126 + d[i * 4 + 1] * 0.7152 + d[i * 4 + 2] * 0.0722);
+  }
+  return out;
+}
+
 type PhotoRect = { x: number; y: number; w: number; h: number };
 
 /**
@@ -20,9 +57,15 @@ type PhotoRect = { x: number; y: number; w: number; h: number };
  *    `mirror` sidecar fields for compatibility; and
  * 2) the draggable Before / After split from the Darkroom workspace mockup.
  *
- * Motion Trails intentionally repeats the whole developed image today. A
- * subject/region segmentation mask is the next step for person/object-only
- * trails; this effect does not use generative AI.
+ * Motion Trails echoes the developed image. Pointed at a mask it echoes only
+ * that mask's area and leaves the area itself alone, so a trail streaks out
+ * from behind a selected subject while the subject keeps all of its detail.
+ * Every echo is a translated copy of pixels that are already there; this
+ * effect does not use generative AI.
+ *
+ * The preview composites in viewer-canvas space, so the mask is lined up with
+ * the fitted photo rectangle. At Fit - where the effect is judged - that is
+ * exact; zoomed in it is approximate, and the export is always exact.
  */
 export function Viewer(props: Props) {
   const { beforeParams: beforeOverride, ...coreProps } = props;
@@ -30,6 +73,10 @@ export function Viewer(props: Props) {
   const overlayRef = useRef<HTMLCanvasElement>(null);
   const sourceCacheRef = useRef<HTMLCanvasElement | null>(null);
   const maskedSourceRef = useRef<HTMLCanvasElement | null>(null);
+  const subjectRef = useRef<HTMLCanvasElement | null>(null);
+  // the trail mask, rasterised once per change rather than once per frame
+  const maskAlphaRef = useRef<{ key: string; canvas: HTMLCanvasElement } | null>(null);
+  const maskBuildingRef = useRef("");
   const sourceCacheValidRef = useRef(false);
   // every photo opens on the edited picture; Before and Split are there when
   // you want them, and the top bar has hold-for-before
@@ -157,6 +204,8 @@ export function Viewer(props: Props) {
         photoRect = { x: (W - dw) / 2, y: (H - dh) / 2, w: dw, h: dh };
       }
 
+      const bounds: PhotoRect = photoRect ?? { x: 0, y: 0, w: W, h: H };
+
       // Feather the source-frame boundaries before translating copies. When
       // fitted, feather the actual photo rectangle rather than the full viewer
       // canvas; otherwise portrait images still showed hard left/right seams.
@@ -174,7 +223,6 @@ export function Viewer(props: Props) {
         }
         const mctx = masked.getContext("2d");
         if (mctx) {
-          const bounds = photoRect ?? { x: 0, y: 0, w: W, h: H };
           const f = Math.min(edgeFeather, 0.49);
           mctx.clearRect(0, 0, W, H);
           mctx.globalCompositeOperation = "source-over";
@@ -205,6 +253,58 @@ export function Viewer(props: Props) {
 
       const ctx = overlay.getContext("2d");
       if (!ctx) return;
+
+      // A trail cut from a mask: rasterise the mask's area once and keep it
+      // until the mask or the fitted rectangle changes.
+      let maskCanvas: HTMLCanvasElement | null = null;
+      if (trail.mask) {
+        const key = `${maskGroupKey(props.params.masks, trail.mask)}@${Math.round(bounds.w)}x${Math.round(bounds.h)}`;
+        if (!key.startsWith("@")) {
+          const cached = maskAlphaRef.current;
+          if (cached && cached.key === key) maskCanvas = cached.canvas;
+          else if (maskBuildingRef.current !== key) {
+            maskBuildingRef.current = key;
+            const landscape = bounds.w >= bounds.h;
+            const aw = Math.max(1, Math.round(landscape ? ALPHA_EDGE : (ALPHA_EDGE * bounds.w) / Math.max(1, bounds.h)));
+            const ah = Math.max(1, Math.round(landscape ? (ALPHA_EDGE * bounds.h) / Math.max(1, bounds.w) : ALPHA_EDGE));
+            // luminance masks read the developed picture, so sample it on the
+            // same grid the mask is being built on
+            const lum = lumaOf(cache, bounds, aw, ah);
+            void maskGroupAlpha(props.params.masks, trail.mask, aw, ah, lum).then((a) => {
+              if (maskBuildingRef.current !== key) return;
+              maskAlphaRef.current = a ? { key, canvas: alphaCanvas(a) } : null;
+            });
+          }
+        }
+        if (!maskCanvas) {
+          // nothing to streak from yet, or the mask is gone: show no trail
+          // rather than a stale one
+          ctx.clearRect(0, 0, overlay.width, overlay.height);
+          return;
+        }
+        let subj = subjectRef.current;
+        if (!subj) {
+          subj = document.createElement("canvas");
+          subjectRef.current = subj;
+        }
+        if (subj.width !== W || subj.height !== H) {
+          subj.width = W;
+          subj.height = H;
+        }
+        const sctx = subj.getContext("2d");
+        if (sctx) {
+          sctx.clearRect(0, 0, W, H);
+          sctx.globalCompositeOperation = "source-over";
+          sctx.globalAlpha = 1;
+          sctx.filter = "none";
+          sctx.drawImage(trailSource, 0, 0);
+          sctx.globalCompositeOperation = "destination-in";
+          sctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+          sctx.globalCompositeOperation = "source-over";
+          trailSource = subj;
+        }
+      }
+
       const long = Math.max(W, H);
       const copies = Math.round(clamp(trail.cx * 10, 1, 8));
       const amount = clamp(trail.ry, 0, 1);
@@ -238,6 +338,16 @@ export function Viewer(props: Props) {
         ctx.drawImage(trailSource, dx * distance * t, dy * distance * t);
       }
       ctx.restore();
+
+      if (maskCanvas) {
+        // the subject keeps its own pixels, which is what keeps it sharp: the
+        // trail only shows around it (twin of motion_trail_pass in export.rs)
+        ctx.globalCompositeOperation = "destination-out";
+        ctx.globalAlpha = 1;
+        ctx.filter = "none";
+        ctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
+        ctx.globalCompositeOperation = "source-over";
+      }
     };
 
     raf = requestAnimationFrame(draw);
@@ -252,6 +362,8 @@ export function Viewer(props: Props) {
     trail.feather,
     trail.offset,
     trail.opacity,
+    trail.mask,
+    props.params.masks,
     props.image,
     props.crop,
     props.cropMode,

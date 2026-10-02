@@ -244,6 +244,10 @@ export const MAX_MASKS = 8;
 export const MASK_ADJ_STRIDE = 12;
 
 /** Mask kinds as the shader sees them (see mask.ts maskKindCode). */
+/** uMaskMode values: an ordinary mask, or one that cuts out of the mask above. */
+export const MASK_MODE_ADD = 0;
+export const MASK_MODE_SUBTRACT = 1;
+
 export const MASK_KIND_RASTER = 0;
 export const MASK_KIND_LUMINANCE = 1;
 export const MASK_KIND_LINEAR = 2;
@@ -315,6 +319,10 @@ uniform int uBlendFlip;
 uniform vec2 uBlendC;       // centre of the overlay, in frame pixels
 uniform vec2 uBlendDen;     // size of the overlay, in frame pixels
 uniform vec2 uBlendRot;     // cos, sin of its rotation
+// film grain, twin of grain.rs
+uniform float uGrainAmount;
+uniform float uGrainSize;
+uniform float uGrainColour;
 // lens vignetting correction (scene-referred gain), twin of geometry.rs
 uniform int uVigOn;
 uniform vec3 uVigK;
@@ -329,6 +337,7 @@ uniform int uNumMasks;
 uniform int uUseLumaG;
 uniform int uShowMask;        // index of the mask to paint red, or -1
 uniform int uMaskKind[8];     // 0 raster, 1 luminance, 2 linear, 3 radial
+uniform int uMaskMode[8];     // 0 add, 1 subtract (cuts out of the mask above)
 uniform int uMaskInvert[8];
 uniform float uMaskAmount[8]; // 0..1
 uniform vec4 uMaskP0[8];      // linear: ax ay dx dy (px); radial: cx cy rx ry (px); lum: lo hi feather; raster: slot
@@ -680,26 +689,188 @@ Tone finishTone(Tone t) {
   return t;
 }
 
+// Film grain. Twin of grain.rs: an integer hash of the position rather than a
+// random number, so the grain lands in the same places on both pipelines, and
+// measured against a fixed reference size, so it is the same size relative to
+// the picture in a preview and in a full-resolution export.
+const float GRAIN_REF = 3000.0;
+
+uint grainHash(uint x) {
+  x ^= x >> 16u;
+  x *= 0x7feb352du;
+  x ^= x >> 15u;
+  x *= 0x846ca68bu;
+  x ^= x >> 16u;
+  return x;
+}
+
+float grainHash01(int ix, int iy, uint seed) {
+  uint x = uint(ix + 8192);
+  uint y = uint(iy + 8192);
+  uint h = grainHash((x * 0x9e3779b9u) ^ grainHash(y + seed));
+  return float(h >> 8u) / 16777216.0;
+}
+
+float grainNoise(float x, float y, uint seed) {
+  float x0 = floor(x);
+  float y0 = floor(y);
+  float fx = smooth01(x - x0);
+  float fy = smooth01(y - y0);
+  int ix = int(x0);
+  int iy = int(y0);
+  float a = mix(grainHash01(ix, iy, seed), grainHash01(ix + 1, iy, seed), fx);
+  float b = mix(grainHash01(ix, iy + 1, seed), grainHash01(ix + 1, iy + 1, seed), fx);
+  return mix(a, b, fy);
+}
+
+float grainAt(vec2 uv, float longEdge, uint channel) {
+  float cell = 1.0 + clamp(uGrainSize / 100.0, 0.0, 1.0) * 7.0;
+  float s = GRAIN_REF / cell;
+  float x = uv.x * s * max(longEdge / GRAIN_REF, 0.0001);
+  float y = uv.y * s;
+  float coarse = grainNoise(x, y, 11u + channel * 101u);
+  float fine = grainNoise(x * 2.17, y * 2.17, 977u + channel * 101u);
+  return (coarse * 0.65 + fine * 0.35) * 2.0 - 1.0;
+}
+
+vec3 applyGrain(vec3 c, vec2 uv) {
+  float k = clamp(uGrainAmount / 100.0, 0.0, 1.0) * 0.28;
+  if (k <= 0.0) return c;
+  float aspect = uSize.x / max(uSize.y, 1.0);
+  float longEdge = aspect >= 1.0 ? GRAIN_REF * aspect : GRAIN_REF;
+  float y = dot(c, LUMA_709);
+  // film shows its grain in the midtones and shadows, not in paper white
+  float weight = clamp(4.0 * y * (1.0 - y), 0.0, 1.0) * 0.85 + 0.15;
+  vec3 n = vec3(grainAt(uv, longEdge, 0u));
+  float cc = clamp(uGrainColour / 100.0, 0.0, 1.0);
+  if (cc > 0.0) {
+    vec3 per = vec3(grainAt(uv, longEdge, 1u), grainAt(uv, longEdge, 2u), grainAt(uv, longEdge, 3u));
+    n = mix(n, per, cc);
+  }
+  // a gain rather than an offset, so grain does not tint the picture
+  return clamp(c * (1.0 + n * k * weight), 0.0, 1.0);
+}
+
 void main() {
   vec3 rgb = texture(uImage, vUv).rgb;
   Tone t = globalTone();
   float show = 0.0;
   if (uNumMasks > 0) {
     float luma = uUseLumaG == 1 ? dot(texture(uLumaG, vUv).rgb, LUMA_709) : 0.0;
+    // weights first: a subtract mask takes its share out of the mask above it
+    // before any adjustment is applied (twin of mask.rs Prepared::weight)
+    float wv[8] = float[8](0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    int head = -1;
     for (int i = 0; i < 8; i++) {
       if (i >= uNumMasks) break;
       float w = maskWeight(i, vUv, luma);
-      if (i == uShowMask) show = w;
-      t = addMask(t, i, w);
+      if (uMaskMode[i] == 1) {
+        if (head >= 0) wv[head] *= 1.0 - w;
+        // a subtract mask being edited still shows its own area
+        if (i == uShowMask) show = w;
+      } else {
+        head = i;
+        wv[i] = w;
+      }
+    }
+    for (int i = 0; i < 8; i++) {
+      if (i >= uNumMasks) break;
+      if (uMaskMode[i] == 1) continue;
+      if (i == uShowMask) show = wv[i];
+      t = addMask(t, i, wv[i]);
     }
     t = finishTone(t);
   }
-  vec3 c = developPixel(rgb, t);
+  vec3 c = applyGrain(developPixel(rgb, t), vUv);
   if (uShowMask >= 0) c = mix(c, vec3(1.0, 0.12, 0.12), 0.6 * show);
   outColor = vec4(c, 1.0);
 }`;
 
 /** Mirror power window on the developed image. Twin of pipeline.rs MirrorGeom. */
+/**
+ * Cross-screen ("starburst") filter, in three passes so the cost of up to six
+ * directions x 24 samples lands on a quarter-resolution map instead of the
+ * whole picture. Twin of star.rs.
+ *
+ * 1. STAR_HI: which parts of the picture are highlights, and in what colour.
+ * 2. STAR_STREAK: smear those highlights along the star's lines.
+ * 3. STAR_ADD: screen the streaks back over the picture.
+ */
+export const STAR_SAMPLES = 24;
+
+export const STAR_HI_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uTex;       // the developed picture, mipmapped
+uniform float uThreshold;     // 0..1 luma
+${COMMON}
+void main() {
+  // mip level 2 is the 4x4 box average star.rs builds by hand
+  vec3 c = textureLod(uTex, vUv, 2.0).rgb;
+  float y = dot(c, LUMA_709);
+  float t = clamp((y - uThreshold) / max(1.0 - uThreshold, 1e-3), 0.0, 1.0);
+  float k = t * t;
+  // keep the highlight's own colour: a tungsten lamp stars warm
+  vec3 h = (y > 1e-4 ? c / y : vec3(1.0)) * k;
+  outColor = vec4(h, 1.0);
+}`;
+
+export const STAR_STREAK_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uHi;
+uniform vec2 uQSize;     // size of the highlight map, in its own pixels
+uniform float uLenQ;     // streak half-length, in those pixels
+uniform float uFade;     // exponent of the (1 - t) falloff
+uniform float uDisp;     // how far red and blue are pulled apart
+uniform int uLines;      // 1..6
+uniform float uAngle;    // radians
+const int STAR_SAMPLES = 24;
+const float STAR_PI = 3.14159265358979;
+void main() {
+  vec3 acc = vec3(0.0);
+  float wsum = 0.0;
+  for (int l = 0; l < 6; l++) {
+    if (l >= uLines) break;
+    float th = uAngle + STAR_PI * float(l) / float(uLines);
+    vec2 dir = vec2(cos(th), sin(th));
+    for (int i = 1; i <= STAR_SAMPLES; i++) {
+      float t = float(i) / float(STAR_SAMPLES);
+      // the base is held off zero because a driver that computes pow as
+      // exp2(y * log2(x)) returns NaN for pow(0, y), and one NaN poisons the
+      // whole sum - the streaks then vanish completely
+      float w = pow(max(1.0 - t, 1e-6), uFade);
+      vec2 o = dir * (t * uLenQ) / uQSize;
+      // the red end of the spectrum is bent further than the blue
+      vec2 r = o * (1.0 + uDisp);
+      vec2 b = o * (1.0 - uDisp);
+      vec3 fwd = vec3(texture(uHi, vUv + r).r, texture(uHi, vUv + o).g, texture(uHi, vUv + b).b);
+      vec3 bwd = vec3(texture(uHi, vUv - r).r, texture(uHi, vUv - o).g, texture(uHi, vUv - b).b);
+      acc += (fwd + bwd) * w;
+      wsum += 2.0 * w;
+    }
+  }
+  outColor = vec4(wsum > 0.0 ? acc / wsum : vec3(0.0), 1.0);
+}`;
+
+export const STAR_ADD_FRAG = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D uTex;
+uniform sampler2D uStreak;
+uniform float uGain;
+void main() {
+  vec3 c = texture(uTex, vUv).rgb;
+  vec3 s = clamp(texture(uStreak, vUv).rgb * uGain, 0.0, 1.0);
+  // screen: the star brightens what is under it without pushing it past white
+  vec3 r = 1.0 - (1.0 - clamp(c, 0.0, 1.0)) * (1.0 - s);
+  // and leaves the picture strictly alone where there is no star
+  outColor = vec4(mix(c, r, step(1e-7, s)), 1.0);
+}`;
+
 export const MIRROR_FRAG = `#version 300 es
 precision highp float;
 precision highp sampler2D;

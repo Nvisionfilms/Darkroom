@@ -31,6 +31,7 @@ const run = (name, cmd, cmdArgs, opts = {}) => {
 
 run("Rust: pipeline checks and unit tests", "cargo", ["test", "--lib", "--manifest-path", "src-tauri/Cargo.toml"]);
 run("TypeScript: type check", "bunx", ["tsc", "--noEmit", "-p", "tsconfig.json"]);
+run("Twin constants: CPU pipeline vs shaders", "node", ["scripts/twins.mjs"]);
 
 const reachable = async (url) => {
   try {

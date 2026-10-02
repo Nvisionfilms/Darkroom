@@ -83,6 +83,43 @@ export interface Mirror {
   offset: number;
   length: number;
   opacity: number;
+  /** id of the mask the trail is cut from; empty = the whole frame */
+  mask: string;
+}
+
+/**
+ * Cross-screen ("starburst") lens filter: the highlights already in the picture
+ * are smeared along a few directions and added back. Twin of star.rs.
+ */
+export interface Star {
+  enabled: boolean;
+  /** 0..100 streak brightness */
+  amount: number;
+  /** points on the star: 4 is the classic cross-screen, up to 12 */
+  points: number;
+  /** 0..100 streak length */
+  length: number;
+  /** rotation of the whole star, degrees */
+  angle: number;
+  /** 0..100 how bright a pixel has to be before it stars at all */
+  threshold: number;
+  /** 0..100 how quickly the streak fades along its length */
+  falloff: number;
+  /** 0..100 rainbow spread towards the ends of the streaks */
+  dispersion: number;
+}
+
+export function defaultStar(): Star {
+  return {
+    enabled: false,
+    amount: 60,
+    points: 4,
+    length: 35,
+    angle: 0,
+    threshold: 75,
+    falloff: 40,
+    dispersion: 25,
+  };
 }
 
 /**
@@ -160,6 +197,13 @@ export interface Stroke {
 export type MaskKind = "linear" | "radial" | "brush" | "luminance" | "subject";
 
 /**
+ * "add" carries its own adjustments; "subtract" carries none and instead cuts
+ * its area out of the mask above it in the stack, so a selection can be
+ * narrowed without inverting anything else. Twin of mask.rs.
+ */
+export type MaskMode = "add" | "subtract";
+
+/**
  * A local adjustment ("overlay"). Geometry in normalised image coordinates;
  * see src-tauri/src/mask.rs for the exact meaning of each field.
  */
@@ -169,6 +213,7 @@ export interface Mask {
   enabled: boolean;
   invert: boolean;
   kind: MaskKind;
+  mode: MaskMode;
   /** 0..100 */
   amount: number;
   x0: number;
@@ -222,7 +267,7 @@ export const MASK_KIND_LABEL: Record<MaskKind, string> = {
 
 let maskCounter = 0;
 
-export function newMask(kind: MaskKind, existing: Mask[]): Mask {
+export function newMask(kind: MaskKind, existing: Mask[], mode: MaskMode = "add"): Mask {
   const n = existing.filter((m) => m.kind === kind).length + 1;
   maskCounter += 1;
   return {
@@ -231,6 +276,7 @@ export function newMask(kind: MaskKind, existing: Mask[]): Mask {
     enabled: true,
     invert: false,
     kind,
+    mode,
     amount: 100,
     x0: 0.5,
     y0: 0.05,
@@ -249,6 +295,30 @@ export function newMask(kind: MaskKind, existing: Mask[]): Mask {
     raster: null,
     adjust: defaultMaskAdjust(),
   };
+}
+
+/**
+ * The mask a subtract mask at `i` cuts into: the nearest ordinary mask above
+ * it, or -1 when there is none and it therefore does nothing.
+ */
+export function maskHead(masks: Mask[], i: number): number {
+  for (let j = Math.min(i, masks.length - 1); j >= 0; j--) {
+    if (masks[j].mode !== "subtract") return j;
+  }
+  return -1;
+}
+
+/**
+ * Where a new subtract mask for the group holding `i` belongs: directly under
+ * its head and any subtractions already there, so the stack reads top to
+ * bottom as "this area, less this, less that".
+ */
+export function subtractInsertAt(masks: Mask[], i: number): number {
+  const head = maskHead(masks, i);
+  if (head < 0) return masks.length;
+  let j = head + 1;
+  while (j < masks.length && masks[j].mode === "subtract") j++;
+  return j;
 }
 
 /** Perspective / geometry sliders. All -100..100 except rotate, in degrees. */
@@ -346,6 +416,20 @@ export interface Blend {
   fit: string;
 }
 
+/** Film grain. Twin of grain.rs. */
+export interface Grain {
+  /** 0..100, how strongly the grain shows */
+  amount: number;
+  /** 0..100, how coarse the clumps are */
+  size: number;
+  /** 0..100, how much the grain tints as well as darkens */
+  colour: number;
+}
+
+export function defaultGrain(): Grain {
+  return { amount: 0, size: 40, colour: 0 };
+}
+
 export function defaultBlend(): Blend {
   return {
     enabled: true,
@@ -394,6 +478,8 @@ export const PRESET_KEYS: (keyof EditParams)[] = [
   "denoiseLuma",
   "denoiseChroma",
   "denoiseDetail",
+  "grain",
+  "star",
   "grading",
   "hsl",
   "curves",
@@ -491,6 +577,10 @@ export interface EditParams {
   heal: HealSpot[];
   /** double exposure: a second photograph composited onto this one */
   blend: Blend;
+  /** film grain */
+  grain: Grain;
+  /** cross-screen ("starburst") lens filter */
+  star: Star;
   /** flagged as finished and wanted in the next export */
   marked: boolean;
   hsl: HslParams;
@@ -571,6 +661,7 @@ export function defaultMirror(): Mirror {
     offset: 0.08, // source-frame edge feather
     length: 0.16, // distance
     opacity: 65,
+    mask: "",
   };
 }
 
@@ -625,6 +716,8 @@ export function defaultParams(): EditParams {
     lensProfile: null,
     heal: [],
     blend: defaultBlend(),
+    grain: defaultGrain(),
+    star: defaultStar(),
     marked: false,
     hsl: {
       hue: new Array(8).fill(0),

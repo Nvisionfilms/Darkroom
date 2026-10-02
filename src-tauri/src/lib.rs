@@ -8,6 +8,7 @@ pub mod denoise;
 pub mod detail;
 pub mod export;
 pub mod geometry;
+pub mod grain;
 pub mod heal;
 pub mod icc;
 pub mod import;
@@ -20,6 +21,7 @@ pub mod pipeline;
 pub mod preset;
 pub mod profiles;
 pub mod sidecar;
+pub mod star;
 pub mod tether;
 pub mod thumb;
 
@@ -165,7 +167,11 @@ fn delete_preset(app: tauri::AppHandle, name: String) -> Result<(), String> {
 // ---- tethered capture (hot folder) ----
 
 #[tauri::command]
-fn start_tether(app: tauri::AppHandle, folder: String, state: State<'_, AppState>) -> Result<tether::TetherStatus, String> {
+fn start_tether(
+    app: tauri::AppHandle,
+    folder: String,
+    state: State<'_, AppState>,
+) -> Result<tether::TetherStatus, String> {
     let active = tether::start(app, folder).map_err(err)?;
     let status = active.status();
     *state.tether.lock().unwrap() = Some(active);
@@ -250,7 +256,10 @@ fn publish_shot(shot: monitor::Shot, state: State<'_, AppState>) -> u64 {
 /// JPEG bytes of the developed image as the app currently shows it. The
 /// webview sends the encoded picture as the raw request body.
 #[tauri::command]
-fn publish_frame(request: tauri::ipc::Request<'_>, state: State<'_, AppState>) -> Result<u64, String> {
+fn publish_frame(
+    request: tauri::ipc::Request<'_>,
+    state: State<'_, AppState>,
+) -> Result<u64, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("publish_frame expects raw JPEG bytes".into());
     };
@@ -275,10 +284,11 @@ pub struct WatermarkInfo {
 #[tauri::command]
 async fn open_watermark(path: String, state: State<'_, AppState>) -> Result<WatermarkInfo, String> {
     let p = path.clone();
-    let wm = tauri::async_runtime::spawn_blocking(move || pipeline::WatermarkImage::load(Path::new(&p)))
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err)?;
+    let wm =
+        tauri::async_runtime::spawn_blocking(move || pipeline::WatermarkImage::load(Path::new(&p)))
+            .await
+            .map_err(|e| e.to_string())?
+            .map_err(err)?;
     let info = WatermarkInfo {
         path: path.clone(),
         width: wm.width,
@@ -321,7 +331,11 @@ fn err(e: anyhow::Error) -> String {
 /// desktop that is the path itself; on Android a picked photo is a content://
 /// handle and is copied into the app's own storage first (see import.rs).
 #[tauri::command]
-async fn import_photo(app: tauri::AppHandle, uri: String, ext: Option<String>) -> Result<String, String> {
+async fn import_photo(
+    app: tauri::AppHandle,
+    uri: String,
+    ext: Option<String>,
+) -> Result<String, String> {
     tauri::async_runtime::spawn_blocking(move || import::resolve(&app, &uri, ext.as_deref()))
         .await
         .map_err(|e| e.to_string())?
@@ -441,9 +455,9 @@ async fn export_image(
         std::fs::remove_file(&tmp).ok();
         Ok(())
     })
-        .await
-        .map_err(|e| e.to_string())?
-        .map_err(err)?;
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)?;
     Ok(out)
 }
 
@@ -461,7 +475,11 @@ fn read_edits(path: String) -> Option<EditParams> {
 fn marked_photos(paths: Vec<String>) -> Vec<String> {
     paths
         .into_iter()
-        .filter(|p| sidecar::load(Path::new(p)).map(|e| e.marked).unwrap_or(false))
+        .filter(|p| {
+            sidecar::load(Path::new(p))
+                .map(|e| e.marked)
+                .unwrap_or(false)
+        })
         .collect()
 }
 
@@ -503,7 +521,11 @@ fn apply_edits(paths: Vec<String>, settings: serde_json::Value) -> Result<usize,
 /// already decoded and kept in memory; this decodes the file first, which is
 /// what a batch export needs for each of its photos.
 #[tauri::command]
-async fn export_path(app: tauri::AppHandle, path: String, req: export::ExportRequest) -> Result<String, String> {
+async fn export_path(
+    app: tauri::AppHandle,
+    path: String,
+    req: export::ExportRequest,
+) -> Result<String, String> {
     let out = req.out_path.clone();
     tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<()> {
         let (image, _) = decode::load(Path::new(&path))?;

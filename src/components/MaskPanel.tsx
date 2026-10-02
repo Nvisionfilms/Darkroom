@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { BrushSettings } from "../mask";
-import { MASK_KIND_LABEL, defaultMaskAdjust, type Mask, type MaskKind } from "../types";
+import { MASK_KIND_LABEL, defaultMaskAdjust, maskHead, type Mask, type MaskKind, type MaskMode } from "../types";
 import { Slider } from "./Slider";
 
 interface Props {
@@ -10,7 +10,7 @@ interface Props {
   brush: BrushSettings;
   detecting: boolean;
   onSelect: (id: string | null) => void;
-  onAdd: (kind: MaskKind) => void;
+  onAdd: (kind: MaskKind, mode: MaskMode) => void;
   onChange: (m: Mask) => void;
   onDelete: (id: string) => void;
   onShowMask: (v: boolean) => void;
@@ -52,15 +52,34 @@ export function MaskPanel({
   onBrush,
   onDetectSubject,
 }: Props) {
-  const [adding, setAdding] = useState(false);
+  const [adding, setAdding] = useState<MaskMode | null>(null);
   const sel = masks.find((m) => m.id === selectedId) ?? null;
+  const selIdx = sel ? masks.indexOf(sel) : -1;
+  // a subtraction needs something above it to cut into
+  const canSubtract = masks.some((m) => m.mode !== "subtract");
+  const headOf = (i: number) => {
+    const h = maskHead(masks, i - 1);
+    return h < 0 ? null : masks[h];
+  };
   const setAdj = (key: keyof Mask["adjust"]) => (v: number) => sel && onChange({ ...sel, adjust: { ...sel.adjust, [key]: v } });
 
   return (
     <div className="mask-panel">
       <div className="mask-toolbar">
-        <button className={adding ? "active" : ""} onClick={() => setAdding((a) => !a)}>
+        <button className={adding === "add" ? "active" : ""} onClick={() => setAdding((a) => (a === "add" ? null : "add"))}>
           + Add mask
+        </button>
+        <button
+          className={adding === "subtract" ? "active" : ""}
+          disabled={!canSubtract}
+          title={
+            canSubtract
+              ? "Cut an area out of the selected mask, leaving the rest of it alone"
+              : "Add a mask first, then you can subtract from it"
+          }
+          onClick={() => setAdding((a) => (a === "subtract" ? null : "subtract"))}
+        >
+          − Subtract
         </button>
         <label className="mask-show">
           <input type="checkbox" checked={showMask} onChange={(e) => onShowMask(e.target.checked)} />
@@ -69,14 +88,21 @@ export function MaskPanel({
       </div>
       {adding && (
         <div className="mask-add">
+          {adding === "subtract" && (
+            <div className="hint">
+              Pick the shape to cut out of <strong>{(selIdx >= 0 ? headOf(selIdx + 1) : null)?.name ?? masks[masks.length - 1]?.name}</strong>.
+              The rest of that mask keeps its adjustments.
+            </div>
+          )}
           {ADD_KINDS.map(({ kind, hint }) => (
             <button
               key={kind}
               className="mask-add-item"
               title={hint}
               onClick={() => {
-                setAdding(false);
-                onAdd(kind);
+                const mode = adding;
+                setAdding(null);
+                onAdd(kind, mode);
               }}
             >
               <span className="mask-glyph">{KIND_GLYPH[kind]}</span>
@@ -98,10 +124,15 @@ export function MaskPanel({
           {masks.map((m) => (
             <li
               key={m.id}
-              className={"mask-row" + (m.id === selectedId ? " selected" : "") + (m.enabled ? "" : " off")}
+              className={
+                "mask-row" +
+                (m.id === selectedId ? " selected" : "") +
+                (m.enabled ? "" : " off") +
+                (m.mode === "subtract" ? " subtract" : "")
+              }
               onClick={() => onSelect(m.id === selectedId ? null : m.id)}
             >
-              <span className="mask-glyph">{KIND_GLYPH[m.kind]}</span>
+              <span className="mask-glyph">{m.mode === "subtract" ? "−" : KIND_GLYPH[m.kind]}</span>
               <span className="mask-name">
                 {m.name}
                 {m.invert ? " (inverted)" : ""}
@@ -213,7 +244,21 @@ export function MaskPanel({
             </div>
           )}
 
-          <Slider label="Amount" value={sel.amount} min={0} max={100} defaultValue={100} onChange={(v) => onChange({ ...sel, amount: v })} />
+          <Slider
+            label={sel.mode === "subtract" ? "Strength" : "Amount"}
+            value={sel.amount}
+            min={0}
+            max={100}
+            defaultValue={100}
+            onChange={(v) => onChange({ ...sel, amount: v })}
+          />
+          {sel.mode === "subtract" ? (
+            <div className="hint">
+              This cuts its area out of <strong>{headOf(selIdx)?.name ?? "the mask above it"}</strong>, which keeps its own
+              adjustments everywhere else. Strength sets how much is taken away; Invert cuts everything except this shape.
+            </div>
+          ) : (
+            <>
           <div className="divider" />
           <Slider label="Exposure" value={sel.adjust.exposure} min={-4} max={4} step={0.05} onChange={setAdj("exposure")} />
           <Slider label="Contrast" value={sel.adjust.contrast} min={-100} max={100} onChange={setAdj("contrast")} />
@@ -247,6 +292,8 @@ export function MaskPanel({
               Reset sliders
             </button>
           </div>
+            </>
+          )}
         </div>
       )}
     </div>

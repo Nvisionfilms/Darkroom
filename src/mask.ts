@@ -218,3 +218,192 @@ export function whiteBalanceFor(r: number, g: number, b: number): { temperature:
   u = Math.max(-1, Math.min(1, u));
   return { temperature: Math.round(t * 100), tint: Math.round(u * 100) };
 }
+
+/** A single-channel weight map, 0..255. */
+export interface AlphaMap {
+  data: Uint8Array;
+  w: number;
+  h: number;
+}
+
+function sampleNorm(a: AlphaMap, u: number, v: number): number {
+  const fx = Math.max(0, Math.min(a.w - 1, u * a.w - 0.5));
+  const fy = Math.max(0, Math.min(a.h - 1, v * a.h - 0.5));
+  const x0 = Math.floor(fx);
+  const y0 = Math.floor(fy);
+  const x1 = Math.min(x0 + 1, a.w - 1);
+  const y1 = Math.min(y0 + 1, a.h - 1);
+  const tx = fx - x0;
+  const ty = fy - y0;
+  const p = a.data;
+  const t = p[y0 * a.w + x0] * (1 - tx) + p[y0 * a.w + x1] * tx;
+  const b = p[y1 * a.w + x0] * (1 - tx) + p[y1 * a.w + x1] * tx;
+  return (t * (1 - ty) + b * ty) / 255;
+}
+
+/** Luminance-range weight. Twin of mask.rs lum_weight. */
+function lumWeight(y: number, lo: number, hi: number, feather: number): number {
+  const f = Math.max(feather, 0.005);
+  const a = smooth01((y - (lo - f)) / f);
+  const b = 1 - smooth01((y - hi) / f);
+  return Math.max(0, Math.min(1, a * b));
+}
+
+/** Decode a grayscale PNG data URL (a subject mask) to a weight map. */
+async function decodeRasterUrl(url: string): Promise<AlphaMap | null> {
+  const img = new Image();
+  const ok = await new Promise<boolean>((res) => {
+    img.onload = () => res(true);
+    img.onerror = () => res(false);
+    img.src = url;
+  });
+  if (!ok || !img.naturalWidth) return null;
+  const c = document.createElement("canvas");
+  c.width = img.naturalWidth;
+  c.height = img.naturalHeight;
+  const g = c.getContext("2d", { willReadFrequently: true });
+  if (!g) return null;
+  g.drawImage(img, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  const out = new Uint8Array(c.width * c.height);
+  // encodeRaster writes the weight into all three colour channels
+  for (let i = 0; i < out.length; i++) out[i] = d[i * 4];
+  return { data: out, w: c.width, h: c.height };
+}
+
+/** One mask's own weight at a pixel centre, before its subtractions. */
+function weightFn(
+  m: Mask,
+  w: number,
+  h: number,
+  raster: AlphaMap | null,
+  luma: Uint8Array | null,
+): (px: number, py: number) => number {
+  const amount = Math.max(0, Math.min(1, m.amount / 100));
+  const long = Math.max(w, h);
+  let raw: (px: number, py: number) => number;
+  switch (m.kind) {
+    case "linear": {
+      const ax = m.x0 * w;
+      const ay = m.y0 * h;
+      const dx = m.x1 * w - ax;
+      const dy = m.y1 * h - ay;
+      const len2 = dx * dx + dy * dy;
+      raw = len2 < 1e-6 ? () => 1 : (px, py) => 1 - smooth01(((px - ax) * dx + (py - ay) * dy) / len2);
+      break;
+    }
+    case "radial": {
+      const rx = Math.max(1, m.rx * long);
+      const ry = Math.max(1, m.ry * long);
+      const rot = (m.rotation * Math.PI) / 180;
+      const c = Math.cos(rot);
+      const s = Math.sin(rot);
+      const f = Math.max(0.01, Math.min(1, m.feather / 100));
+      const ox = m.cx * w;
+      const oy = m.cy * h;
+      raw = (px, py) => {
+        const dx = px - ox;
+        const dy = py - oy;
+        const lx = dx * c + dy * s;
+        const ly = -dx * s + dy * c;
+        const e = Math.hypot(lx / rx, ly / ry);
+        return 1 - smooth01((e - (1 - f)) / f);
+      };
+      break;
+    }
+    case "luminance":
+      raw = luma
+        ? (px, py) => {
+            const i = Math.min(luma.length - 1, Math.floor(py) * w + Math.floor(px));
+            return lumWeight(luma[i] / 255, m.lumLo, m.lumHi, m.lumFeather);
+          }
+        : () => 0;
+      break;
+    default:
+      raw = raster ? (px, py) => sampleNorm(raster, px / w, py / h) : () => 0;
+  }
+  return (px, py) => {
+    const v = m.invert ? 1 - raw(px, py) : raw(px, py);
+    return v * amount;
+  };
+}
+
+/**
+ * The weight of one mask and its subtractions over a `w` x `h` grid, for code
+ * that needs the shape itself rather than an adjustment - Motion Trails cut
+ * from a masked subject. Twin of mask.rs weight_map.
+ *
+ * `luma` is the developed luminance (0..255, one byte per pixel) and is only
+ * read by luminance masks.
+ */
+export async function maskGroupAlpha(
+  masks: Mask[],
+  id: string,
+  w: number,
+  h: number,
+  luma?: Uint8Array | null,
+): Promise<AlphaMap | null> {
+  if (w < 1 || h < 1) return null;
+  const head = masks.findIndex((m) => m.id === id && m.mode !== "subtract");
+  if (head < 0) return null;
+  const m = masks[head];
+  if (!m.enabled || m.amount <= 0) return null;
+  const subs: Mask[] = [];
+  for (let i = head + 1; i < masks.length && masks[i].mode === "subtract"; i++) {
+    if (masks[i].enabled && masks[i].amount > 0) subs.push(masks[i]);
+  }
+
+  const rasterFor = async (k: Mask): Promise<AlphaMap | null> => {
+    if (k.kind === "brush") return { data: brushRaster(k.strokes, w, h), w, h };
+    if (k.kind === "subject") return k.raster ? await decodeRasterUrl(k.raster) : null;
+    return null;
+  };
+  const fns = [m, ...subs];
+  const rasters = await Promise.all(fns.map(rasterFor));
+  const eval0 = fns.map((k, i) => weightFn(k, w, h, rasters[i], luma ?? null));
+
+  const data = new Uint8Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const py = y + 0.5;
+    for (let x = 0; x < w; x++) {
+      const px = x + 0.5;
+      let v = eval0[0](px, py);
+      for (let i = 1; i < eval0.length && v > 0; i++) v *= 1 - eval0[i](px, py);
+      data[y * w + x] = Math.round(Math.max(0, Math.min(1, v)) * 255);
+    }
+  }
+  return { data, w, h };
+}
+
+/** Changing any of these means a cached mask weight map has to be rebuilt. */
+export function maskGroupKey(masks: Mask[], id: string): string {
+  const head = masks.findIndex((k) => k.id === id && k.mode !== "subtract");
+  if (head < 0) return "";
+  const part = (k: Mask) =>
+    [
+      k.id,
+      k.kind,
+      k.enabled ? 1 : 0,
+      k.invert ? 1 : 0,
+      k.amount,
+      k.x0,
+      k.y0,
+      k.x1,
+      k.y1,
+      k.cx,
+      k.cy,
+      k.rx,
+      k.ry,
+      k.rotation,
+      k.feather,
+      k.lumLo,
+      k.lumHi,
+      k.lumFeather,
+      k.strokes.length,
+      k.strokes.reduce((n, s) => n + s.x.length, 0),
+      k.raster ? k.raster.length : 0,
+    ].join(",");
+  const out = [part(masks[head])];
+  for (let i = head + 1; i < masks.length && masks[i].mode === "subtract"; i++) out.push(part(masks[i]));
+  return out.join("|");
+}

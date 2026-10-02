@@ -12,10 +12,12 @@ use crate::blend::{self, Blend};
 use crate::color::{dot3, mul3, DWG_TO_SRGB, LUMA_709, LUMA_PROXY};
 use crate::detail::{sample_q, DetailMaps};
 use crate::geometry::{Lens, LensProfile, Transform, Warp};
+use crate::grain::Grain;
 use crate::heal::HealSpot;
 use crate::lut3d::Lut3d;
 use crate::mask::{self, Mask};
 use crate::profiles;
+use crate::star::Star;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -107,6 +109,12 @@ pub struct EditParams {
     /// double exposure: a second photograph composited onto this one
     #[serde(default)]
     pub blend: Blend,
+    /// film grain, added last so it is not sharpened into the picture twice
+    #[serde(default)]
+    pub grain: Grain,
+    /// cross-screen ("starburst") lens filter
+    #[serde(default)]
+    pub star: Star,
     /// flagged as finished and wanted in the next export. Kept with the photo
     /// rather than the session so it survives closing the app.
     #[serde(default)]
@@ -158,13 +166,22 @@ impl EditParams {
             || self.clarity != 0.0
             || self.dehaze != 0.0
             || self.masks.iter().any(|m| {
-                m.is_active() && (m.adjust.texture != 0.0 || m.adjust.clarity != 0.0 || m.adjust.dehaze != 0.0)
+                m.is_active()
+                    && (m.adjust.texture != 0.0
+                        || m.adjust.clarity != 0.0
+                        || m.adjust.dehaze != 0.0)
             })
     }
 
     /// Resolved geometry for an image of this size.
     pub fn warp(&self, width: usize, height: usize) -> Warp {
-        Warp::new(&self.transform, &self.lens, self.lens_profile.as_ref(), width, height)
+        Warp::new(
+            &self.transform,
+            &self.lens,
+            self.lens_profile.as_ref(),
+            width,
+            height,
+        )
     }
 }
 
@@ -222,6 +239,8 @@ pub struct Mirror {
     pub length: f32,
     /// 0..100
     pub opacity: f32,
+    /// id of the mask the trail is cut from; empty = the whole frame
+    pub mask: String,
 }
 
 impl Default for Mirror {
@@ -238,6 +257,7 @@ impl Default for Mirror {
             offset: 0.0,
             length: 0.35,
             opacity: 70.0,
+            mask: String::new(),
         }
     }
 }
@@ -304,7 +324,8 @@ impl WatermarkImage {
         let y1 = (y0 + 1).min(self.height - 1);
         let tx = fx - x0 as f32;
         let ty = fy - y0 as f32;
-        let px = |x: usize, y: usize, c: usize| self.rgba[(y * self.width + x) * 4 + c] as f32 / 255.0;
+        let px =
+            |x: usize, y: usize, c: usize| self.rgba[(y * self.width + x) * 4 + c] as f32 / 255.0;
         let mut o = [0.0f32; 4];
         for c in 0..4 {
             let a = px(x0, y0, c) * (1.0 - tx) + px(x1, y0, c) * tx;
@@ -317,7 +338,13 @@ impl WatermarkImage {
 
 /// Composite the watermark onto a developed (display-space) buffer.
 /// Twin of `WATERMARK_FRAG`.
-pub fn watermark_pass(img: &mut [f32], width: usize, height: usize, w: &Watermark, wm: &WatermarkImage) {
+pub fn watermark_pass(
+    img: &mut [f32],
+    width: usize,
+    height: usize,
+    w: &Watermark,
+    wm: &WatermarkImage,
+) {
     if !w.enabled || w.opacity <= 0.0 {
         return;
     }
@@ -392,7 +419,12 @@ impl Default for Crop {
 
 impl Crop {
     pub fn is_identity(&self) -> bool {
-        !self.enabled || (self.angle == 0.0 && self.x <= 0.0 && self.y <= 0.0 && self.w >= 1.0 && self.h >= 1.0)
+        !self.enabled
+            || (self.angle == 0.0
+                && self.x <= 0.0
+                && self.y <= 0.0
+                && self.w >= 1.0
+                && self.h >= 1.0)
     }
 }
 
@@ -411,20 +443,22 @@ pub fn crop_pass(img: &[f32], width: usize, height: usize, c: &Crop) -> (Vec<f32
     let a = c.angle.to_radians();
     let (ca, sa) = (a.cos(), a.sin());
     let mut out = vec![0.0f32; ow * oh * 3];
-    out.par_chunks_mut(ow * 3).enumerate().for_each(|(oy, row)| {
-        let sy = y0 + oy as f32 + 0.5 - cy;
-        for ox in 0..ow {
-            let sx = x0 + ox as f32 + 0.5 - cx;
-            // straightened canvas -> source: rotate about the centre
-            let px = cx + ca * sx - sa * sy;
-            let py = cy + sa * sx + ca * sy;
-            if px < 0.0 || py < 0.0 || px >= wf || py >= hf {
-                continue; // outside the source: black
+    out.par_chunks_mut(ow * 3)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            let sy = y0 + oy as f32 + 0.5 - cy;
+            for ox in 0..ow {
+                let sx = x0 + ox as f32 + 0.5 - cx;
+                // straightened canvas -> source: rotate about the centre
+                let px = cx + ca * sx - sa * sy;
+                let py = cy + sa * sx + ca * sy;
+                if px < 0.0 || py < 0.0 || px >= wf || py >= hf {
+                    continue; // outside the source: black
+                }
+                let s = bilinear(img, width, height, px - 0.5, py - 0.5);
+                row[ox * 3..ox * 3 + 3].copy_from_slice(&s);
             }
-            let s = bilinear(img, width, height, px - 0.5, py - 0.5);
-            row[ox * 3..ox * 3 + 3].copy_from_slice(&s);
-        }
-    });
+        });
     (out, ow, oh)
 }
 
@@ -470,6 +504,8 @@ impl Default for EditParams {
             lens_profile: None,
             heal: Vec::new(),
             blend: Blend::default(),
+            grain: Grain::default(),
+            star: Star::default(),
             marked: false,
             hsl: HslParams {
                 hue: [0.0; 8],
@@ -624,7 +660,9 @@ impl Uniforms {
             tint_m: tint_offset(p.grading.mid_hue, p.grading.mid_sat),
             tint_h: tint_offset(p.grading.high_hue, p.grading.high_sat),
             balance: n(p.grading.balance),
-            grading_on: p.grading.shadow_sat > 0.0 || p.grading.mid_sat > 0.0 || p.grading.high_sat > 0.0,
+            grading_on: p.grading.shadow_sat > 0.0
+                || p.grading.mid_sat > 0.0
+                || p.grading.high_sat > 0.0,
             mono: lk.mono,
             mono_mix: lk.mono_mix,
             look_amount: if p.look.is_active() {
@@ -814,7 +852,13 @@ pub struct LocalMaps {
 /// Mirrors `developPixel` in the shader. `t` is the (possibly mask-adjusted)
 /// tone for this pixel; `u` holds the global-only settings.
 #[inline]
-pub fn develop_pixel(rgb: [f32; 3], maps: Option<LocalMaps>, t: &Tone, u: &Uniforms, lut: &[f32]) -> [f32; 3] {
+pub fn develop_pixel(
+    rgb: [f32; 3],
+    maps: Option<LocalMaps>,
+    t: &Tone,
+    u: &Uniforms,
+    lut: &[f32],
+) -> [f32; 3] {
     develop_pixel_gain(rgb, maps, t, u, lut, 1.0, None, None)
 }
 
@@ -943,7 +987,8 @@ pub fn develop_pixel_gain(
     }
     // 7c. picture profile: monochrome conversion
     if u.mono {
-        let y = (g[0] * u.mono_mix[0] + g[1] * u.mono_mix[1] + g[2] * u.mono_mix[2]).clamp(0.0, 1.0);
+        let y =
+            (g[0] * u.mono_mix[0] + g[1] * u.mono_mix[1] + g[2] * u.mono_mix[2]).clamp(0.0, 1.0);
         return [y, y, y];
     }
     // 8. HSL bands
@@ -1013,6 +1058,11 @@ pub fn develop_buffer_full(
     let warp = params.warp(width, height);
     let vignette = warp.has_vignette();
     let row_len = width * 3;
+    // grain is referenced to the picture, not the pixel grid, so it needs the
+    // frame's shape as well as the pixel's place in it
+    let grain_on = params.grain.is_active();
+    let aspect = width as f32 / height.max(1) as f32;
+    let (fw, fh) = (width.max(1) as f32, height.max(1) as f32);
     let mut out = vec![0.0f32; src.len()];
     out.par_chunks_mut(row_len)
         .zip(src.par_chunks(row_len))
@@ -1041,7 +1091,10 @@ pub fn develop_buffer_full(
                 } else {
                     // luminance masks look at the globally developed picture
                     let luma = if needs_luma {
-                        dot3(develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look, bl), LUMA_709)
+                        dot3(
+                            develop_pixel_gain(rgb, m, &u.tone, &u, lut, gain, look, bl),
+                            LUMA_709,
+                        )
                     } else {
                         0.0
                     };
@@ -1051,6 +1104,12 @@ pub fn develop_buffer_full(
                         t.add(&pm.mask.adjust, pm.weight(px, py, luma));
                     }
                     develop_pixel_gain(rgb, m, &t.finish(), &u, lut, gain, look, bl)
+                };
+                let o = if grain_on {
+                    let (gu, gv) = ((x as f32 + 0.5) / fw, (y as f32 + 0.5) / fh);
+                    crate::grain::apply(o, gu, gv, aspect, &params.grain)
+                } else {
+                    o
                 };
                 d[0] = o[0];
                 d[1] = o[1];
@@ -1083,21 +1142,24 @@ pub fn sharpen(img: &mut [f32], width: usize, height: usize, amount: f32) {
                 t[x] = (a + 2.0 * b + c) * 0.25;
             }
         });
-    img.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
-        let y0 = y.saturating_sub(1);
-        let y2 = (y + 1).min(height - 1);
-        for x in 0..width {
-            let blur = (tmp[y0 * width + x] + 2.0 * tmp[y * width + x] + tmp[y2 * width + x]) * 0.25;
-            let y0v = luma[y * width + x];
-            let delta = (y0v - blur) * k;
-            // a gain, not an offset, so only brightness moves
-            let gain = ((y0v + delta) / y0v.max(1e-4)).clamp(0.0, 4.0);
-            let p = &mut row[x * 3..x * 3 + 3];
-            p[0] = (p[0] * gain).clamp(0.0, 1.0);
-            p[1] = (p[1] * gain).clamp(0.0, 1.0);
-            p[2] = (p[2] * gain).clamp(0.0, 1.0);
-        }
-    });
+    img.par_chunks_mut(width * 3)
+        .enumerate()
+        .for_each(|(y, row)| {
+            let y0 = y.saturating_sub(1);
+            let y2 = (y + 1).min(height - 1);
+            for x in 0..width {
+                let blur =
+                    (tmp[y0 * width + x] + 2.0 * tmp[y * width + x] + tmp[y2 * width + x]) * 0.25;
+                let y0v = luma[y * width + x];
+                let delta = (y0v - blur) * k;
+                // a gain, not an offset, so only brightness moves
+                let gain = ((y0v + delta) / y0v.max(1e-4)).clamp(0.0, 4.0);
+                let p = &mut row[x * 3..x * 3 + 3];
+                p[0] = (p[0] * gain).clamp(0.0, 1.0);
+                p[1] = (p[1] * gain).clamp(0.0, 1.0);
+                p[2] = (p[2] * gain).clamp(0.0, 1.0);
+            }
+        });
 }
 
 /// Resolved mirror geometry in pixels. Shared derivation with `MIRROR_FRAG`.
@@ -1209,17 +1271,19 @@ pub fn mirror_pass(img: &[f32], width: usize, height: usize, m: &Mirror) -> Vec<
     }
     let g = MirrorGeom::new(m, width, height);
     let mut out = img.to_vec();
-    out.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
-        for x in 0..width {
-            if let Some((a, qx, qy)) = g.sample(x as f32 + 0.5, y as f32 + 0.5) {
-                let s = bilinear(img, width, height, qx - 0.5, qy - 0.5);
-                for c in 0..3 {
-                    let v = row[x * 3 + c];
-                    row[x * 3 + c] = v + (s[c] - v) * a;
+    out.par_chunks_mut(width * 3)
+        .enumerate()
+        .for_each(|(y, row)| {
+            for x in 0..width {
+                if let Some((a, qx, qy)) = g.sample(x as f32 + 0.5, y as f32 + 0.5) {
+                    let s = bilinear(img, width, height, qx - 0.5, qy - 0.5);
+                    for c in 0..3 {
+                        let v = row[x * 3 + c];
+                        row[x * 3 + c] = v + (s[c] - v) * a;
+                    }
                 }
             }
-        }
-    });
+        });
     out
 }
 
@@ -1230,19 +1294,25 @@ pub fn rotate(img: &[f32], width: usize, height: usize, degrees: u32) -> (Vec<f3
     if deg == 0 {
         return (img.to_vec(), width, height);
     }
-    let (ow, oh) = if deg == 180 { (width, height) } else { (height, width) };
+    let (ow, oh) = if deg == 180 {
+        (width, height)
+    } else {
+        (height, width)
+    };
     let mut out = vec![0.0f32; img.len()];
-    out.par_chunks_mut(ow * 3).enumerate().for_each(|(oy, row)| {
-        for ox in 0..ow {
-            let (sx, sy) = match deg {
-                90 => (oy, height - 1 - ox),
-                180 => (width - 1 - ox, height - 1 - oy),
-                _ => (width - 1 - oy, ox),
-            };
-            let s = (sy * width + sx) * 3;
-            row[ox * 3..ox * 3 + 3].copy_from_slice(&img[s..s + 3]);
-        }
-    });
+    out.par_chunks_mut(ow * 3)
+        .enumerate()
+        .for_each(|(oy, row)| {
+            for ox in 0..ow {
+                let (sx, sy) = match deg {
+                    90 => (oy, height - 1 - ox),
+                    180 => (width - 1 - ox, height - 1 - oy),
+                    _ => (width - 1 - oy, ox),
+                };
+                let s = (sy * width + sx) * 3;
+                row[ox * 3..ox * 3 + 3].copy_from_slice(&img[s..s + 3]);
+            }
+        });
     (out, ow, oh)
 }
 

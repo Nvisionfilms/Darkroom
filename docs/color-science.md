@@ -73,6 +73,34 @@ Darkroom's denoiser (`denoise.rs` / `DENOISE_FRAG`):
   fetches). A 24 MP Canon file denoises in about 10 s on this machine; the GPU preview is
   interactive.
 
+## Film grain and the cross-screen filter
+
+Both are display-referred: they run on the finished picture, after the tone mapping, not on
+the linear scene data. Grain is the last thing the develop pass does, and the star filter is
+the first of the post passes, before the trails echo it and before the watermark goes on.
+
+Neither may use a random number. The preview is a different size from the export, and the
+export is rendered by different code, so anything stochastic would put the grain and the
+streaks in different places in the two. Instead:
+
+- **Grain** is a hash of the pixel's position (`lowbias32`, 32-bit integer arithmetic, which
+  Rust and GLSL compute identically), sampled against a fixed 3000-pixel reference rather
+  than the pixel grid. The hash's output for 0, 1 and 2 is pinned by a test, because
+  changing it would silently move the grain in every photo anyone has already edited.
+- **The star** reads a quarter-resolution highlight map and smears it along `points / 2`
+  lines. The CPU builds that map as a 4x4 box average; the GPU reads mip level 2 of the same
+  texture, which is the same average.
+
+`scripts/twins.mjs` checks that the constants in `grain.rs` / `star.rs` and in the GLSL and
+`star.ts` still match, since a number changed on one side only is the easiest mistake to
+make here and the hardest to see.
+
+One trap worth recording: **`pow(0.0, y)` is not reliably 0 on the GPU**. A driver that
+computes `pow` as `exp2(y * log2(x))` returns NaN there, and a single NaN inside an
+accumulation loop zeroes the whole result -- the streaks vanish completely while every
+individual value still looks right under a debugger. The fade weight therefore holds its
+base off zero (`max(1.0 - t, 1e-6)`) on both sides.
+
 ## Not done yet
 
 - A Kelvin/tint white balance model (current temperature/tint are RGB gain

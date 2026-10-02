@@ -14,6 +14,7 @@ import { makeWarp, warpHasVignette, warpIsIdentity, type Warp } from "../geometr
 import { look as profileLook } from "../profiles";
 import { columnMajor, lookInput } from "../camlog";
 import { modeId, placement } from "../blend";
+import { starActive, starDispersion, starFadeExp, starGain, starLenPx, starLines, starThreshold } from "../star";
 import {
   BLUR_FRAG,
   COMBINE_FRAG,
@@ -27,11 +28,16 @@ import {
   IDENTITY3,
   LOGLUMA_FRAG,
   MASK_ADJ_STRIDE,
+  MASK_MODE_ADD,
+  MASK_MODE_SUBTRACT,
   MAX_HEAL,
   MAX_MASKS,
   MIRROR_FRAG,
   PREP_FRAG,
   PRESENT_FRAG,
+  STAR_ADD_FRAG,
+  STAR_HI_FRAG,
+  STAR_STREAK_FRAG,
   VERTEX,
   WATERMARK_FRAG,
 } from "./shaders";
@@ -224,6 +230,9 @@ export class Renderer {
       blur: link(gl, VERTEX, BLUR_FRAG),
       down: link(gl, VERTEX, DOWNSAMPLE_FRAG),
       develop: link(gl, VERTEX, DEVELOP_FRAG),
+      starHi: link(gl, VERTEX, STAR_HI_FRAG),
+      starStreak: link(gl, VERTEX, STAR_STREAK_FRAG),
+      starAdd: link(gl, VERTEX, STAR_ADD_FRAG),
       mirror: link(gl, VERTEX, MIRROR_FRAG),
       watermark: link(gl, VERTEX, WATERMARK_FRAG),
       present: link(gl, VERTEX, PRESENT_FRAG),
@@ -379,6 +388,10 @@ export class Renderer {
     this.makeTex("dev", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.makeTex("fx", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.makeTex("fx2", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
+    // cross-screen filter: highlights and their streaks, both quarter res
+    this.makeTex("HiQ", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
+    this.makeTex("StQ", gl.RGBA16F, gl.RGBA, gl.HALF_FLOAT, this.qw, this.qh, gl.LINEAR);
+    this.makeTex("fx0", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, W, H, gl.LINEAR, true);
     this.histH = Math.max(1, Math.round((HIST_W * H) / W));
     this.makeTex("hist", gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, HIST_W, this.histH, gl.NEAREST);
     this.histPixels = new Uint8Array(HIST_W * this.histH * 4);
@@ -741,15 +754,27 @@ export class Renderer {
    * Masks the shader evaluates: enabled masks with a non-zero adjustment,
    * plus the one being shown/edited (so its overlay is visible even before
    * it has any adjustment). At most MAX_MASKS, in stack order.
+   *
+   * A subtract mask is judged by its own strength rather than by adjustments
+   * it does not have, and it is dropped when the mask it cuts into was, so it
+   * can never slide up onto an earlier mask the way it would if the list were
+   * simply filtered (twin of mask.rs prepare).
    */
   private maskList(p: EditParams, showId: string | null): { list: Mask[]; show: number; useLuma: boolean } {
     const list: Mask[] = [];
+    let headKept = false;
     for (const m of p.masks) {
+      if (list.length >= MAX_MASKS) break;
+      if (m.mode === "subtract") {
+        if (headKept && m.enabled && m.amount > 0) list.push(m);
+        continue;
+      }
+      headKept = false;
       if (!m.enabled) continue;
       const active = m.amount > 0 && !maskAdjustIsZero(m.adjust);
       if (!active && m.id !== showId) continue;
-      if (list.length >= MAX_MASKS) break;
       list.push(m);
+      headKept = true;
     }
     return {
       list,
@@ -763,6 +788,7 @@ export class Renderer {
     const d = this.prog.develop;
     const n = list.length;
     const kind = new Int32Array(MAX_MASKS);
+    const mode = new Int32Array(MAX_MASKS);
     const invert = new Int32Array(MAX_MASKS);
     const amount = new Float32Array(MAX_MASKS);
     const p0 = new Float32Array(MAX_MASKS * 4);
@@ -774,6 +800,7 @@ export class Renderer {
     for (let i = 0; i < n; i++) {
       const m = list[i];
       kind[i] = maskKindCode(m.kind);
+      mode[i] = m.mode === "subtract" ? MASK_MODE_SUBTRACT : MASK_MODE_ADD;
       invert[i] = m.invert ? 1 : 0;
       amount[i] = Math.max(0, Math.min(1, m.amount / 100));
       const o = i * 4;
@@ -813,6 +840,7 @@ export class Renderer {
     gl.uniform1i(this.loc(d, "uUseLumaG"), useLuma ? 1 : 0);
     gl.uniform1i(this.loc(d, "uShowMask"), show);
     gl.uniform1iv(this.loc(d, "uMaskKind[0]"), kind);
+    gl.uniform1iv(this.loc(d, "uMaskMode[0]"), mode);
     gl.uniform1iv(this.loc(d, "uMaskInvert[0]"), invert);
     gl.uniform1fv(this.loc(d, "uMaskAmount[0]"), amount);
     gl.uniform4fv(this.loc(d, "uMaskP0[0]"), p0);
@@ -852,6 +880,10 @@ export class Renderer {
     f("uClarity", n(p.clarity));
     f("uDehaze", n(p.dehaze));
     gl.uniform2f(this.loc(d, "uSize"), this.imgW, this.imgH);
+    // grain takes its own 0..100, not the shared -1..1 mapping
+    f("uGrainAmount", Math.max(0, Math.min(100, p.grain.amount)));
+    f("uGrainSize", Math.max(0, Math.min(100, p.grain.size)));
+    f("uGrainColour", Math.max(0, Math.min(100, p.grain.colour)));
     gl.uniform1i(this.loc(d, "uMono"), lkp.mono ? 1 : 0);
     gl.uniform3fv(this.loc(d, "uMonoMix"), lkp.monoMix);
     // lens vignetting correction (scene-referred)
@@ -937,12 +969,16 @@ export class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     this.bindTex(0, this.t.dev.tex);
     gl.generateMipmap(gl.TEXTURE_2D);
+    // the cross-screen filter is on the lens, so it comes first - before the
+    // trails echo it and before the watermark is laid on top
+    this.starOn = this.runStar(p);
+    const base = this.starOn ? this.t.fx0 : this.t.dev;
     this.mirrorOn = p.mirror.enabled && p.mirror.opacity > 0;
     if (this.mirrorOn) {
       const g = mirrorGeom(p.mirror, this.imgW, this.imgH);
       const pr = this.prog.mirror;
       this.pass(pr, this.t.fx, () => {
-        this.bindTex(0, this.t.dev.tex);
+        this.bindTex(0, base.tex);
         gl.uniform1i(this.loc(pr, "uTex"), 0);
         gl.uniform2f(this.loc(pr, "uSize"), this.imgW, this.imgH);
         gl.uniform2f(this.loc(pr, "uCenter"), g.cx, g.cy);
@@ -964,7 +1000,7 @@ export class Renderer {
     const wm = p.watermark;
     this.watermarkOn = wm.enabled && wm.opacity > 0 && !!this.wmTex && this.wmPath === wm.path;
     if (this.watermarkOn) {
-      const src = this.mirrorOn ? this.t.fx : this.t.dev;
+      const src = this.mirrorOn ? this.t.fx : base;
       const long = Math.max(this.imgW, this.imgH);
       const dw = Math.max(1, wm.size * long);
       const dh = (dw * this.wmH) / this.wmW;
@@ -998,6 +1034,51 @@ export class Renderer {
     return s === gl.ALREADY_SIGNALED || s === gl.CONDITION_SATISFIED;
   }
 
+  /**
+   * Pass: the cross-screen filter, as three passes into fx0. Returns whether it
+   * ran, which decides what the rest of the chain reads. Twin of star.rs.
+   */
+  private runStar(p: EditParams): boolean {
+    const s = p.star;
+    if (!starActive(s)) return false;
+    const gl = this.gl;
+    const long = Math.max(this.imgW, this.imgH);
+    const lenQ = starLenPx(s.length, long) / 4;
+    // a streak shorter than a quarter of a pixel on the map is no streak
+    if (lenQ < 0.25) return false;
+
+    const hi = this.prog.starHi;
+    this.pass(hi, this.t.HiQ, () => {
+      this.bindTex(0, this.t.dev.tex);
+      gl.uniform1i(this.loc(hi, "uTex"), 0);
+      gl.uniform1f(this.loc(hi, "uThreshold"), starThreshold(s.threshold));
+    });
+    const sk = this.prog.starStreak;
+    this.pass(sk, this.t.StQ, () => {
+      this.bindTex(0, this.t.HiQ.tex);
+      gl.uniform1i(this.loc(sk, "uHi"), 0);
+      gl.uniform2f(this.loc(sk, "uQSize"), this.t.HiQ.w, this.t.HiQ.h);
+      gl.uniform1f(this.loc(sk, "uLenQ"), lenQ);
+      gl.uniform1f(this.loc(sk, "uFade"), starFadeExp(s.falloff));
+      gl.uniform1f(this.loc(sk, "uDisp"), starDispersion(s.dispersion));
+      gl.uniform1i(this.loc(sk, "uLines"), starLines(s.points));
+      gl.uniform1f(this.loc(sk, "uAngle"), (s.angle * Math.PI) / 180);
+    });
+    const ad = this.prog.starAdd;
+    this.pass(ad, this.t.fx0, () => {
+      this.bindTex(0, this.t.dev.tex);
+      this.bindTex(1, this.t.StQ.tex);
+      gl.uniform1i(this.loc(ad, "uTex"), 0);
+      gl.uniform1i(this.loc(ad, "uStreak"), 1);
+      gl.uniform1f(this.loc(ad, "uGain"), starGain(s.amount));
+    });
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    this.bindTex(0, this.t.fx0.tex);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    return true;
+  }
+
+  private starOn = false;
   private mirrorOn = false;
   private watermarkOn = false;
   private wmTex: WebGLTexture | null = null;
@@ -1006,7 +1087,8 @@ export class Renderer {
   private wmH = 1;
   private output(): Tex {
     if (this.watermarkOn) return this.t.fx2;
-    return this.mirrorOn ? this.t.fx : this.t.dev;
+    if (this.mirrorOn) return this.t.fx;
+    return this.starOn ? this.t.fx0 : this.t.dev;
   }
 
   /** Upload (or clear) the watermark overlay. `path` identifies which file the pixels belong to. */

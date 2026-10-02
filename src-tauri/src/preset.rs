@@ -37,6 +37,8 @@ pub const PRESET_KEYS: &[&str] = &[
     "denoiseLuma",
     "denoiseChroma",
     "denoiseDetail",
+    "grain",
+    "star",
     "grading",
     "hsl",
     "curves",
@@ -48,7 +50,13 @@ pub const PRESET_KEYS: &[&str] = &[
 fn slug(name: &str) -> String {
     let s: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
+        .map(|c| {
+            if c.is_alphanumeric() {
+                c.to_ascii_lowercase()
+            } else {
+                '-'
+            }
+        })
         .collect();
     let s = s.trim_matches('-').to_string();
     if s.is_empty() {
@@ -60,7 +68,11 @@ fn slug(name: &str) -> String {
 
 pub fn dir(app: &tauri::AppHandle) -> Result<PathBuf> {
     use tauri::Manager;
-    let d = app.path().app_data_dir().context("app data dir")?.join("presets");
+    let d = app
+        .path()
+        .app_data_dir()
+        .context("app data dir")?
+        .join("presets");
     std::fs::create_dir_all(&d).with_context(|| format!("create {}", d.display()))?;
     Ok(d)
 }
@@ -73,7 +85,10 @@ pub fn list(app: &tauri::AppHandle) -> Result<Vec<Preset>> {
         if p.extension().and_then(|e| e.to_str()) != Some("json") {
             continue;
         }
-        match std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str::<Preset>(&t).ok()) {
+        match std::fs::read_to_string(&p)
+            .ok()
+            .and_then(|t| serde_json::from_str::<Preset>(&t).ok())
+        {
             Some(preset) => out.push(preset),
             None => log::warn!("preset: skipping unreadable {}", p.display()),
         }

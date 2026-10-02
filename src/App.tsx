@@ -58,6 +58,7 @@ import { InspectorSection, SectionFilter } from "./components/InspectorSection";
 import { PHONE_TABS, usePhone, type PhoneTabId } from "./phone";
 import { useHistory } from "./history";
 import { MirrorPanel } from "./components/MirrorPanel";
+import { StarPanel } from "./components/StarPanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -72,18 +73,29 @@ import {
   newHealSpot,
   newMask,
   presetSettings,
+  subtractInsertAt,
   type EditParams,
   type Histogram as Hist,
   type ImageInfo,
   type HealSpot,
   type Mask,
   type MaskKind,
+  type MaskMode,
   type MonitorInfo,
   type Preset,
   type PreviewImage,
   type TetherStatus,
 } from "./types";
 import "./App.css";
+
+/**
+ * A trail being switched on picks up the mask the photo already has, which is
+ * what people mean by "trail the subject"; with no masks it echoes the frame.
+ */
+function trailMask(p: EditParams): string {
+  if (p.mirror.mask && p.masks.some((m) => m.id === p.mirror.mask && m.mode !== "subtract")) return p.mirror.mask;
+  return p.masks.find((m) => m.mode !== "subtract" && m.enabled)?.id ?? "";
+}
 
 type InspectorKey =
   | "tone"
@@ -93,6 +105,7 @@ type InspectorKey =
   | "grading"
   | "detail"
   | "denoise"
+  | "grain"
   | "crop"
   | "mirror"
   | "watermark"
@@ -103,6 +116,7 @@ type InspectorKey =
   | "transform"
   | "heal"
   | "blend"
+  | "star"
   | "presets";
 
 /** The inspector section each phone tab opens, the rest start collapsed. */
@@ -277,6 +291,7 @@ export default function App() {
     grading: false,
     detail: false,
     denoise: false,
+    grain: false,
     crop: false,
     mirror: false,
     watermark: false,
@@ -287,6 +302,7 @@ export default function App() {
     transform: false,
     heal: false,
     blend: false,
+    star: false,
     presets: false,
   });
   // phones are updated by whatever installed them, never by themselves
@@ -780,15 +796,26 @@ export default function App() {
   );
 
   const addMask = useCallback(
-    (kind: MaskKind) => {
-      const m = newMask(kind, params.masks);
-      setParams((p) => ({ ...p, masks: [...p.masks, m] }));
+    (kind: MaskKind, mode: MaskMode = "add") => {
+      const m = newMask(kind, params.masks, mode);
+      // a subtraction joins the group it cuts into - the one holding the
+      // selected mask - so the stack stays readable top to bottom
+      const from = params.masks.findIndex((x) => x.id === selectedMaskId);
+      const at =
+        mode === "subtract"
+          ? subtractInsertAt(params.masks, from < 0 ? params.masks.length - 1 : from)
+          : params.masks.length;
+      setParams((p) => {
+        const masks = p.masks.slice();
+        masks.splice(Math.min(at, masks.length), 0, m);
+        return { ...p, masks };
+      });
       setSelectedMaskId(m.id);
       setShowMask(kind !== "linear" && kind !== "radial");
       revealSection("masks");
       if (kind === "subject") void runDetectSubject(m.id);
     },
-    [params.masks, runDetectSubject],
+    [params.masks, selectedMaskId, runDetectSubject],
   );
 
   // ---- filmstrip thumbnails ----
@@ -1631,6 +1658,34 @@ export default function App() {
             <div className="hint">Judge fine noise at 1:1 or in the exported file.</div>
           </InspectorSection>
 
+          <InspectorSection title="Grain" open={openSections.grain} onToggle={() => toggleSection("grain")}>
+            <Slider
+              label="Amount"
+              value={params.grain.amount}
+              min={0}
+              max={100}
+              onChange={(v) => set("grain")({ ...params.grain, amount: v })}
+            />
+            <Slider
+              label="Size"
+              value={params.grain.size}
+              min={0}
+              max={100}
+              defaultValue={40}
+              onChange={(v) => set("grain")({ ...params.grain, size: v })}
+            />
+            <Slider
+              label="Color"
+              value={params.grain.colour}
+              min={0}
+              max={100}
+              onChange={(v) => set("grain")({ ...params.grain, colour: v })}
+            />
+            <div className="hint">
+              Grain is drawn at the picture's own scale, so a fit-to-window view understates it. Judge it at 1:1.
+            </div>
+          </InspectorSection>
+
           <InspectorSection title="Crop & Straighten" shortcut="C" open={openSections.crop} onToggle={() => toggleSection("crop")}>
             <CropPanel
               crop={params.crop}
@@ -1731,6 +1786,21 @@ export default function App() {
             />
           </InspectorSection>
 
+          <InspectorSection title="Motion Trails" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>
+            <label className="feature-toggle">
+              <span>
+                <strong>Enable trails</strong>
+                <small>Directional echoes of a masked subject, or of the whole frame. No AI manipulation.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={params.mirror.enabled}
+                onChange={(e) => set("mirror")({ ...params.mirror, enabled: e.target.checked, mask: trailMask(params) })}
+              />
+            </label>
+            <MirrorPanel mirror={params.mirror} masks={params.masks} onChange={set("mirror")} />
+          </InspectorSection>
+
           <InspectorSection
             title="Double Exposure"
             open={openSections.blend}
@@ -1748,19 +1818,19 @@ export default function App() {
             </div>
           </InspectorSection>
 
-          <InspectorSection title="Motion Trails" open={openSections.mirror} onToggle={() => toggleSection("mirror")}>
+          <InspectorSection title="Starburst" open={openSections.star} onToggle={() => toggleSection("star")}>
             <label className="feature-toggle">
               <span>
-                <strong>Enable trails</strong>
-                <small>Directional ghost echoes from the existing image. No AI manipulation.</small>
+                <strong>Enable starburst</strong>
+                <small>A cross-screen lens filter: highlights grow stars. No AI manipulation.</small>
               </span>
               <input
                 type="checkbox"
-                checked={params.mirror.enabled}
-                onChange={(e) => set("mirror")({ ...params.mirror, enabled: e.target.checked })}
+                checked={params.star.enabled}
+                onChange={(e) => set("star")({ ...params.star, enabled: e.target.checked })}
               />
             </label>
-            <MirrorPanel mirror={params.mirror} onChange={set("mirror")} />
+            <StarPanel star={params.star} onChange={set("star")} />
           </InspectorSection>
 
           <InspectorSection title="Watermark" open={openSections.watermark} onToggle={() => toggleSection("watermark")}>

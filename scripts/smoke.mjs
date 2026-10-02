@@ -83,6 +83,57 @@ await js(`window.__smoke = {
   problems() {
     return [document.querySelector('.toast')?.textContent, document.querySelector('.viewer-error')?.textContent].filter(Boolean);
   },
+  toggle(title) {
+    const box = this.open(title).querySelector('.feature-toggle input');
+    if (!box) throw new Error('no toggle in ' + title);
+    box.click();
+    return box.checked;
+  },
+  // The app's own capture path: it draws the picture and reads it back in the
+  // same tick, which is the only way a WebGL canvas reads back reliably.
+  async shot() {
+    const blob = await window.__darkroom.capture();
+    if (!blob) throw new Error('the viewer would not give up a frame');
+    const bm = await createImageBitmap(blob);
+    const c = document.createElement('canvas');
+    c.width = bm.width;
+    c.height = bm.height;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    g.drawImage(bm, 0, 0);
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    const W = c.width, H = c.height;
+    let sum = 0, rough = 0, split = 0, n = 0;
+    for (let y = 0; y < H; y++) {
+      for (let x = 1; x < W - 1; x++) {
+        const i = (y * W + x) * 4;
+        sum += (d[i] + d[i + 1] + d[i + 2]) / 3;
+        // second difference along the row: smooth gradients read as zero,
+        // grain and other per-pixel texture do not
+        rough += Math.abs(2 * d[i + 1] - d[i - 3] - d[i + 5]);
+        split += Math.abs(d[i] - d[i + 2]);
+        n++;
+      }
+    }
+    return { w: W, h: H, mean: sum / n / 255, rough: rough / n / 255, split: split / n / 255 };
+  },
+  // the Motion Trails overlay is an ordinary 2D canvas, so it reads directly
+  overlay() {
+    const c = document.querySelector('.motion-trail-preview');
+    if (!c || !c.width) return null;
+    const g = c.getContext('2d', { willReadFrequently: true });
+    const d = g.getImageData(0, 0, c.width, c.height).data;
+    let n = 0, lit = 0;
+    for (let i = 3; i < d.length; i += 4) {
+      n++;
+      if (d[i] > 8) lit++;
+    }
+    const cx = Math.max(0, Math.floor(c.width / 2) - 8);
+    const cy = Math.max(0, Math.floor(c.height / 2) - 8);
+    const mid = g.getImageData(cx, cy, 16, 16).data;
+    let centre = 0;
+    for (let i = 3; i < mid.length; i += 4) centre = Math.max(centre, mid[i]);
+    return { w: c.width, h: c.height, lit: lit / n, centre };
+  },
 }; true`);
 
 const results = [];
@@ -267,6 +318,107 @@ await step("undo and redo step through edits", async () => {
   // leave the photo as it was
   await js(`__smoke.slider(__smoke.open('Tone'), 'Contrast', 0); __smoke.slider(__smoke.open('Tone'), 'Exposure', 1.25); true`);
   await sleep(900);
+});
+
+await step("film grain roughens the picture without moving its exposure", async () => {
+  await js(`__smoke.slider(__smoke.open('Grain'), 'Amount', 0); true`);
+  // the capture path downscales and re-encodes, which washes the finest grain
+  // out of the measurement; coarse grain comes through it and exercises the
+  // same code
+  await js(`__smoke.slider(__smoke.open('Grain'), 'Size', 100); true`);
+  await sleep(700);
+  const clean = await js(`__smoke.shot()`);
+  await js(`__smoke.slider(__smoke.open('Grain'), 'Amount', 100); true`);
+  await sleep(1000);
+  const grainy = await js(`__smoke.shot()`);
+  expect(
+    grainy.rough > clean.rough * 1.25,
+    `grain did not roughen the picture: ${clean.rough.toFixed(4)} -> ${grainy.rough.toFixed(4)}`,
+  );
+  expect(
+    Math.abs(grainy.mean - clean.mean) < 0.03,
+    `grain shifted the exposure: ${clean.mean.toFixed(3)} -> ${grainy.mean.toFixed(3)}`,
+  );
+  await js(`__smoke.slider(__smoke.open('Grain'), 'Amount', 0); true`);
+  await js(`__smoke.slider(__smoke.open('Grain'), 'Size', 40); true`);
+  await sleep(500);
+});
+
+await step("the starburst filter lights up the highlights", async () => {
+  const off = await js(`__smoke.shot()`);
+  expect(await js(`__smoke.toggle('Starburst')`), "the starburst toggle did not switch on");
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Threshold', 10); true`);
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Amount', 100); true`);
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Length', 100); true`);
+  await sleep(1400);
+  const on = await js(`__smoke.shot()`);
+  expect(on.mean > off.mean + 0.008, `the star brightened nothing: ${off.mean.toFixed(3)} -> ${on.mean.toFixed(3)}`);
+  expect(!(await js(`__smoke.toggle('Starburst')`)), "the starburst toggle did not switch off");
+  await sleep(900);
+  const back = await js(`__smoke.shot()`);
+  expect(Math.abs(back.mean - off.mean) < 0.004, `switching the star off did not restore the picture: ${off.mean.toFixed(3)} -> ${back.mean.toFixed(3)}`);
+});
+
+await step("a subtract mask takes its area back out of the mask above it", async () => {
+  const plain = await js(`__smoke.shot()`);
+  const addMask = async (kind, button) => {
+    await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes(${JSON.stringify(button)})).click(); true`);
+    await sleep(300);
+    await js(
+      `[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === ${JSON.stringify(kind)}).click(); true`,
+    );
+    await sleep(600);
+  };
+  await addMask("Radial gradient", "Add mask");
+  expect(await js(`document.querySelectorAll('.mask-row').length === 1`), "the mask was not added");
+  await js(`__smoke.slider(document.querySelector('.mask-edit'), 'Exposure', 4); true`);
+  await sleep(1200);
+  const bright = await js(`__smoke.shot()`);
+  expect(bright.mean > plain.mean + 0.01, `the mask did not brighten anything: ${plain.mean.toFixed(3)} -> ${bright.mean.toFixed(3)}`);
+
+  await addMask("Radial gradient", "Subtract");
+  expect(await js(`document.querySelectorAll('.mask-row.subtract').length === 1`), "the subtract mask was not added");
+  await sleep(1200);
+  const cut = await js(`__smoke.shot()`);
+  expect(
+    cut.mean < plain.mean + (bright.mean - plain.mean) * 0.35,
+    `the subtraction barely took anything back: plain ${plain.mean.toFixed(3)}, bright ${bright.mean.toFixed(3)}, cut ${cut.mean.toFixed(3)}`,
+  );
+
+  // leave the photo as it was
+  await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+  await sleep(700);
+  expect(await js(`document.querySelectorAll('.mask-row').length === 0`), "the masks were not deleted");
+});
+
+await step("motion trails can be cut from a mask", async () => {
+  await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes('Add mask')).click(); true`);
+  await sleep(300);
+  await js(`[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === 'Radial gradient').click(); true`);
+  await sleep(600);
+  expect(await js(`__smoke.toggle('Motion Trails')`), "the trails toggle did not switch on");
+  await sleep(500);
+  // switching trails on picks up the mask the photo already has
+  const picked = await js(`document.querySelector('#trail-source')?.value || ''`);
+  expect(picked.length > 0, "enabling trails did not pick up the mask");
+  expect(
+    await waitFor(`(() => { const o = __smoke.overlay(); return !!o && o.lit > 0.004; })()`, 12000),
+    `no trail was drawn: ${JSON.stringify(await js(`__smoke.overlay()`))}`,
+  );
+  const o = await js(`__smoke.overlay()`);
+  expect(o.centre < 24, `the trail covered the masked subject instead of streaking around it (centre alpha ${o.centre})`);
+
+  // and the whole frame still trails when asked to
+  await js(`(() => { const s = document.querySelector('#trail-source'); const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; d.call(s, ''); s.dispatchEvent(new Event('change', { bubbles: true })); })(); true`);
+  expect(
+    await waitFor(`(() => { const o = __smoke.overlay(); return !!o && o.centre > 24; })()`, 12000),
+    "the whole-frame trail stopped working",
+  );
+
+  expect(!(await js(`__smoke.toggle('Motion Trails')`)), "the trails toggle did not switch off");
+  await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+  // let the debounced sidecar write land before the filmstrip steps start
+  await sleep(1500);
 });
 
 await step("the filmstrip offers the batch actions", async () => {

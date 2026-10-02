@@ -5,6 +5,12 @@
 //! that mask's adjustment deltas, which are added to the global sliders before
 //! the per-pixel develop runs (see `pipeline::develop_buffer`).
 //!
+//! A mask in "subtract" mode carries no adjustments of its own. It cuts its
+//! area out of the mask above it in the stack, so a subject selection can be
+//! narrowed - "the person, but not their face" - without inverting anything
+//! else. Each one multiplies its head mask's weight by (1 - its own), so
+//! several subtractions compose and soft edges stay soft.
+//!
 //! Geometry is stored in normalised image coordinates (fractions of the image
 //! width/height; radii and brush sizes as fractions of the long edge) so the
 //! same sidecar drives the preview and the full-resolution export.
@@ -69,6 +75,8 @@ pub struct Mask {
     pub invert: bool,
     /// "linear" | "radial" | "brush" | "luminance" | "subject"
     pub kind: String,
+    /// "add" (its own adjustments) or "subtract" (cuts out of the mask above)
+    pub mode: String,
     /// 0..100 overall strength
     pub amount: f32,
     // linear gradient: full effect at (x0, y0), none beyond (x1, y1)
@@ -102,6 +110,7 @@ impl Default for Mask {
             enabled: true,
             invert: false,
             kind: "linear".into(),
+            mode: "add".into(),
             amount: 100.0,
             x0: 0.5,
             y0: 0.0,
@@ -124,9 +133,22 @@ impl Default for Mask {
 }
 
 impl Mask {
-    /// A mask that changes nothing can be skipped entirely.
+    /// A mask that changes nothing can be skipped entirely. A subtract mask is
+    /// judged by `cuts` instead: it has no adjustments to look at.
     pub fn is_active(&self) -> bool {
         self.enabled && self.amount > 0.0 && !self.adjust.is_zero()
+    }
+
+    /// Does this mask cut area out of the one above it rather than carry its
+    /// own adjustments? Sidecars written before subtract masks existed have no
+    /// `mode` at all, which reads as an ordinary mask.
+    pub fn subtracts(&self) -> bool {
+        self.mode == "subtract"
+    }
+
+    /// A subtract mask worth evaluating.
+    pub fn cuts(&self) -> bool {
+        self.subtracts() && self.enabled && self.amount > 0.0
     }
 }
 
@@ -246,14 +268,53 @@ pub fn brush_raster(strokes: &[Stroke], w: usize, h: usize) -> Vec<f32> {
 /// Decode a subject raster (PNG data URL or raw base64 PNG) to a grayscale 0..1 map.
 pub fn decode_raster(data_url: &str) -> Option<(Vec<f32>, usize, usize)> {
     use base64::Engine;
-    let b64 = data_url.rsplit_once(',').map(|(_, b)| b).unwrap_or(data_url);
-    let bytes = base64::engine::general_purpose::STANDARD.decode(b64.trim()).ok()?;
+    let b64 = data_url
+        .rsplit_once(',')
+        .map(|(_, b)| b)
+        .unwrap_or(data_url);
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(b64.trim())
+        .ok()?;
     let img = image::load_from_memory(&bytes).ok()?.into_luma8();
     let (w, h) = (img.width() as usize, img.height() as usize);
     if w == 0 || h == 0 {
         return None;
     }
-    Some((img.into_raw().into_iter().map(|v| v as f32 / 255.0).collect(), w, h))
+    Some((
+        img.into_raw()
+            .into_iter()
+            .map(|v| v as f32 / 255.0)
+            .collect(),
+        w,
+        h,
+    ))
+}
+
+/// Prepare one mask by id, together with its subtractions, whatever its
+/// adjustments are. A mask used only as a shape - the one Motion Trails
+/// streaks from - usually has none at all, so `is_active` would reject it.
+pub fn prepare_named<'a>(masks: &'a [Mask], id: &str, w: usize, h: usize) -> Option<Prepared<'a>> {
+    let (m, subs) = groups(masks)
+        .into_iter()
+        .find(|(m, _)| m.id == id && m.enabled && m.amount > 0.0)?;
+    let mut p = build(m, w, h);
+    p.subs = subs.into_iter().map(|s| build(s, w, h)).collect();
+    Some(p)
+}
+
+/// The weight of one named mask over a whole `w` x `h` frame, 0..1 per pixel.
+/// `luma` is the developed luminance, needed only by luminance masks; pass an
+/// empty slice when there is none.
+pub fn weight_map(masks: &[Mask], id: &str, w: usize, h: usize, luma: &[f32]) -> Option<Vec<f32>> {
+    let p = prepare_named(masks, id, w, h)?;
+    let mut out = vec![0.0f32; w * h];
+    out.par_chunks_mut(w).enumerate().for_each(|(y, row)| {
+        for (x, v) in row.iter_mut().enumerate() {
+            let l = luma.get(y * w + x).copied().unwrap_or(0.0);
+            *v = p.weight(x as f32 + 0.5, y as f32 + 0.5, l);
+        }
+    });
+    Some(out)
 }
 
 /// Bilinear sample of a raster of size (rw, rh) at normalised (u, v).
@@ -279,11 +340,13 @@ pub struct Prepared<'a> {
     raster: Option<(Vec<f32>, usize, usize)>,
     w: f32,
     h: f32,
+    /// masks that cut their area out of this one
+    subs: Vec<Prepared<'a>>,
 }
 
 impl<'a> Prepared<'a> {
     pub fn needs_luma(&self) -> bool {
-        self.mask.kind == "luminance"
+        self.mask.kind == "luminance" || self.subs.iter().any(|s| s.needs_luma())
     }
 
     /// Weight for the pixel centre (px, py); `luma` is the globally developed
@@ -301,7 +364,15 @@ impl<'a> Prepared<'a> {
             },
         };
         let v = if m.invert { 1.0 - raw } else { raw };
-        v * (m.amount / 100.0).clamp(0.0, 1.0)
+        let mut v = v * (m.amount / 100.0).clamp(0.0, 1.0);
+        // each subtract mask takes its own share of what is left
+        for s in &self.subs {
+            if v <= 0.0 {
+                break;
+            }
+            v *= 1.0 - s.weight(px, py, luma);
+        }
+        v
     }
 }
 
@@ -309,28 +380,55 @@ impl<'a> Prepared<'a> {
 /// small enough to stay cheap.
 const RASTER_MAX_EDGE: usize = 2048;
 
+fn build<'a>(m: &'a Mask, w: usize, h: usize) -> Prepared<'a> {
+    let raster = match m.kind.as_str() {
+        "brush" => {
+            let scale = (RASTER_MAX_EDGE as f32 / w.max(h) as f32).min(1.0);
+            let rw = ((w as f32 * scale).round() as usize).max(1);
+            let rh = ((h as f32 * scale).round() as usize).max(1);
+            Some((brush_raster(&m.strokes, rw, rh), rw, rh))
+        }
+        "subject" => m.raster.as_deref().and_then(decode_raster),
+        _ => None,
+    };
+    Prepared {
+        mask: m,
+        raster,
+        w: w as f32,
+        h: h as f32,
+        subs: Vec::new(),
+    }
+}
+
+/// Each ordinary mask with the subtractions that belong to it. Grouping
+/// happens before anything is rasterised, so a group whose head is dropped is
+/// dropped whole and a subtraction never slides up onto an earlier mask.
+fn groups<'a>(masks: &'a [Mask]) -> Vec<(&'a Mask, Vec<&'a Mask>)> {
+    let mut groups: Vec<(&'a Mask, Vec<&'a Mask>)> = Vec::new();
+    for m in masks {
+        if m.subtracts() {
+            // a subtraction with nothing above it has nothing to cut
+            if let Some(g) = groups.last_mut() {
+                if m.cuts() {
+                    g.1.push(m);
+                }
+            }
+        } else {
+            groups.push((m, Vec::new()));
+        }
+    }
+    groups
+}
+
 /// Prepare every active mask for an image of `w` x `h` pixels.
 pub fn prepare<'a>(masks: &'a [Mask], w: usize, h: usize) -> Vec<Prepared<'a>> {
-    masks
-        .par_iter()
-        .filter(|m| m.is_active())
-        .map(|m| {
-            let raster = match m.kind.as_str() {
-                "brush" => {
-                    let scale = (RASTER_MAX_EDGE as f32 / w.max(h) as f32).min(1.0);
-                    let rw = ((w as f32 * scale).round() as usize).max(1);
-                    let rh = ((h as f32 * scale).round() as usize).max(1);
-                    Some((brush_raster(&m.strokes, rw, rh), rw, rh))
-                }
-                "subject" => m.raster.as_deref().and_then(decode_raster),
-                _ => None,
-            };
-            Prepared {
-                mask: m,
-                raster,
-                w: w as f32,
-                h: h as f32,
-            }
+    groups(masks)
+        .into_par_iter()
+        .filter(|(m, _)| m.is_active())
+        .map(|(m, subs)| {
+            let mut p = build(m, w, h);
+            p.subs = subs.into_iter().map(|s| build(s, w, h)).collect();
+            p
         })
         .collect()
 }
