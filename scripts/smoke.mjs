@@ -391,6 +391,56 @@ await step("a subtract mask takes its area back out of the mask above it", async
   expect(await js(`document.querySelectorAll('.mask-row').length === 0`), "the masks were not deleted");
 });
 
+await step("a subtraction under a mask with no adjustments still reaches the shader", async () => {
+  // The red overlay is the only visible sign of this, and capture() strips the
+  // overlay on purpose, so the grouping is checked where it lives instead - in
+  // the app's own module, through the app's own module graph.
+  const r = await js(`import('/src/mask.ts').then(async m => {
+    const t = await import('/src/types.ts');
+    const head = Object.assign(t.newMask('radial', []), { id: 'head' });
+    const sub = Object.assign(t.newMask('brush', [], 'subtract'), { id: 'sub' });
+    const ids = (showId) => m.shaderMasks([head, sub], showId, 8).map(x => x.id).join(',');
+    return JSON.stringify({
+      nothingSelected: ids(null),
+      headSelected: ids('head'),
+      subSelected: ids('sub'),
+      headAdjusted: m.shaderMasks([Object.assign({}, head, { adjust: Object.assign({}, head.adjust, { exposure: 2 }) }), sub], null, 8).map(x => x.id).join(','),
+    });
+  })`);
+  const g = JSON.parse(r);
+  // a head that changes nothing and is not being looked at: nothing to evaluate
+  expect(g.nothingSelected === "", `expected an empty list, got "${g.nothingSelected}"`);
+  // selecting either one brings the whole group in, so the brush can be painted
+  expect(g.headSelected === "head,sub", `head selected gave "${g.headSelected}"`);
+  expect(g.subSelected === "head,sub", `subtraction selected gave "${g.subSelected}"`);
+  // and an adjustment on the head brings it in without anything being selected
+  expect(g.headAdjusted === "head,sub", `adjusted head gave "${g.headAdjusted}"`);
+});
+
+await step("motion trails keep drawing while the mask overlay is up", async () => {
+  // the trail used to vanish whenever Show mask was ticked, which is not what
+  // you want when the mask is the thing the trail is cut from
+  await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes('Add mask')).click(); true`);
+  await sleep(300);
+  await js(`[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === 'Radial gradient').click(); true`);
+  await sleep(600);
+  expect(await js(`__smoke.toggle('Motion Trails')`), "the trails toggle did not switch on");
+  expect(
+    await waitFor(`(() => { const o = __smoke.overlay(); return !!o && o.lit > 0.004; })()`, 12000),
+    "no trail was drawn to begin with",
+  );
+  await js(`(() => { const c = document.querySelector('.mask-show input'); if (!c.checked) c.click(); })(); true`);
+  await sleep(1500);
+  const o = await js(`__smoke.overlay()`);
+  expect(o && o.lit > 0.004, `the trail vanished when the mask overlay went up: ${JSON.stringify(o)}`);
+
+  await js(`(() => { const c = document.querySelector('.mask-show input'); if (c.checked) c.click(); })(); true`);
+  expect(!(await js(`__smoke.toggle('Motion Trails')`)), "the trails toggle did not switch off");
+  await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+  // let the debounced sidecar write land before the filmstrip steps start
+  await sleep(1800);
+});
+
 await step("motion trails can be cut from a mask", async () => {
   await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes('Add mask')).click(); true`);
   await sleep(300);

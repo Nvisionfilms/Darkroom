@@ -4,7 +4,41 @@
 // the same formulas as mask.rs.
 
 import { MASK_KIND_LINEAR, MASK_KIND_LUMINANCE, MASK_KIND_RADIAL, MASK_KIND_RASTER } from "./gl/shaders";
-import type { Mask, Stroke } from "./types";
+import { maskAdjustIsZero, type Mask, type Stroke } from "./types";
+
+/**
+ * The masks the develop shader should evaluate, in stack order.
+ *
+ * Masks are grouped first - each ordinary mask with the subtractions under it -
+ * and a group is kept when its head would change the picture, OR when any mask
+ * in it is the one being shown. That second case is what makes a brush
+ * subtraction paintable under a head that has no adjustments yet: selecting the
+ * subtraction to paint it used to take the whole group out of the shader, so
+ * the overlay showed nothing and the brush looked dead.
+ *
+ * Twin of mask.rs prepare, except that prepare has no "being shown" case: the
+ * red overlay is a thing you look at, not a thing that is exported.
+ */
+export function shaderMasks(masks: Mask[], showId: string | null, max: number): Mask[] {
+  const groups: { head: Mask; subs: Mask[] }[] = [];
+  for (const m of masks) {
+    if (m.mode === "subtract") {
+      if (groups.length && m.enabled && m.amount > 0) groups[groups.length - 1].subs.push(m);
+      continue;
+    }
+    groups.push({ head: m, subs: [] });
+  }
+  const out: Mask[] = [];
+  for (const { head, subs } of groups) {
+    if (!head.enabled) continue;
+    const active = head.amount > 0 && !maskAdjustIsZero(head.adjust);
+    const shown = head.id === showId || subs.some((s) => s.id === showId);
+    if (!active && !shown) continue;
+    if (out.length + 1 + subs.length > max) break;
+    out.push(head, ...subs);
+  }
+  return out;
+}
 
 export function smooth01(x: number): number {
   x = Math.max(0, Math.min(1, x));

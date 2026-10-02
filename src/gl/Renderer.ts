@@ -1,7 +1,6 @@
 import {
   cropIsIdentity,
   MASK_ADJUST_KEYS,
-  maskAdjustIsZero,
   type Crop,
   type EditParams,
   type Histogram,
@@ -9,7 +8,7 @@ import {
   type Mirror,
   type PreviewImage,
 } from "../types";
-import { maskKindCode, type Rect } from "../mask";
+import { maskKindCode, shaderMasks, type Rect } from "../mask";
 import { makeWarp, warpHasVignette, warpIsIdentity, type Warp } from "../geometry";
 import { look as profileLook } from "../profiles";
 import { columnMajor, lookInput } from "../camlog";
@@ -761,21 +760,7 @@ export class Renderer {
    * simply filtered (twin of mask.rs prepare).
    */
   private maskList(p: EditParams, showId: string | null): { list: Mask[]; show: number; useLuma: boolean } {
-    const list: Mask[] = [];
-    let headKept = false;
-    for (const m of p.masks) {
-      if (list.length >= MAX_MASKS) break;
-      if (m.mode === "subtract") {
-        if (headKept && m.enabled && m.amount > 0) list.push(m);
-        continue;
-      }
-      headKept = false;
-      if (!m.enabled) continue;
-      const active = m.amount > 0 && !maskAdjustIsZero(m.adjust);
-      if (!active && m.id !== showId) continue;
-      list.push(m);
-      headKept = true;
-    }
+    const list = shaderMasks(p.masks, showId, MAX_MASKS);
     return {
       list,
       show: showId ? list.findIndex((m) => m.id === showId) : -1,

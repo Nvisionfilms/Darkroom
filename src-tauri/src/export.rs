@@ -234,19 +234,23 @@ pub(crate) fn motion_trail_pass(
             .chunks_exact(3)
             .map(|p| p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722)
             .collect();
-        let mut w = crate::mask::weight_map(masks, &m.mask, width, height, &luma);
-        if let Some(v) = w.as_mut() {
-            // the frame edge is not where a cut-out subject ends; its own edge is
-            let sigma = m.offset.clamp(0.0, 0.25) * TRAIL_MASK_FEATHER * width.max(height) as f32;
-            crate::mask::blur_weights(v, width, height, sigma);
-        }
-        w
+        crate::mask::weight_map(masks, &m.mask, width, height, &luma)
     };
     // a trail asked to come from a mask that is gone or switched off has no
     // source, so it draws nothing rather than falling back to the whole frame
     if !m.mask.is_empty() && weights.is_none() {
         return img.to_vec();
     }
+    // Two maps. The feathered one decides what the trail is cut FROM, so the
+    // echoes fade off the subject instead of ending on a cut line. The plain one
+    // decides what the subject KEEPS, because feathering that would rub out the
+    // brightest part of the trail, the part closest to the subject.
+    let source_weights = weights.as_ref().map(|v| {
+        let mut w = v.clone();
+        let sigma = m.offset.clamp(0.0, 0.25) * TRAIL_MASK_FEATHER * width.max(height) as f32;
+        crate::mask::blur_weights(&mut w, width, height, sigma);
+        w
+    });
 
     let copies = ((m.cx * 10.0).round() as i32).clamp(1, MAX_TRAIL_COPIES as i32) as usize;
     let amount = m.ry.clamp(0.0, 1.0);
@@ -286,7 +290,7 @@ pub(crate) fn motion_trail_pass(
                     let sy = y as f32 - dy * distance * t;
                     let edge_alpha = source_edge_alpha(sx, sy, width, height, edge_feather);
                     // only the masked subject casts a trail
-                    let from_mask = match &weights {
+                    let from_mask = match &source_weights {
                         Some(v) => sample_weight(v, width, height, sx, sy),
                         None => 1.0,
                     };

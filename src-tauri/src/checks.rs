@@ -856,3 +856,54 @@ fn a_masked_motion_trail_only_streaks_the_masked_subject() {
         );
     }
 }
+
+/// Subject Feather softens the edge the trail is cut from. It must not also
+/// soften what the subject keeps: doing that rubbed out the brightest part of
+/// the trail, the part right beside the subject, and the effect looked weak.
+#[test]
+fn feathering_a_masked_trail_does_not_weaken_it() {
+    let mut img = vec![0.0f32; W * H * 3];
+    for y in 24..40 {
+        for x in 10..20 {
+            for c in 0..3 {
+                img[(y * W + x) * 3 + c] = 1.0;
+            }
+        }
+    }
+    let masks = vec![Mask {
+        id: "s".into(),
+        kind: "radial".into(),
+        cx: 15.0 / W as f32,
+        cy: 0.5,
+        rx: 7.0 / W as f32,
+        ry: 9.0 / W as f32,
+        feather: 1.0,
+        ..Default::default()
+    }];
+    let trail = |offset: f32| crate::pipeline::Mirror {
+        enabled: true,
+        cx: 0.3,
+        rx: 0.0,
+        ry: 1.0,
+        feather: 100.0,
+        offset,
+        length: 0.2,
+        direction: 0.0,
+        opacity: 100.0,
+        mask: "s".into(),
+        ..Default::default()
+    };
+
+    let hard = crate::export::motion_trail_pass(&img, W, H, &trail(0.0), &masks);
+    let soft = crate::export::motion_trail_pass(&img, W, H, &trail(0.25), &masks);
+    let at = |v: &[f32], x: usize, y: usize| v[(y * W + x) * 3];
+
+    // just past the subject, where the trail is brightest
+    let (a, b) = (at(&hard, 24, 32), at(&soft, 24, 32));
+    assert!(a > 0.05, "the unfeathered trail is missing: {a}");
+    assert!(b > a * 0.5, "feathering gutted the trail: {a} -> {b}");
+    // and the subject itself is still untouched either way
+    for x in 10..20 {
+        assert!((at(&soft, x, 32) - at(&img, x, 32)).abs() < 1e-6, "the subject was lightened at x={x}");
+    }
+}

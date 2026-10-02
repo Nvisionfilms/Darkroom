@@ -112,16 +112,15 @@ export function Viewer(props: Props) {
   useEffect(() => {
     const wrap = wrapRef.current;
     const overlay = overlayRef.current;
-    // While the red mask overlay is up, the viewer canvas has the overlay
-    // painted into it - echoing that would smear red across the photo. The
-    // trail steps aside until the mask is hidden again, and the cached source
-    // frame is thrown away so a red one can never be reused.
-    const inspectingMask = !!props.showMask && !!props.selectedMaskId;
-    if (!wrap || !overlay || !trail.enabled || trail.opacity <= 0 || inspectingMask) {
-      if (inspectingMask) sourceCacheValidRef.current = false;
+    if (!wrap || !overlay || !trail.enabled || trail.opacity <= 0) {
       if (overlay) overlay.getContext("2d")?.clearRect(0, 0, overlay.width, overlay.height);
       return;
     }
+    // While the red mask overlay is up, the viewer canvas has the overlay
+    // painted into it, and echoing that smears red across the photo. The trail
+    // keeps drawing from the last frame captured without it rather than
+    // vanishing - you are usually looking at the mask *because* of the trail.
+    const inspectingMask = !!props.showMask && !!props.selectedMaskId;
 
     let raf = 0;
     let lastFrame = 0;
@@ -163,11 +162,10 @@ export function Viewer(props: Props) {
       const cacheCtx = cache.getContext("2d", { willReadFrequently: true });
       if (!cacheCtx) return;
 
-      const probe = document.createElement("canvas");
-      probe.width = source.width;
-      probe.height = source.height;
-      const probeCtx = probe.getContext("2d", { willReadFrequently: true });
-      if (probeCtx) {
+      // ...which is why the source is not refreshed while the overlay is up
+      const probe = inspectingMask ? null : document.createElement("canvas");
+      const probeCtx = probe ? ((probe.width = source.width), (probe.height = source.height), probe.getContext("2d", { willReadFrequently: true })) : null;
+      if (probe && probeCtx) {
         probeCtx.drawImage(source, 0, 0);
         const points = [
           [0.5, 0.5],
@@ -358,11 +356,13 @@ export function Viewer(props: Props) {
       if (maskCanvas) {
         // the subject keeps its own pixels, which is what keeps it sharp: the
         // trail only shows around it (twin of motion_trail_pass in export.rs)
+        // the subject keeps its own pixels, cut with the mask as it is: using
+        // the feathered one here would rub out the brightest part of the trail,
+        // the part closest to the subject
         ctx.globalCompositeOperation = "destination-out";
         ctx.globalAlpha = 1;
-        ctx.filter = maskBlur;
-        ctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
         ctx.filter = "none";
+        ctx.drawImage(maskCanvas, bounds.x, bounds.y, bounds.w, bounds.h);
         ctx.globalCompositeOperation = "source-over";
       }
     };
