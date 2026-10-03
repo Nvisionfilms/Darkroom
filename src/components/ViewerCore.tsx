@@ -13,7 +13,7 @@ import {
   type StrokeCursor,
 } from "../mask";
 import { canvasToSource, makeWarp, sourceToCanvas, warpIsIdentity } from "../geometry";
-import { healKey, healOffset } from "../heal";
+import { healKey, healPlane } from "../heal";
 import {
   cropIsIdentity,
   type Crop,
@@ -462,7 +462,7 @@ export function Viewer({
   useEffect(() => {
     const r = rendererRef.current;
     if (!r || !image) return;
-    const offsets = params.heal.map((s) => healOffset(image, s));
+    const offsets = params.heal.map((s) => healPlane(image, s));
     r.setHeal(params.heal, offsets, spotsKey);
     developDirty.current = true;
     requestRender();

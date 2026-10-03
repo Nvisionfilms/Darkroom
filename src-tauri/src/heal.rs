@@ -104,6 +104,98 @@ pub fn heal_offset(img: &[f32], w: usize, h: usize, dx: f32, dy: f32, sx: f32, s
     [md[0] - ms[0], md[1] - ms[1], md[2] - ms[2]]
 }
 
+/// A correction that is a plane rather than a single level: it can follow a
+/// gradient, which is what a retouch almost always lands in.
+///
+/// Fitted by least squares to the ring just outside the patch, so the copied
+/// pixels meet the picture at the rim on every side rather than only on
+/// average. Returned as [c0, cu, cv] per channel over u, v - the offset from
+/// the centre in units of the radius. Twin of healPlane in src/heal.ts.
+pub fn heal_plane(img: &[f32], w: usize, h: usize, dx: f32, dy: f32, sx: f32, sy: f32, r: f32) -> [[f32; 3]; 3] {
+    const RING: usize = 96;
+    // normal equations for [1, u, v]
+    let mut ata = [[0.0f64; 3]; 3];
+    let mut atb = [[0.0f64; 3]; 3];
+    for i in 0..RING {
+        let a = i as f32 * std::f32::consts::TAU / RING as f32;
+        // a band just outside the disc, so it reads the picture rather than the patch
+        for k in [1.0f32, 1.04, 1.08] {
+            let px = dx + r * k * a.cos();
+            let py = dy + r * k * a.sin();
+            let dst = bilinear(img, w, h, px, py);
+            let src = bilinear(img, w, h, sx + (px - dx), sy + (py - dy));
+            let u = (px - dx) / r;
+            let v = (py - dy) / r;
+            let basis = [1.0f64, u as f64, v as f64];
+            for bi in 0..3 {
+                for bj in 0..3 {
+                    ata[bi][bj] += basis[bi] * basis[bj];
+                }
+                for c in 0..3 {
+                    atb[bi][c] += basis[bi] * (dst[c] - src[c]) as f64;
+                }
+            }
+        }
+    }
+    let mut out = [[0.0f32; 3]; 3];
+    for c in 0..3 {
+        let b = [atb[0][c], atb[1][c], atb[2][c]];
+        let x = solve3(&ata, &b);
+        for k in 0..3 {
+            out[k][c] = x[k] as f32;
+        }
+    }
+    out
+}
+
+/// Gauss-Jordan on a 3x3. The ring always spans the plane, so it is never
+/// singular; a degenerate fit falls back to the flat answer.
+fn solve3(a: &[[f64; 3]; 3], b: &[f64; 3]) -> [f64; 3] {
+    let mut m = [[0.0f64; 4]; 3];
+    for i in 0..3 {
+        m[i][..3].copy_from_slice(&a[i]);
+        m[i][3] = b[i];
+    }
+    for col in 0..3 {
+        let mut piv = col;
+        for r2 in col + 1..3 {
+            if m[r2][col].abs() > m[piv][col].abs() {
+                piv = r2;
+            }
+        }
+        if m[piv][col].abs() < 1e-9 {
+            return [b[0] / a[0][0].max(1e-9), 0.0, 0.0];
+        }
+        m.swap(col, piv);
+        let d = m[col][col];
+        for k in col..4 {
+            m[col][k] /= d;
+        }
+        for r2 in 0..3 {
+            if r2 == col {
+                continue;
+            }
+            let f = m[r2][col];
+            for k in col..4 {
+                m[r2][k] -= f * m[col][k];
+            }
+        }
+    }
+    [m[0][3], m[1][3], m[2][3]]
+}
+
+/// The plane's value at a point, in image pixels. Twin of the shader.
+#[inline]
+pub fn plane_at(p: &[[f32; 3]; 3], dx: f32, dy: f32, r: f32, px: f32, py: f32) -> [f32; 3] {
+    let u = (px - dx) / r;
+    let v = (py - dy) / r;
+    [
+        p[0][0] + p[1][0] * u + p[2][0] * v,
+        p[0][1] + p[1][1] * u + p[2][1] * v,
+        p[0][2] + p[1][2] * u + p[2][2] * v,
+    ]
+}
+
 #[inline]
 fn bilinear(img: &[f32], w: usize, h: usize, x: f32, y: f32) -> [f32; 3] {
     let fx = (x - 0.5).clamp(0.0, w as f32 - 1.0);
@@ -140,11 +232,12 @@ pub fn heal_image(img: &mut Vec<f32>, w: usize, h: usize, spots: &[HealSpot]) {
         let oy = s.sy * h as f32;
         let hard = 1.0 - (s.feather / 100.0).clamp(0.0, 1.0);
         let opacity = (s.opacity / 100.0).clamp(0.0, 1.0);
-        // heal: smooth offset so the patch matches its new surroundings
-        let offset = if s.kind == "clone" {
-            [0.0f32; 3]
+        // heal: a correction field so the patch meets the picture without a
+        // seam, rather than one offset that only matches the average
+        let plane = if s.kind == "clone" {
+            None
         } else {
-            heal_offset(&src, w, h, dx, dy, ox, oy, r)
+            Some(heal_plane(&src, w, h, dx, dy, ox, oy, r))
         };
         let x_lo = ((dx - r).floor().max(0.0)) as usize;
         let x_hi = ((dx + r).ceil().min(w as f32 - 1.0)) as usize;
@@ -170,9 +263,13 @@ pub fn heal_image(img: &mut Vec<f32>, w: usize, h: usize, spots: &[HealSpot]) {
                     if a <= 0.0 {
                         continue;
                     }
-                    let s = bilinear(&src, w, h, ox + (px - dx), oy + (py - dy));
+                    let sp = bilinear(&src, w, h, ox + (px - dx), oy + (py - dy));
+                    let fix = match &plane {
+                        Some(p) => plane_at(p, dx, dy, r, px, py),
+                        None => [0.0; 3],
+                    };
                     for c in 0..3 {
-                        let v = (s[c] + offset[c]).max(0.0);
+                        let v = (sp[c] + fix[c]).max(0.0);
                         row[x * 3 + c] += (v - row[x * 3 + c]) * a;
                     }
                 }
@@ -254,4 +351,102 @@ pub fn find_source(
         }
     }
     best
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: usize = 160;
+    const H: usize = 160;
+
+    /// A background with a strong diagonal gradient - skin shading, sky, grass
+    /// falling off - which is what a retouch actually lands in. A constant
+    /// offset cannot match a gradient.
+    fn background() -> Vec<f32> {
+        let mut v = vec![0.0f32; W * H * 3];
+        for y in 0..H {
+            for x in 0..W {
+                let g = 0.10 + 0.50 * (x as f32 / W as f32) + 0.25 * (y as f32 / H as f32);
+                for c in 0..3 {
+                    v[(y * W + x) * 3 + c] = g;
+                }
+            }
+        }
+        v
+    }
+
+    /// The same, with something to remove. It sits inside the solid core of the
+    /// patch: with feather at 50 the outer half of the radius is only partly
+    /// applied, so a blemish wider than that is not fully covered whatever the
+    /// blending does.
+    fn blemished() -> Vec<f32> {
+        let mut v = background();
+        for y in 54..82 {
+            for x in 54..82 {
+                let d = (((x as f32 - 68.0).powi(2) + (y as f32 - 68.0).powi(2)).sqrt()) / 7.0;
+                if d < 1.0 {
+                    for c in 0..3 {
+                        v[(y * W + x) * 3 + c] *= 0.35;
+                    }
+                }
+            }
+        }
+        v
+    }
+
+    fn spot() -> HealSpot {
+        HealSpot {
+            id: "s".into(),
+            kind: "heal".into(),
+            enabled: true,
+            x: 68.0 / W as f32,
+            y: 68.0 / H as f32,
+            // taken from further along the gradient, as the finder would
+            sx: 112.0 / W as f32,
+            sy: 36.0 / H as f32,
+            radius: 16.0 / W as f32,
+            feather: 50.0,
+            opacity: 100.0,
+        }
+    }
+
+    /// How far the repair is from what was behind the blemish, over the patch.
+    fn error_against_truth(out: &[f32], truth: &[f32], s: &HealSpot) -> (f32, f32) {
+        let r = s.radius * W.max(H) as f32;
+        let (cx, cy) = (s.x * W as f32, s.y * H as f32);
+        let (mut worst, mut sum, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 0..H {
+            for x in 0..W {
+                let d = ((x as f32 + 0.5 - cx).powi(2) + (y as f32 + 0.5 - cy).powi(2)).sqrt();
+                if d > r * 1.1 {
+                    continue;
+                }
+                let i = (y * W + x) * 3 + 1;
+                let e = (out[i] - truth[i]).abs();
+                worst = worst.max(e);
+                sum += e;
+                n += 1.0;
+            }
+        }
+        (worst, sum / n.max(1.0))
+    }
+
+    #[test]
+    fn a_heal_matches_what_was_behind_the_blemish() {
+        let truth = background();
+        let img = blemished();
+        let s = spot();
+        let mut out = img.clone();
+        heal_image(&mut out, W, H, &[s.clone()]);
+        let (worst, mean) = error_against_truth(&out, &truth, &s);
+        let (bad_worst, bad_mean) = error_against_truth(&img, &truth, &s);
+        println!(
+            "
+against the real background: blemish was off by {bad_worst:.4} (mean {bad_mean:.4}), the repair is off by {worst:.4} (mean {mean:.4})"
+        );
+        assert!(worst < bad_worst * 0.12, "the repair is barely better than the blemish");
+        // a patch whose brightness is right everywhere, not just on average
+        assert!(worst < 0.012, "the repair is off by {worst:.4} at its worst - that shows as a seam");
+    }
 }

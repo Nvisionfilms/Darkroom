@@ -40,7 +40,8 @@ uniform vec2 uSize;
 uniform int uNumSpots;
 uniform vec4 uSpotPos[${MAX_HEAL}];   // dest x, dest y, source x, source y (px)
 uniform vec4 uSpotShape[${MAX_HEAL}]; // radius px, hardness, opacity, unused
-uniform vec3 uSpotOffset[${MAX_HEAL}];
+// three vec3 per spot: [c0, cu, cv] per channel, a plane over the patch
+uniform vec3 uSpotPlane[${MAX_HEAL * 3}];
 float smooth01(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
 void main() {
   vec2 p = vUv * uSize;
@@ -54,7 +55,11 @@ void main() {
     float soft = max(1.0 - sh.y, 0.01);
     float a = sh.z * (1.0 - smooth01((d - sh.y) / soft));
     if (a <= 0.0) continue;
-    vec3 s = max(texture(uSrc, (pos.zw + (p - pos.xy)) / uSize).rgb + uSpotOffset[i], 0.0);
+    // twin of plane_at in heal.rs: the correction follows the gradient the
+    // patch is landing in, instead of matching only its average
+    vec2 uv2 = (p - pos.xy) / max(sh.x, 1e-4);
+    vec3 fix = uSpotPlane[i * 3] + uSpotPlane[i * 3 + 1] * uv2.x + uSpotPlane[i * 3 + 2] * uv2.y;
+    vec3 s = max(texture(uSrc, (pos.zw + (p - pos.xy)) / uSize).rgb + fix, 0.0);
     c = mix(c, s, a);
   }
   outColor = vec4(c, 1.0);

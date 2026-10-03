@@ -425,7 +425,8 @@ export class Renderer {
 
   private healPos = new Float32Array(MAX_HEAL * 4);
   private healShape = new Float32Array(MAX_HEAL * 4);
-  private healOffset = new Float32Array(MAX_HEAL * 3);
+  // nine per spot: [c0, cu, cv] for each channel, a plane over the patch
+  private healOffset = new Float32Array(MAX_HEAL * 9);
   private healCount = 0;
   private healKey = "";
 
@@ -436,7 +437,8 @@ export class Renderer {
    */
   setHeal(
     spots: { x: number; y: number; sx: number; sy: number; radius: number; feather: number; opacity: number; enabled: boolean; kind: string }[],
-    offsets: [number, number, number][],
+    /** nine per spot: [c0, cu, cv] per channel */
+    offsets: number[][],
     key: string,
   ): void {
     const long = Math.max(this.imgW, this.imgH);
@@ -454,9 +456,7 @@ export class Renderer {
       this.healShape[o + 2] = Math.max(0, Math.min(1, s.opacity / 100));
       this.healShape[o + 3] = 0;
       const off = offsets[i] ?? [0, 0, 0];
-      this.healOffset[n * 3] = off[0];
-      this.healOffset[n * 3 + 1] = off[1];
-      this.healOffset[n * 3 + 2] = off[2];
+      for (let k = 0; k < 9; k++) this.healOffset[n * 9 + k] = off[k] ?? 0;
       n++;
     }
     this.healCount = n;
@@ -491,7 +491,7 @@ export class Renderer {
         gl.uniform1i(this.loc(hp, "uNumSpots"), this.healCount);
         gl.uniform4fv(this.loc(hp, "uSpotPos[0]"), this.healPos);
         gl.uniform4fv(this.loc(hp, "uSpotShape[0]"), this.healShape);
-        gl.uniform3fv(this.loc(hp, "uSpotOffset[0]"), this.healOffset);
+        gl.uniform3fv(this.loc(hp, "uSpotPlane[0]"), this.healOffset);
       });
       source = T.H.tex;
     }

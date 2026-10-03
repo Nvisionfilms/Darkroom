@@ -36,6 +36,22 @@ const groups = [
     ],
   },
   {
+    what: "retouch blending",
+    rust: read("src-tauri/src/heal.rs"),
+    glsl: read("src/heal.ts"),
+    pairs: [
+      ["const RING: usize = 96", "const RING = 96"],
+      ["[1.0f32, 1.04, 1.08]", "[1.0, 1.04, 1.08]"],
+      ["(px - dx) / r", "(px - dx) / r"],
+    ],
+  },
+  {
+    what: "retouch blending in the shader",
+    rust: read("src-tauri/src/heal.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [["p[0][0] + p[1][0] * u + p[2][0] * v", "uSpotPlane[i * 3] + uSpotPlane[i * 3 + 1] * uv2.x + uSpotPlane[i * 3 + 2] * uv2.y"]],
+  },
+  {
     what: "noise reduction",
     rust: read("src-tauri/src/denoise.rs"),
     glsl: read("src/gl/Renderer.ts"),

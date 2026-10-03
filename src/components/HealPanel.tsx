@@ -71,7 +71,12 @@ export function HealPanel({
         onChange={(v) => onRadius(v / 100)}
       />
 
-      {active && <div className="hint">Click what you want gone. Drag the dashed circle to pick a different patch.</div>}
+      {active && (
+        <div className="hint">
+          Click what you want gone. Drag the dashed circle to pick a different patch. Make the spot wider than the mark
+          you are covering: Feather fades the outer part of the circle, so only the middle replaces the picture outright.
+        </div>
+      )}
 
       {spots.length > 0 && (
         <ul className="mask-list">
