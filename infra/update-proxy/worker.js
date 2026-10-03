@@ -11,6 +11,26 @@ function githubHeaders(env, accept = "application/vnd.github+json") {
   };
 }
 
+/**
+ * Recent releases, newest first, drafts left out.
+ *
+ * Asset lookups walk these rather than looking only at the newest release. A
+ * release that does not carry a particular file - an APK, say, when the Android
+ * job was skipped - then falls through to the one that does, instead of the
+ * file simply vanishing the moment anything newer is published.
+ */
+async function recentReleases(env, count = 10) {
+  const response = await fetch(`${API}/releases?per_page=${count}`, {
+    headers: githubHeaders(env),
+    cf: { cacheTtl: 30, cacheEverything: true },
+  });
+  if (!response.ok) {
+    throw new Error(`GitHub release list failed (${response.status})`);
+  }
+  const list = await response.json();
+  return Array.isArray(list) ? list.filter((r) => !r.draft) : [];
+}
+
 async function latestRelease(env) {
   const response = await fetch(`${API}/releases/latest`, {
     headers: githubHeaders(env),
@@ -70,9 +90,45 @@ async function serveLatestJson(request, env) {
   });
 }
 
+/**
+ * What a phone should install, worked out here rather than uploaded by hand.
+ *
+ * This used to be a file attached to a release, and it went stale the moment
+ * anything newer was published without one: the proxy serves the newest
+ * release, so the manifest 404'd and the phone reported "status code 404" on
+ * every check. Nothing to forget to upload now - the newest release that
+ * carries an APK is the answer.
+ */
+async function serveAndroidJson(request, env) {
+  for (const release of await recentReleases(env)) {
+    const apk = release.assets?.find((item) => item.name.toLowerCase().endsWith(".apk"));
+    if (!apk) continue;
+    const version = String(release.tag_name || "").replace(/^v/, "");
+    if (!version) continue;
+    return Response.json(
+      {
+        version,
+        notes: release.name || `Darkroom ${version}`,
+        pub_date: release.published_at || release.created_at || new Date().toISOString(),
+        url: publicAssetUrl(request, apk.name),
+      },
+      {
+        headers: {
+          "Cache-Control": "public, max-age=30, s-maxage=30",
+          "X-Content-Type-Options": "nosniff",
+        },
+      },
+    );
+  }
+  return new Response("No Android build has been published yet", { status: 404 });
+}
+
 async function serveAsset(request, env, name) {
-  const release = await latestRelease(env);
-  const asset = release.assets?.find((item) => item.name === name);
+  let asset = null;
+  for (const release of await recentReleases(env)) {
+    asset = release.assets?.find((item) => item.name === name);
+    if (asset) break;
+  }
   if (!asset) return new Response("Update asset not found", { status: 404 });
 
   const response = await fetchPrivateAsset(asset, env);
@@ -101,10 +157,16 @@ export default {
         return await serveLatestJson(request, env);
       }
 
+      if (url.pathname === "/darkroom/android.json") {
+        return await serveAndroidJson(request, env);
+      }
+
       const prefix = "/darkroom/assets/";
       if (url.pathname.startsWith(prefix)) {
         const name = decodeURIComponent(url.pathname.slice(prefix.length));
         if (!name || name.includes("/") || name.includes("\\")) return new Response("Not found", { status: 404 });
+        // every phone already out there asks for it under the assets path
+        if (name === "android.json") return await serveAndroidJson(request, env);
         return await serveAsset(request, env, name);
       }
 
