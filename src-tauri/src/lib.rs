@@ -690,6 +690,38 @@ fn platform() -> PlatformInfo {
     }
 }
 
+/// Where a phone looks for its own release.
+const MOBILE_MANIFEST: &str = "https://updates.nvisionfilms.com/darkroom/assets/android.json";
+
+/// The release a phone could install, or None where the app updates itself.
+///
+/// This is read here rather than in the page because the webview is served from
+/// tauri.localhost: a fetch to the update domain is cross-origin, and without
+/// CORS headers the browser refuses it before it reaches the network. Asking
+/// from Rust has no such rule, and keeps the release assets from being readable
+/// by any web page that cares to ask.
+#[tauri::command]
+async fn mobile_update() -> Result<Option<serde_json::Value>, String> {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        tauri::async_runtime::spawn_blocking(|| -> anyhow::Result<Option<serde_json::Value>> {
+            let body = ureq::get(MOBILE_MANIFEST)
+                .timeout(std::time::Duration::from_secs(15))
+                .call()?
+                .into_string()?;
+            Ok(Some(serde_json::from_str(&body)?))
+        })
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(err)
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        let _ = MOBILE_MANIFEST;
+        Ok(None)
+    }
+}
+
 #[tauri::command]
 fn supported_extensions() -> Vec<String> {
     decode::RAW_EXTENSIONS
@@ -720,6 +752,7 @@ pub fn run() {
             save_edits,
             export_image,
             export_cube,
+            mobile_update,
             export_path,
             read_edits,
             marked_photos,

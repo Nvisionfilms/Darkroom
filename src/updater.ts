@@ -2,14 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
-
-/**
- * Where Android looks for its own release. The Tauri updater cannot install an
- * APK - only Android's own package installer may - so the phone checks this
- * small manifest instead and hands the download to the browser, which puts the
- * installer in front of you the way any sideloaded app does.
- */
-const ANDROID_MANIFEST = "https://updates.nvisionfilms.com/darkroom/assets/android.json";
+import { mobileUpdate } from "./api";
 
 interface AndroidRelease {
   version: string;
@@ -33,10 +26,21 @@ export function isNewer(a: string, b: string): boolean {
   return false;
 }
 
+/**
+ * The release a phone could install.
+ *
+ * The Tauri updater cannot install an APK - only Android's own package
+ * installer may - so the phone reads a small manifest instead and hands the
+ * download to the browser, which puts the installer in front of you the way any
+ * sideloaded app does.
+ *
+ * The manifest is read by Rust rather than fetched from here. The webview is
+ * served from tauri.localhost, so a fetch to the update domain is cross-origin,
+ * and the browser refuses it before it reaches the network - which is exactly
+ * what "Update check failed: TypeError: Failed to fetch" was.
+ */
 async function androidRelease(): Promise<AndroidRelease | null> {
-  const res = await fetch(ANDROID_MANIFEST, { cache: "no-store" });
-  if (!res.ok) throw new Error(`update manifest: ${res.status}`);
-  const j = (await res.json()) as Partial<AndroidRelease>;
+  const j = (await mobileUpdate()) as Partial<AndroidRelease> | null;
   if (!j || typeof j.version !== "string" || typeof j.url !== "string") return null;
   return { version: j.version, url: j.url, notes: typeof j.notes === "string" ? j.notes : undefined };
 }

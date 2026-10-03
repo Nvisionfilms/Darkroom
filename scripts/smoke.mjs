@@ -712,6 +712,15 @@ await step("the Android update check only offers a genuinely newer version", asy
   expect(v.newer && v.minor && v.major && v.tagged && v.short, `a newer version was not offered: ${r}`);
   expect(!v.same && !v.older, `an equal or older version was offered: ${r}`);
   expect(!v.junk && !v.junkBoth, `a malformed manifest was offered as an update: ${r}`);
+
+  // The check itself has to go through Rust. Fetching the manifest from the page
+  // is cross-origin on a phone - the webview is served from tauri.localhost -
+  // and the browser refuses it, which is what "Failed to fetch" was. On the
+  // desktop the command answers null, because the app updates itself there.
+  const viaRust = await js(`import('/src/api.ts').then(m => m.mobileUpdate()).then(v => JSON.stringify({ ok: true, v }), e => JSON.stringify({ ok: false, e: String(e) }))`);
+  const m = JSON.parse(viaRust);
+  expect(m.ok, `the mobile update command is not reachable: ${m.e}`);
+  expect(m.v === null, `on the desktop the command should answer null, got ${JSON.stringify(m.v)}`);
 });
 
 await step("the look exports as a .cube LUT and says what it left behind", async () => {

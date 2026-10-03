@@ -108,6 +108,14 @@ export async function exportPath(path: string, req: ExportRequest): Promise<stri
   return invoke<string>("export_path", { path, req });
 }
 
+/**
+ * The release a phone could install, or null where the app updates itself.
+ * Read by Rust: a fetch from the page would be cross-origin and refused.
+ */
+export async function mobileUpdate(): Promise<unknown | null> {
+  return invoke<unknown | null>("mobile_update");
+}
+
 /** The edits saved beside a photo, without decoding the photo. */
 export async function readEdits(path: string): Promise<EditParams | null> {
   return invoke<EditParams | null>("read_edits", { path });
