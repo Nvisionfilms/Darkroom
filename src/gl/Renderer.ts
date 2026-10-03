@@ -149,9 +149,10 @@ export function mirrorGeom(m: Mirror, width: number, height: number): MirrorGeom
   };
 }
 
-/** Same as denoise.rs h_luma / h_chroma / HALF_RES_SIGMA. */
-const hLuma = (sigma: number, a: number) => sigma * (0.4 + 2.1 * a);
-const hChroma = (sigma: number, a: number) => sigma * (0.4 + 2.6 * a);
+/** Same as denoise.rs h_luma / h_chroma / RESPONSE / HALF_RES_SIGMA. */
+const RESPONSE = 2.0;
+const hLuma = (sigma: number, a: number) => sigma * (0.4 + 4.0 * a ** RESPONSE);
+const hChroma = (sigma: number, a: number) => sigma * (0.4 + 5.2 * a ** RESPONSE);
 const HALF_RES_SIGMA = 0.7;
 
 function compile(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {

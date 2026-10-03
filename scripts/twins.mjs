@@ -36,6 +36,26 @@ const groups = [
     ],
   },
   {
+    what: "noise reduction",
+    rust: read("src-tauri/src/denoise.rs"),
+    glsl: read("src/gl/Renderer.ts"),
+    pairs: [
+      ["RESPONSE: f32 = 2.0", "RESPONSE = 2.0"],
+      ["0.4 + 4.0 * amount.powf(RESPONSE)", "0.4 + 4.0 * a ** RESPONSE"],
+      ["0.4 + 5.2 * amount.powf(RESPONSE)", "0.4 + 5.2 * a ** RESPONSE"],
+    ],
+  },
+  {
+    what: "noise reduction detail threshold",
+    rust: read("src-tauri/src/denoise.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [
+      ["DETAIL_FLOOR: f32 = 1.0", "- 1.0) / (2.5 - 1.0)"],
+      ["DETAIL_EDGE: f32 = 2.5", "(2.5 - 1.0)"],
+      ["t * t * (3.0 - 2.0 * t)", "tt * tt * (3.0 - 2.0 * tt)"],
+    ],
+  },
+  {
     what: "cross-screen filter",
     rust: read("src-tauri/src/star.rs"),
     glsl: read("src/gl/shaders.ts"),

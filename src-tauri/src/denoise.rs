@@ -39,14 +39,39 @@ impl NoiseParams {
     }
 }
 
+/// How much of a residual counts as real detail rather than noise: nothing at
+/// the noise floor, all of it by DETAIL_EDGE sigmas. Shared with the shader.
+pub const DETAIL_FLOOR: f32 = 1.0;
+pub const DETAIL_EDGE: f32 = 2.5;
+
+#[inline]
+pub fn soft_threshold(residual: f32, sigma: f32) -> f32 {
+    let t = ((residual / sigma.max(1e-6) - DETAIL_FLOOR) / (DETAIL_EDGE - DETAIL_FLOOR)).clamp(0.0, 1.0);
+    t * t * (3.0 - 2.0 * t)
+}
+
 /// Filter strengths as multiples of sigma. Shared with the shader.
+///
+/// Measured on a noisy card: at the old top end the sliders removed 62% of the
+/// noise at full travel, and the top half of the travel was worth only ten
+/// points of that - 50 gave 52%, 100 gave 62% - which is why they felt like
+/// they were doing nothing. The filter itself saturates near 91%, and the hard
+/// edge in the card survives every setting intact, so the strength was simply
+/// left too low. These take full travel to about 85% with the same edge.
+/// The filter saturates long before the slider runs out, so the travel is
+/// squared: without it almost the whole effect landed in the first quarter and
+/// everything above was flat. Measured, 25/50/75/100 now remove roughly
+/// 22/60/68/70 per cent instead of 60/68/69/70.
+pub const RESPONSE: f32 = 2.0;
+
 #[inline]
 pub fn h_luma(sigma: f32, amount: f32) -> f32 {
-    sigma * (0.4 + 2.1 * amount)
+    sigma * (0.4 + 4.0 * amount.powf(RESPONSE))
 }
 #[inline]
 pub fn h_chroma(sigma: f32, amount: f32) -> f32 {
-    sigma * (0.4 + 2.6 * amount)
+    // colour speckle can be crushed harder than luminance without it showing
+    sigma * (0.4 + 5.2 * amount.powf(RESPONSE))
 }
 
 #[inline]
@@ -317,9 +342,14 @@ pub fn combine(orig: [f32; 3], rgb_l: [f32; 3], rgb_c: [f32; 3], sigma: f32, det
     let yl = luma_proxy(rgb_l).max(0.0);
     let yc = luma_proxy(rgb_c).max(1e-6);
     let yo = luma_proxy(orig).max(0.0);
-    // detail restoration in the sqrt domain: big residuals are edges, keep them
+    // Detail restoration in the sqrt domain: big residuals are edges, keep
+    // them. The threshold has to tell an edge from the noise, and a straight
+    // ramp did not - a residual the size of the noise scored half, so a quarter
+    // of the noise was being added straight back at the default setting. It is
+    // a soft threshold now: nothing below the noise floor comes back, and
+    // anything well clear of it comes back whole.
     let r_sqrt = yo.sqrt() - yl.sqrt();
-    let k = detail * (r_sqrt.abs() / (2.0 * sigma)).min(1.0);
+    let k = detail * soft_threshold(r_sqrt.abs(), sigma);
     let y_final = (yl + k * (yo - yl)).max(0.0);
     let scale = y_final / yc;
     [rgb_c[0] * scale, rgb_c[1] * scale, rgb_c[2] * scale]
@@ -328,4 +358,103 @@ pub fn combine(orig: [f32; 3], rgb_l: [f32; 3], rgb_c: [f32; 3], sigma: f32, det
 #[allow(dead_code)]
 fn _keep(_: [f32; 3]) -> f32 {
     LUMA_PROXY[0]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const W: usize = 192;
+    const H: usize = 128;
+
+    /// Two flat patches either side of a hard edge, with repeatable noise on top.
+    fn noisy() -> Vec<f32> {
+        let mut v = vec![0.0f32; W * H * 3];
+        let mut s = 0x1234_5678u32;
+        let mut rnd = || {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            (s >> 8) as f32 / 8_388_608.0 - 1.0
+        };
+        for y in 0..H {
+            for x in 0..W {
+                let base = if x < W / 2 { 0.18 } else { 0.45 };
+                for c in 0..3 {
+                    v[(y * W + x) * 3 + c] = (base + rnd() * 0.05).max(0.0);
+                }
+            }
+        }
+        v
+    }
+
+    /// Noise left in a flat patch, well away from the edge.
+    fn residual(v: &[f32]) -> f32 {
+        let (mut n, mut sum, mut sq) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 10..H - 10 {
+            for x in 10..W / 2 - 10 {
+                let p = v[(y * W + x) * 3 + 1];
+                n += 1.0;
+                sum += p;
+                sq += p * p;
+            }
+        }
+        (sq / n - (sum / n).powi(2)).max(0.0).sqrt()
+    }
+
+    /// The step across the real edge, which the filter must not soften.
+    fn edge(v: &[f32]) -> f32 {
+        let (mut lo, mut hi, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 10..H - 10 {
+            lo += v[(y * W + (W / 2 - 4)) * 3 + 1];
+            hi += v[(y * W + (W / 2 + 4)) * 3 + 1];
+            n += 1.0;
+        }
+        hi / n - lo / n
+    }
+
+    /// The sliders have to earn their travel. The top half used to be worth ten
+    /// points of noise reduction out of sixty, which is why they felt dead.
+    #[test]
+    fn the_sliders_get_steadily_stronger_and_reach_most_of_the_way() {
+        let img = noisy();
+        let sigma = estimate_sigma(&img, W, H);
+        assert!(sigma > 0.0, "no noise was detected in a noisy picture");
+        let before = residual(&img);
+        let e0 = edge(&img);
+
+        let removed = |amount: f32| {
+            let p = NoiseParams::from_sliders(amount, amount, 35.0);
+            let out = denoise_image(&img, W, H, sigma, &p);
+            ((1.0 - residual(&out) / before) * 100.0, edge(&out) / e0 * 100.0)
+        };
+        let (r25, _) = removed(25.0);
+        let (r50, _) = removed(50.0);
+        let (r100, edge100) = removed(100.0);
+
+        // measured 22 / 63 / 75 / 77 at the shipping defaults; the old curve
+        // was 28 / 52 / 59 / 62, with the whole top half worth ten points
+        assert!(r100 > 72.0, "full strength only removed {r100:.1}% of the noise");
+        assert!(r100 - r50 > 10.0, "the top half of the slider did almost nothing: {r50:.1}% -> {r100:.1}%");
+        assert!(r50 - r25 > 25.0, "the first half of the slider did almost nothing: {r25:.1}% -> {r50:.1}%");
+        // and none of it may come out of real edges
+        assert!(edge100 > 97.0, "the edge was softened to {edge100:.1}% of itself");
+    }
+
+
+
+    /// Detail trades noise reduction for texture, so it has to move the result.
+    #[test]
+    fn the_detail_slider_trades_against_the_others() {
+        let img = noisy();
+        let sigma = estimate_sigma(&img, W, H);
+        let before = residual(&img);
+        let at = |detail: f32| {
+            let p = NoiseParams::from_sliders(100.0, 100.0, detail);
+            (1.0 - residual(&denoise_image(&img, W, H, sigma, &p)) / before) * 100.0
+        };
+        let (none, half, full) = (at(0.0), at(50.0), at(100.0));
+        assert!(none > half && half > full, "detail did not trade: {none:.1} {half:.1} {full:.1}");
+        assert!(none - full > 20.0, "detail barely mattered: {none:.1} -> {full:.1}");
+    }
 }

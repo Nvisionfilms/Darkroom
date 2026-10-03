@@ -143,7 +143,11 @@ void main() {
   float yc = max(lumaProxy(rgbC), 1e-6);
   float yo = max(lumaProxy(orig), 0.0);
   float rs = sqrt(yo) - sqrt(yl);
-  float kk = uDetail * min(abs(rs) / (2.0 * uSigma), 1.0);
+  // Twin of denoise.rs soft_threshold: nothing at the noise floor comes back,
+  // anything well clear of it comes back whole. A straight ramp scored a
+  // noise-sized residual half marks, which restored a quarter of the noise.
+  float tt = clamp((abs(rs) / max(uSigma, 1e-6) - 1.0) / (2.5 - 1.0), 0.0, 1.0);
+  float kk = uDetail * tt * tt * (3.0 - 2.0 * tt);
   float yf = max(yl + kk * (yo - yl), 0.0);
   outColor = vec4(rgbC * (yf / yc), 1.0);
 }`;

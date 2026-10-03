@@ -148,7 +148,7 @@ function autoNoise(sigma: number): Pick<EditParams, "denoiseLuma" | "denoiseChro
   return {
     denoiseLuma: Math.max(0, Math.min(70, Math.round(sigma * 1100))),
     denoiseChroma: Math.max(20, Math.min(80, Math.round(20 + sigma * 1500))),
-    denoiseDetail: 50,
+    denoiseDetail: 35,
   };
 }
 
@@ -1706,8 +1706,12 @@ export default function App() {
             </div>
             <Slider label="Luminance" value={params.denoiseLuma} min={0} max={100} onChange={set("denoiseLuma")} />
             <Slider label="Color" value={params.denoiseChroma} min={0} max={100} defaultValue={25} onChange={set("denoiseChroma")} />
-            <Slider label="Detail" value={params.denoiseDetail} min={0} max={100} defaultValue={50} onChange={set("denoiseDetail")} />
-            <div className="hint">Judge fine noise at 1:1 or in the exported file.</div>
+            <Slider label="Detail" value={params.denoiseDetail} min={0} max={100} defaultValue={35} onChange={set("denoiseDetail")} />
+            <div className="hint">
+              Luminance and Color decide how hard the noise is smoothed; Detail puts back whatever looks more like
+              texture than noise, so turning it down removes more and turning it up keeps more. Judge fine noise at 1:1
+              or in the exported file.
+            </div>
           </InspectorSection>
 
           <InspectorSection title="Grain" open={openSections.grain} onToggle={() => toggleSection("grain")}>

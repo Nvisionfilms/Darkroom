@@ -702,7 +702,7 @@ export function defaultParams(): EditParams {
     clarity: 0,
     denoiseLuma: 0,
     denoiseChroma: 25,
-    denoiseDetail: 50,
+    denoiseDetail: 35,
     grading: defaultGrading(),
     mirror: defaultMirror(),
     watermark: defaultWatermark(),
