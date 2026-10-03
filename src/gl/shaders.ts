@@ -25,6 +25,9 @@ float lumaProxy(vec3 c) { return dot(c, LUMA_PROXY); }
 /** Maximum object-remover spots evaluated in one pass. */
 export const MAX_HEAL = 16;
 
+/** Points a retouch spot's shape is swept along. Twin of MAX_PATH in heal.rs. */
+export const MAX_PATH = 8;
+
 /**
  * Object remover: copy feathered patches from elsewhere in the same photo.
  * Twin of src-tauri/src/heal.rs. Every spot reads the untouched source, and
@@ -42,6 +45,26 @@ uniform vec4 uSpotPos[${MAX_HEAL}];   // dest x, dest y, source x, source y (px)
 uniform vec4 uSpotShape[${MAX_HEAL}]; // radius px, hardness, opacity, unused
 // three vec3 per spot: [c0, cu, cv] per channel, a plane over the patch
 uniform vec3 uSpotPlane[${MAX_HEAL * 3}];
+// the painted path, MAX_PATH points per spot; one point is a plain disc
+uniform vec2 uSpotPath[${MAX_HEAL * MAX_PATH}];
+uniform int uSpotPathN[${MAX_HEAL}];
+float healDist(int i, vec2 p, vec2 centre) {
+  // Distance to the swept path, or to the point it collapses to.
+  // Twin of dist_to_path in heal.rs.
+  int n = uSpotPathN[i];
+  if (n <= 1) return length(p - centre);
+  float best = 1e20;
+  for (int k = 0; k < ${MAX_PATH - 1}; k++) {
+    if (k >= n - 1) break;
+    vec2 a = uSpotPath[i * ${MAX_PATH} + k];
+    vec2 b = uSpotPath[i * ${MAX_PATH} + k + 1];
+    vec2 e = b - a;
+    float len2 = dot(e, e);
+    float t = len2 > 1e-9 ? clamp(dot(p - a, e) / len2, 0.0, 1.0) : 0.0;
+    best = min(best, length(p - (a + e * t)));
+  }
+  return best;
+}
 float smooth01(float x) { x = clamp(x, 0.0, 1.0); return x * x * (3.0 - 2.0 * x); }
 void main() {
   vec2 p = vUv * uSize;
@@ -50,7 +73,7 @@ void main() {
     if (i >= uNumSpots) break;
     vec4 pos = uSpotPos[i];
     vec4 sh = uSpotShape[i];
-    float d = length(p - pos.xy) / sh.x;
+    float d = healDist(i, p, pos.xy) / sh.x;
     if (d >= 1.0) continue;
     float soft = max(1.0 - sh.y, 0.01);
     float a = sh.z * (1.0 - smooth01((d - sh.y) / soft));

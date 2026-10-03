@@ -278,6 +278,13 @@ export default function App() {
   // photos flagged as finished and wanted in the next export
   const [marked, setMarked] = useState<ReadonlySet<string>>(new Set());
   const [notice, setNotice] = useState<string | null>(null);
+  // A notice is a receipt - "applied to 12 photos" - so it takes itself away.
+  // An error stays until it is read and dismissed.
+  useEffect(() => {
+    if (!notice) return;
+    const t = window.setTimeout(() => setNotice(null), 4000);
+    return () => window.clearTimeout(t);
+  }, [notice]);
   // phone layout: the open tool sheet, and the photo library screen
   const phone = usePhone();
   const [phoneTab, setPhoneTab] = useState<PhoneTabId | null>(null);
@@ -1022,8 +1029,8 @@ export default function App() {
 
   // ---- object remover ----
   const addSpot = useCallback(
-    async (x: number, y: number) => {
-      const spot = newHealSpot(x, y, healRadius, healKind);
+    async (x: number, y: number, path: [number, number][] = []) => {
+      const spot = { ...newHealSpot(x, y, healRadius, healKind), path };
       const avoid: [number, number, number][] = params.heal.map((s) => [s.x, s.y, s.radius]);
       setParams((p) => ({ ...p, heal: [...p.heal, spot] }));
       setSelectedSpotId(spot.id);
@@ -1076,6 +1083,10 @@ export default function App() {
         setCropMode(false);
         setSelectedMaskId(null);
         setWbPick(false);
+      } else {
+        // Done means done: drop the selection too, or its ring stays on the
+        // photo covering the repair it just made
+        setSelectedSpotId(null);
       }
       return !v;
     });
@@ -1553,6 +1564,7 @@ export default function App() {
             lut={shownLut}
             captureRef={captureRef}
             maskApiRef={maskApiRef}
+            watermarkEdit={openSections.watermark}
             selectedMaskId={selectedMaskId}
             showMask={showMask}
             brush={brush}

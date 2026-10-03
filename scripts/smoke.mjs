@@ -233,19 +233,112 @@ await step("linear gradient mask adds and deletes", async () => {
   expect(await waitFor(`document.querySelectorAll('.mask-panel .mask-row').length === 0`, 4000), "mask was not deleted");
 });
 
-await step("object remover places a spot with a source patch", async () => {
+await step("a retouch spot actually repairs, and its rings go when you press Done", async () => {
   await js(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
   await js(`__smoke.open('Object Remover'); true`);
   await js(`__smoke.button('Remove objects').click(); true`);
   expect(await waitFor(`!!document.querySelector('.heal-surface')`, 4000), "repair tool did not activate");
-  await js(`(() => { const s = document.querySelector('.heal-surface'); const r = s.getBoundingClientRect(); s.dispatchEvent(new MouseEvent('click', { bubbles: true, clientX: r.left + r.width / 2, clientY: r.top + r.height / 2 })); return true; })()`);
+
+  const before = (await js(`__smoke.shot()`)).mean;
+  const box = JSON.parse(
+    await js(`(() => { const r = document.querySelector('.heal-surface').getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 }); })()`),
+  );
+  // a click is a press and a release in the same place: one round spot
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x, y: box.y, button: "left", clickCount: 1, buttons: 1 });
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x, y: box.y, button: "left", clickCount: 1, buttons: 0 });
   expect(await waitFor(`document.querySelectorAll('.heal-spot').length === 1`, 6000), "spot did not appear");
-  await sleep(1500);
+  await sleep(2500);
+
   const spot = sidecar()?.heal?.[0];
   expect(spot && (Math.abs(spot.sx - spot.x) > 1e-3 || Math.abs(spot.sy - spot.y) > 1e-3), "no source patch was chosen");
-  await js(`__smoke.button('Remove all spots').click(); true`);
+
+  // the point of the tool: the picture has to change
+  const after = (await js(`__smoke.shot()`)).mean;
+  expect(Math.abs(after - before) > 1e-5, `placing a spot changed nothing in the picture (${before} -> ${after})`);
+
+  // Done puts the tool away, and the rings with it - leaving them up hid the
+  // repair they had just made
   await js(`__smoke.button('Done removing')?.click(); true`);
-  expect(await waitFor(`document.querySelectorAll('.heal-spot').length === 0`, 4000), "spots were not removed");
+  await js(`window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true })); true`);
+  expect(
+    await waitFor(`document.querySelectorAll('.heal-spot').length === 0`, 4000),
+    "the rings are still on the photo after Done",
+  );
+  // and the repair is still there with them gone
+  const kept = sidecar()?.heal?.length ?? 0;
+  expect(kept === 1, `the repair itself went away too (${kept} left)`);
+
+  await js(`__smoke.open('Object Remover'); true`);
+  await sleep(300);
+  await js(`__smoke.button('Remove all spots')?.click(); true`);
+  await sleep(1200);
+});
+
+await step("a notice takes itself away", async () => {
+  // "Applied to 12 photos" is a receipt, not a warning, and it used to sit
+  // there until it was clicked.
+  await js(`__smoke.button('All')?.click(); true`);
+  await sleep(300);
+  await js(`__smoke.button('⚑ Mark')?.click(); true`);
+  expect(await waitFor(`!!document.querySelector('.toast.notice')`, 4000), "no notice appeared to test");
+  expect(await waitFor(`!document.querySelector('.toast.notice')`, 9000), "the notice never went away on its own");
+  await js(`__smoke.button('⚑ Mark')?.click(); true`);
+  // and let that one go too, so the next step does not inherit it
+  await waitFor(`!!document.querySelector('.toast.notice')`, 4000);
+  expect(await waitFor(`!document.querySelector('.toast.notice')`, 9000), "the second notice stayed up");
+  await sleep(400);
+});
+
+await step("a repair can be painted along a path, not just stamped in circles", async () => {
+  // Dragging the photo with the retouch tool records the path the brush swept,
+  // so a wire or a line marking can be followed. A click is still one circle.
+  const sec = await js(`(() => { __smoke.open('Object Remover'); return 1; })()`);
+  expect(sec === 1, "no Object Remover section");
+  await sleep(400);
+  await js(`__smoke.button('Remove objects')?.click(); true`);
+  await sleep(600);
+  expect(await js(`!!document.querySelector('.heal-surface')`), "the retouch surface is not on the photo");
+
+  const box = JSON.parse(
+    await js(`(() => { const r = document.querySelector('.heal-surface').getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }); })()`),
+  );
+  const span = Math.min(box.w * 0.18, 150);
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x - span, y: box.y, button: "left", clickCount: 1, buttons: 1 });
+  for (let i = -span + 15; i <= span; i += 15) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x + i, y: box.y - i * 0.2, button: "left", buttons: 1 });
+    await sleep(30);
+  }
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x + span, y: box.y - span * 0.2, button: "left", clickCount: 1, buttons: 0 });
+  await sleep(2500);
+
+  const spot = await js(`import('/src/api.ts').then(m => m.readEdits(${JSON.stringify(photo)})).then(e => {
+    const h = (e?.heal ?? [])[0];
+    return JSON.stringify(h ? { path: (h.path ?? []).length, radius: h.radius, moved: Math.abs(h.sx - h.x) + Math.abs(h.sy - h.y) } : null);
+  })`);
+  const h = JSON.parse(spot);
+  expect(h, "no retouch spot was created by the drag");
+  expect(h.path > 1, `the drag recorded no path, only ${h.path} point(s)`);
+  expect(h.path <= 8, `the path was not thinned to the shader's limit: ${h.path} points`);
+  expect(h.moved > 0, "the spot never found anywhere to copy from");
+
+  // the path has to be checked where it lives, since a drag is the only way in
+  const covered = await js(`import('/src/heal.ts').then(m => {
+    const pts = [[0, 0], [10, 0], [20, 5]];
+    const near = m.distToPath(pts, 15, 2);
+    const far = m.distToPath(pts, 15, 40);
+    return JSON.stringify({ near, far });
+  })`);
+  const c = JSON.parse(covered);
+  expect(c.near < 3, `a point beside the path reads as ${c.near} away`);
+  expect(c.far > 30, `a point well off the path reads as only ${c.far} away`);
+
+  // put the tool away: its surface covers the whole photo and would swallow
+  // every pointer event the later steps need
+  await js(`__smoke.button('Remove all spots')?.click(); true`);
+  await sleep(400);
+  await js(`__smoke.button('Done removing')?.click(); true`);
+  expect(await waitFor(`!document.querySelector('.heal-surface')`, 4000), "the retouch tool stayed on");
+  await sleep(1200);
 });
 
 await step("transform and lens sliders apply", async () => {

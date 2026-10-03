@@ -30,6 +30,7 @@ import {
   MASK_MODE_ADD,
   MASK_MODE_SUBTRACT,
   MAX_HEAL,
+  MAX_PATH,
   MAX_MASKS,
   MIRROR_FRAG,
   PREP_FRAG,
@@ -427,6 +428,8 @@ export class Renderer {
   private healShape = new Float32Array(MAX_HEAL * 4);
   // nine per spot: [c0, cu, cv] for each channel, a plane over the patch
   private healOffset = new Float32Array(MAX_HEAL * 9);
+  private healPath = new Float32Array(MAX_HEAL * MAX_PATH * 2);
+  private healPathN = new Int32Array(MAX_HEAL);
   private healCount = 0;
   private healKey = "";
 
@@ -436,7 +439,18 @@ export class Renderer {
    * average discs; `key` identifies this set for caching.
    */
   setHeal(
-    spots: { x: number; y: number; sx: number; sy: number; radius: number; feather: number; opacity: number; enabled: boolean; kind: string }[],
+    spots: {
+      x: number;
+      y: number;
+      sx: number;
+      sy: number;
+      radius: number;
+      feather: number;
+      opacity: number;
+      enabled: boolean;
+      kind: string;
+      path?: [number, number][];
+    }[],
     /** nine per spot: [c0, cu, cv] per channel */
     offsets: number[][],
     key: string,
@@ -457,6 +471,12 @@ export class Renderer {
       this.healShape[o + 3] = 0;
       const off = offsets[i] ?? [0, 0, 0];
       for (let k = 0; k < 9; k++) this.healOffset[n * 9 + k] = off[k] ?? 0;
+      const path = (s.path ?? []).slice(0, MAX_PATH);
+      this.healPathN[n] = path.length;
+      for (let k = 0; k < path.length; k++) {
+        this.healPath[(n * MAX_PATH + k) * 2] = path[k][0] * this.imgW;
+        this.healPath[(n * MAX_PATH + k) * 2 + 1] = path[k][1] * this.imgH;
+      }
       n++;
     }
     this.healCount = n;
@@ -492,6 +512,8 @@ export class Renderer {
         gl.uniform4fv(this.loc(hp, "uSpotPos[0]"), this.healPos);
         gl.uniform4fv(this.loc(hp, "uSpotShape[0]"), this.healShape);
         gl.uniform3fv(this.loc(hp, "uSpotPlane[0]"), this.healOffset);
+        gl.uniform2fv(this.loc(hp, "uSpotPath[0]"), this.healPath);
+        gl.uniform1iv(this.loc(hp, "uSpotPathN[0]"), this.healPathN);
       });
       source = T.H.tex;
     }

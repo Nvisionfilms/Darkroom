@@ -41,8 +41,27 @@ const groups = [
     glsl: read("src/heal.ts"),
     pairs: [
       ["const RING: usize = 96", "const RING = 96"],
-      ["[1.0f32, 1.04, 1.08]", "[1.0, 1.04, 1.08]"],
+      ["[0.0f32, 0.04, 0.08]", "[0.0, 0.04, 0.08]"],
+      ["let steps = 96", "const steps = 96"],
       ["(px - dx) / r", "(px - dx) / r"],
+    ],
+  },
+  {
+    what: "painted repair path",
+    rust: read("src-tauri/src/heal.rs"),
+    glsl: read("src/heal.ts"),
+    pairs: [
+      ["MAX_PATH: usize = 8", "MAX_PATH = 8"],
+      ["clamp(0.0, 1.0)", "Math.max(0, Math.min(1,"],
+    ],
+  },
+  {
+    what: "painted repair path in the shader",
+    rust: read("src-tauri/src/heal.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [
+      ["MAX_PATH: usize = 8", "MAX_PATH = 8"],
+      ["if len2 > 1e-9", "len2 > 1e-9"],
     ],
   },
   {

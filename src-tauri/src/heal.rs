@@ -1,7 +1,9 @@
 //! Object remover: patch-based heal / clone spots.
 //!
 //! A spot copies real pixels from somewhere else in the same photograph into
-//! a feathered disc. Nothing is invented: "heal" adds a smooth colour and
+//! a feathered shape: a disc where you click, or the swept path of the brush
+//! where you drag, so a wire or a line marking can be followed rather than
+//! covered with a row of circles. Nothing is invented: "heal" adds a smooth colour and
 //! brightness offset so the copied patch blends into its new surroundings,
 //! "clone" copies as-is. This is the classic content-aware patch approach,
 //! not a generative model.
@@ -29,6 +31,10 @@ pub struct HealSpot {
     pub sx: f32,
     pub sy: f32,
     pub radius: f32,
+    /// The painted path, in the same normalised coordinates as `x`/`y`. Empty
+    /// or a single point is a plain disc at `x`, `y`; more points sweep the
+    /// brush along them. Capped at MAX_PATH, which the shader must match.
+    pub path: Vec<[f32; 2]>,
     /// 0..100 edge softness
     pub feather: f32,
     /// 0..100
@@ -46,6 +52,7 @@ impl Default for HealSpot {
             sx: 0.4,
             sy: 0.5,
             radius: 0.03,
+            path: Vec::new(),
             feather: 60.0,
             opacity: 100.0,
         }
@@ -56,6 +63,65 @@ impl HealSpot {
     pub fn is_active(&self) -> bool {
         self.enabled && self.opacity > 0.0 && self.radius > 0.0
     }
+}
+
+/// Points a spot's shape is swept along. The shader holds this many per spot,
+/// so a longer drag is resampled down to it before being stored.
+pub const MAX_PATH: usize = 8;
+
+impl HealSpot {
+    /// The path in image pixels, always at least one point.
+    pub fn points(&self, w: usize, h: usize) -> Vec<[f32; 2]> {
+        let mut p: Vec<[f32; 2]> = self
+            .path
+            .iter()
+            .take(MAX_PATH)
+            .map(|q| [q[0] * w as f32, q[1] * h as f32])
+            .collect();
+        if p.is_empty() {
+            p.push([self.x * w as f32, self.y * h as f32]);
+        }
+        p
+    }
+}
+
+/// Distance from a point to a polyline, or to the single point it collapses to.
+#[inline]
+pub fn dist_to_path(pts: &[[f32; 2]], px: f32, py: f32) -> f32 {
+    if pts.len() == 1 {
+        return ((px - pts[0][0]).powi(2) + (py - pts[0][1]).powi(2)).sqrt();
+    }
+    let mut best = f32::MAX;
+    for seg in pts.windows(2) {
+        let (a, b) = (seg[0], seg[1]);
+        let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+        let len2 = ex * ex + ey * ey;
+        let t = if len2 > 1e-9 {
+            (((px - a[0]) * ex + (py - a[1]) * ey) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let (cx, cy) = (a[0] + ex * t, a[1] + ey * t);
+        let d = ((px - cx).powi(2) + (py - cy).powi(2)).sqrt();
+        if d < best {
+            best = d;
+        }
+    }
+    best
+}
+
+/// The box a spot touches, in pixels: its path grown by the radius.
+#[inline]
+pub fn path_bounds(pts: &[[f32; 2]], r: f32) -> (f32, f32, f32, f32) {
+    let mut lo = [f32::MAX; 2];
+    let mut hi = [f32::MIN; 2];
+    for p in pts {
+        lo[0] = lo[0].min(p[0]);
+        lo[1] = lo[1].min(p[1]);
+        hi[0] = hi[0].max(p[0]);
+        hi[1] = hi[1].max(p[1]);
+    }
+    (lo[0] - r, lo[1] - r, hi[0] + r, hi[1] + r)
 }
 
 #[inline]
@@ -111,17 +177,48 @@ pub fn heal_offset(img: &[f32], w: usize, h: usize, dx: f32, dy: f32, sx: f32, s
 /// pixels meet the picture at the rim on every side rather than only on
 /// average. Returned as [c0, cu, cv] per channel over u, v - the offset from
 /// the centre in units of the radius. Twin of healPlane in src/heal.ts.
-pub fn heal_plane(img: &[f32], w: usize, h: usize, dx: f32, dy: f32, sx: f32, sy: f32, r: f32) -> [[f32; 3]; 3] {
+pub fn heal_plane(
+    img: &[f32],
+    w: usize,
+    h: usize,
+    pts: &[[f32; 2]],
+    dx: f32,
+    dy: f32,
+    sx: f32,
+    sy: f32,
+    r: f32,
+) -> [[f32; 3]; 3] {
     const RING: usize = 96;
     // normal equations for [1, u, v]
     let mut ata = [[0.0f64; 3]; 3];
     let mut atb = [[0.0f64; 3]; 3];
+    // Sample the rim of whatever shape this is. For a disc that is a circle
+    // around it; for a swept path it is the outline of the sweep, found by
+    // walking a generous circle around the whole thing and stepping in to
+    // wherever the path actually is.
+    let (bx0, by0, bx1, by1) = path_bounds(pts, 0.0);
+    let (cx, cy) = ((bx0 + bx1) * 0.5, (by0 + by1) * 0.5);
+    let reach = ((bx1 - bx0).powi(2) + (by1 - by0).powi(2)).sqrt() * 0.5 + r * 2.0;
     for i in 0..RING {
         let a = i as f32 * std::f32::consts::TAU / RING as f32;
-        // a band just outside the disc, so it reads the picture rather than the patch
-        for k in [1.0f32, 1.04, 1.08] {
-            let px = dx + r * k * a.cos();
-            let py = dy + r * k * a.sin();
+        let (ca, sa) = (a.cos(), a.sin());
+        // walk in from outside until the rim of the shape is found
+        let mut hit = None;
+        let steps = 96;
+        for st in 0..=steps {
+            let t = reach * (1.0 - st as f32 / steps as f32);
+            let px = cx + t * ca;
+            let py = cy + t * sa;
+            if dist_to_path(pts, px, py) <= r {
+                hit = Some(t);
+                break;
+            }
+        }
+        let Some(t_rim) = hit else { continue };
+        for k in [0.0f32, 0.04, 0.08] {
+            let t = t_rim + r * k;
+            let px = cx + t * ca;
+            let py = cy + t * sa;
             let dst = bilinear(img, w, h, px, py);
             let src = bilinear(img, w, h, sx + (px - dx), sy + (py - dy));
             let u = (px - dx) / r;
@@ -226,6 +323,7 @@ pub fn heal_image(img: &mut Vec<f32>, w: usize, h: usize, spots: &[HealSpot]) {
     let src = img.clone();
     for s in spots.iter().filter(|s| s.is_active()) {
         let r = (s.radius * long).max(1.0);
+        let pts = s.points(w, h);
         let dx = s.x * w as f32;
         let dy = s.y * h as f32;
         let ox = s.sx * w as f32;
@@ -237,12 +335,13 @@ pub fn heal_image(img: &mut Vec<f32>, w: usize, h: usize, spots: &[HealSpot]) {
         let plane = if s.kind == "clone" {
             None
         } else {
-            Some(heal_plane(&src, w, h, dx, dy, ox, oy, r))
+            Some(heal_plane(&src, w, h, &pts, dx, dy, ox, oy, r))
         };
-        let x_lo = ((dx - r).floor().max(0.0)) as usize;
-        let x_hi = ((dx + r).ceil().min(w as f32 - 1.0)) as usize;
-        let y_lo = ((dy - r).floor().max(0.0)) as usize;
-        let y_hi = ((dy + r).ceil().min(h as f32 - 1.0)) as usize;
+        let (bx0, by0, bx1, by1) = path_bounds(&pts, r);
+        let x_lo = (bx0.floor().max(0.0)) as usize;
+        let x_hi = (bx1.ceil().min(w as f32 - 1.0)) as usize;
+        let y_lo = (by0.floor().max(0.0)) as usize;
+        let y_hi = (by1.ceil().min(h as f32 - 1.0)) as usize;
         if x_lo > x_hi || y_lo > y_hi {
             continue;
         }
@@ -255,7 +354,7 @@ pub fn heal_image(img: &mut Vec<f32>, w: usize, h: usize, spots: &[HealSpot]) {
                 let py = y as f32 + 0.5;
                 for x in x_lo..=x_hi {
                     let px = x as f32 + 0.5;
-                    let d = ((px - dx).powi(2) + (py - dy).powi(2)).sqrt() / r;
+                    let d = dist_to_path(&pts, px, py) / r;
                     if d >= 1.0 {
                         continue;
                     }
@@ -406,6 +505,7 @@ mod tests {
             sx: 112.0 / W as f32,
             sy: 36.0 / H as f32,
             radius: 16.0 / W as f32,
+            path: Vec::new(),
             feather: 50.0,
             opacity: 100.0,
         }
@@ -430,6 +530,67 @@ mod tests {
             }
         }
         (worst, sum / n.max(1.0))
+    }
+
+    /// A wire across the frame: the thing a row of circles is tedious for.
+    fn wired() -> Vec<f32> {
+        let mut v = background();
+        for x in 40..120 {
+            let y = 60 + ((x as f32 - 40.0) * 0.25) as usize;
+            for dy in 0..3 {
+                for c in 0..3 {
+                    v[((y + dy) * W + x) * 3 + c] *= 0.3;
+                }
+            }
+        }
+        v
+    }
+
+    #[test]
+    fn a_painted_repair_follows_the_path_it_was_given() {
+        let truth = background();
+        let img = wired();
+        // the same drag the brush would record, resampled to a handful of points
+        let path: Vec<[f32; 2]> = (0..5)
+            .map(|i| {
+                let x = 40.0 + i as f32 * 20.0;
+                let y = 61.0 + (x - 40.0) * 0.25;
+                [x / W as f32, y / H as f32]
+            })
+            .collect();
+        let s = HealSpot {
+            id: "w".into(),
+            kind: "heal".into(),
+            enabled: true,
+            x: 80.0 / W as f32,
+            y: 71.0 / H as f32,
+            sx: 80.0 / W as f32,
+            sy: 110.0 / H as f32,
+            radius: 5.0 / W as f32,
+            path,
+            feather: 40.0,
+            opacity: 100.0,
+        };
+        let mut out = img.clone();
+        heal_image(&mut out, W, H, &[s.clone()]);
+
+        let at = |v: &[f32], x: usize, y: usize| v[(y * W + x) * 3 + 1];
+        // the wire is gone all the way along, not just where a circle would be
+        let mut worst = 0.0f32;
+        for i in 0..5 {
+            let x = 48 + i * 16;
+            let y = 61 + ((x as f32 - 40.0) * 0.25) as usize;
+            worst = worst.max((at(&out, x, y) - at(&truth, x, y)).abs());
+        }
+        assert!(worst < 0.02, "the wire is still showing somewhere along the path: off by {worst:.4}");
+
+        // and the rest of the picture is untouched, well clear of the stroke
+        for (x, y) in [(20usize, 20usize), (140, 30), (20, 140), (140, 140)] {
+            assert!(
+                (at(&out, x, y) - at(&img, x, y)).abs() < 1e-6,
+                "the repair spilled to ({x}, {y})"
+            );
+        }
     }
 
     #[test]

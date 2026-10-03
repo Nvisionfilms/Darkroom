@@ -13,7 +13,7 @@ import {
   type StrokeCursor,
 } from "../mask";
 import { canvasToSource, makeWarp, sourceToCanvas, warpIsIdentity } from "../geometry";
-import { healKey, healPlane } from "../heal";
+import { healKey, healPlane, MAX_PATH, resamplePath } from "../heal";
 import {
   cropIsIdentity,
   type Crop,
@@ -75,12 +75,15 @@ interface Props {
   onPickWb?: (rgb: [number, number, number]) => void;
   guide?: GuideKind;
   guideFlip?: number;
+  /** show the watermark's frame and handles: it is being placed right now */
+  watermarkEdit?: boolean;
   /** object remover: clicking the photo places a spot */
   healTool?: boolean;
   healRadius?: number;
   selectedSpotId?: string | null;
   onSelectSpot?: (id: string | null) => void;
-  onAddSpot?: (x: number, y: number) => void;
+  /** `path` is the drag, in normalised image coordinates; a click gives one point */
+  onAddSpot?: (x: number, y: number, path: [number, number][]) => void;
   onSpotChange?: (s: HealSpot) => void;
   /** clockwise degrees, applied even in before/after mode */
   rotation: number;
@@ -128,6 +131,7 @@ export function Viewer({
   guide = "thirds",
   guideFlip = 0,
   healTool = false,
+  watermarkEdit = false,
   healRadius = 0.03,
   selectedSpotId = null,
   onSelectSpot,
@@ -566,16 +570,57 @@ export function Viewer({
     onMaskChange({ ...m, strokes });
   };
 
-  // ---- object remover: click the photo to place a spot ----
-  const placeSpot = (e: React.MouseEvent) => {
+  // ---- object remover: click to place a spot, or drag to paint one ----
+  // A drag records the path the brush swept, so a wire or a line marking can be
+  // followed instead of being covered with a row of circles. A click is just a
+  // path of one point, which is the disc it always was.
+  const paintSpot = useRef<[number, number][] | null>(null);
+  const spotPoint = (e: React.PointerEvent): [number, number] | null => {
     const mp = mapperRef.current;
     const r = rendererRef.current;
-    if (!mp || !r || !onAddSpot) return;
-    e.stopPropagation();
+    if (!mp || !r) return null;
     const rect = (e.currentTarget as Element).getBoundingClientRect();
     const [ix, iy] = mp.toImage(e.clientX - rect.left, e.clientY - rect.top);
-    if (ix < 0 || iy < 0 || ix >= r.imgW || iy >= r.imgH) return;
-    onAddSpot(ix / r.imgW, iy / r.imgH);
+    if (ix < 0 || iy < 0 || ix >= r.imgW || iy >= r.imgH) return null;
+    return [ix / r.imgW, iy / r.imgH];
+  };
+  const spotDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !onAddSpot) return;
+    const p = spotPoint(e);
+    if (!p) return;
+    e.stopPropagation();
+    e.preventDefault();
+    paintSpot.current = [p];
+    try {
+      (e.currentTarget as Element).setPointerCapture(e.pointerId);
+    } catch {
+      /* synthetic */
+    }
+  };
+  const spotMove = (e: React.PointerEvent) => {
+    const path = paintSpot.current;
+    if (!path) return;
+    e.stopPropagation();
+    const p = spotPoint(e);
+    if (!p) return;
+    const last = path[path.length - 1];
+    // a point every third of a brush width keeps the path light
+    const step = Math.max(healRadius * 0.6, 0.002);
+    if (Math.hypot(p[0] - last[0], p[1] - last[1]) >= step) path.push(p);
+  };
+  const spotUp = (e: React.PointerEvent) => {
+    const path = paintSpot.current;
+    if (!path) return;
+    e.stopPropagation();
+    paintSpot.current = null;
+    try {
+      (e.currentTarget as Element).releasePointerCapture(e.pointerId);
+    } catch {
+      /* ignore */
+    }
+    const simple = resamplePath(path, MAX_PATH);
+    const mid = simple[Math.floor(simple.length / 2)];
+    onAddSpot?.(mid[0], mid[1], simple.length > 1 ? simple : []);
   };
 
   // ---- white balance eyedropper ----
@@ -809,9 +854,12 @@ export function Viewer({
   let mapper: Mapper | null = null;
   const rr = rendererRef.current;
   const maskTool = !cropMode && !!selectedMask;
-  const healActive = !cropMode && (healTool || params.heal.length > 0);
+  // The rings are the tool's handles, so they go when the tool does. Leaving
+  // them up after Done hid the very repair they had just made, which read as
+  // the repair not having happened at all.
+  const healActive = !cropMode && (healTool || (!!selectedSpotId && params.heal.length > 0));
   if (
-    (cropMode || needMapper || mirror?.enabled || (watermark?.enabled && watermark.path) || maskTool || wbPick || healActive) &&
+    (cropMode || needMapper || mirror?.enabled || (watermarkEdit && watermark?.enabled && watermark.path) || maskTool || wbPick || healActive) &&
     rr &&
     rr.imgW &&
     image
@@ -936,7 +984,19 @@ export function Viewer({
       )}
       {mapper && healActive && onSpotChange && onSelectSpot && (
         <svg className={"mirror-overlay heal-overlay" + (healTool ? " placing" : "")}>
-          {healTool && <rect className="heal-surface" x={0} y={0} width="100%" height="100%" onClick={placeSpot} />}
+          {healTool && (
+            <rect
+              className="heal-surface"
+              x={0}
+              y={0}
+              width="100%"
+              height="100%"
+              onPointerDown={spotDown}
+              onPointerMove={spotMove}
+              onPointerUp={spotUp}
+              onPointerCancel={spotUp}
+            />
+          )}
           <HealOverlay
             spots={params.heal}
             selectedId={selectedSpotId}
@@ -962,7 +1022,7 @@ export function Viewer({
       {mapper && !cropMode && mirror?.enabled && onMirrorChange && (
         <MirrorOverlay mirror={mirror} mapper={mapper} onChange={onMirrorChange} />
       )}
-      {mapper && !cropMode && watermark?.enabled && watermark.path && onWatermarkChange && (
+      {mapper && !cropMode && watermarkEdit && watermark?.enabled && watermark.path && onWatermarkChange && (
         <WatermarkOverlay watermark={watermark} aspect={wmAspect} mapper={mapper} onChange={onWatermarkChange} />
       )}
       {error && <div className="viewer-error">{error}</div>}

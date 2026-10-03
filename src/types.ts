@@ -368,6 +368,13 @@ export interface HealSpot {
   sy: number;
   /** fraction of the long edge */
   radius: number;
+  /**
+   * The painted path, in the same normalised coordinates as x/y. Empty or a
+   * single point is a plain disc; more points sweep the brush along them, so a
+   * wire or a line marking can be followed rather than covered with a row of
+   * circles. Capped at MAX_PATH in heal.ts, which the shader matches.
+   */
+  path: [number, number][];
   feather: number;
   opacity: number;
 }
@@ -526,6 +533,7 @@ export function newHealSpot(x: number, y: number, radius: number, kind: "heal" |
     sx: x,
     sy: y,
     radius,
+    path: [],
     feather: 60,
     opacity: 100,
   };
