@@ -557,6 +557,63 @@ await step("the subject matte is pulled onto the picture's own edges", async () 
   expect(g.outside < 15, `the background was filled in: ${g.outside}`);
 });
 
+await step("a painted brush subtraction takes its area out of the mask above it", async () => {
+  // The reported case: a mask with a brush subtraction under it, painted by
+  // hand. Everything here is driven through the real brush surface, so what is
+  // measured is whether painting actually removes the mask's effect.
+  const add = async (kind, button) => {
+    await js(
+      `[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes(${JSON.stringify(button)})).click(); true`,
+    );
+    await sleep(300);
+    await js(
+      `[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === ${JSON.stringify(kind)}).click(); true`,
+    );
+    await sleep(700);
+  };
+  const plain = (await js(`__smoke.shot()`)).mean;
+
+  await add("Radial gradient", "Add mask");
+  await js(`__smoke.slider(document.querySelector('.mask-edit'), 'Exposure', 4); true`);
+  await sleep(1200);
+  const bright = (await js(`__smoke.shot()`)).mean;
+  expect(bright > plain + 0.01, `the mask did not brighten anything: ${plain.toFixed(3)} -> ${bright.toFixed(3)}`);
+
+  await add("Brush", "Subtract");
+  expect(await js(`document.querySelectorAll('.mask-row.subtract').length === 1`), "the brush subtraction was not added");
+  await sleep(600);
+  expect(await js(`!!document.querySelector('.brush-overlay')`), "no brush surface to paint on");
+
+  // paint right across the middle of the radial, where its effect is strongest
+  const box = JSON.parse(
+    await js(`(() => { const r = document.querySelector('.brush-overlay').getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2, w: r.width }); })()`),
+  );
+  const span = Math.min(box.w * 0.2, 180);
+  await send("Input.dispatchMouseEvent", { type: "mousePressed", x: box.x - span, y: box.y, button: "left", clickCount: 1, buttons: 1 });
+  for (let i = -span + 20; i <= span; i += 20) {
+    await send("Input.dispatchMouseEvent", { type: "mouseMoved", x: box.x + i, y: box.y, button: "left", buttons: 1 });
+    await sleep(40);
+  }
+  await send("Input.dispatchMouseEvent", { type: "mouseReleased", x: box.x + span, y: box.y, button: "left", clickCount: 1, buttons: 0 });
+  await sleep(1800);
+
+  const painted = await js(`import('/src/api.ts').then(m => m.readEdits(${JSON.stringify(photo)})).then(e => {
+    const b = (e?.masks ?? []).find(m => m.kind === 'brush');
+    return b ? b.strokes.reduce((n, s) => n + s.x.length, 0) : 0;
+  })`);
+  expect(painted > 1, `the brush recorded nothing (${painted} points)`);
+
+  const cut = (await js(`__smoke.shot()`)).mean;
+  expect(
+    cut < bright - (bright - plain) * 0.25,
+    `painting the subtraction removed nothing: plain ${plain.toFixed(3)}, bright ${bright.toFixed(3)}, after painting ${cut.toFixed(3)}`,
+  );
+
+  await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+  // let the debounced sidecar write land before the next steps start
+  await sleep(1800);
+});
+
 await step("subject detection can keep just the main subject", async () => {
   // The model finds whatever stands out, so a player in the foreground and a
   // referee behind them come back in one matte. Two islands here, one much

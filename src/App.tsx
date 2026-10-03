@@ -338,6 +338,8 @@ export default function App() {
   // masks, eyedropper, guides, auto noise reduction
   const [selectedMaskId, setSelectedMaskId] = useState<string | null>(null);
   const [showMask, setShowMask] = useState(false);
+  const masksRef = useRef<Mask[]>([]);
+  // read by changeShowMask, which must not be rebuilt on every mask edit
   const [brush, setBrush] = useState<BrushSettings>({ size: 0.08, feather: 50, flow: 100, erase: false });
   const [detecting, setDetecting] = useState(false);
   const maskApiRef = useRef<MaskApi | null>(null);
@@ -371,6 +373,7 @@ export default function App() {
       .catch(() => setExtensions(["jpg", "jpeg", "png", "tif", "tiff", "dng", "cr2", "cr3", "arw", "nef", "raf"]));
   }, []);
 
+  masksRef.current = params.masks;
   const lut = useMemo(() => buildLut(params.curves), [params.curves]);
   const defaults = useMemo(() => defaultParamsForImage(current), [current?.metadata.kind]);
   const defaultLut = useMemo(() => buildLut(defaults.curves), [defaults]);
@@ -773,6 +776,24 @@ export default function App() {
   const deleteMask = useCallback((id: string) => {
     setParams((p) => ({ ...p, masks: p.masks.filter((x) => x.id !== id) }));
     setSelectedMaskId((s) => (s === id ? null : s));
+  }, []);
+
+  /**
+   * Show mask paints the selected mask's area red. Ticking it with nothing
+   * selected used to paint nothing at all, which reads exactly like a broken
+   * mask - so it picks the last ordinary mask up for you. Selecting a mask
+   * shows its whole group, its subtractions included, which is the only way to
+   * see whether a subtraction took.
+   */
+  const changeShowMask = useCallback((on: boolean) => {
+    setShowMask(on);
+    if (!on) return;
+    setSelectedMaskId((cur) => {
+      if (cur) return cur;
+      const list = masksRef.current;
+      for (let i = list.length - 1; i >= 0; i--) if (list[i].mode !== "subtract") return list[i].id;
+      return cur;
+    });
   }, []);
 
   const runDetectSubject = useCallback(
@@ -1195,9 +1216,9 @@ export default function App() {
       } else if (e.key === "Escape" && selectedMaskId && !cropMode) {
         e.preventDefault();
         setSelectedMaskId(null);
-      } else if (e.key.toLowerCase() === "m" && !command && selectedMaskId) {
+      } else if (e.key.toLowerCase() === "m" && !command && params.masks.length > 0) {
         e.preventDefault();
-        setShowMask((v) => !v);
+        changeShowMask(!showMask);
       } else if (e.key === "o" && !command && cropMode) {
         e.preventDefault();
         changeGuide(nextGuide(guide));
@@ -1813,7 +1834,7 @@ export default function App() {
               onAdd={addMask}
               onChange={changeMask}
               onDelete={deleteMask}
-              onShowMask={setShowMask}
+              onShowMask={changeShowMask}
               onBrush={setBrush}
               onDetectSubject={(id, mainOnly) => void runDetectSubject(id, mainOnly)}
             />

@@ -615,6 +615,19 @@ export class Renderer {
   }
 
   /** The raster changed in place (painting): upload just the dirty rectangle if it is on a slot. */
+  /**
+   * Push the part of a brush raster that just changed into its slot.
+   *
+   * The rectangle is copied into a tightly packed buffer rather than uploaded
+   * straight out of the full raster with UNPACK_ROW_LENGTH / SKIP_PIXELS /
+   * SKIP_ROWS. That shorter route is what the spec is for, and it is what this
+   * did, but texSubImage3D rejected every one of those uploads with
+   * INVALID_OPERATION on this driver - silently, since nothing checks
+   * glGetError on a hot path. The paint never reached the texture, so brush
+   * masks did nothing at all and a brush subtraction erased nothing. A packed
+   * copy of a dirty rectangle costs a few hundred microseconds and works
+   * everywhere.
+   */
   updateMaskRaster(id: string, rect: Rect): void {
     const r = this.rasters.get(id);
     if (!r) return;
@@ -627,15 +640,13 @@ export class Renderer {
     const w = Math.min(r.w - x, Math.ceil(rect.w));
     const h = Math.min(r.h - y, Math.ceil(rect.h));
     if (w <= 0 || h <= 0) return;
+    const patch = new Uint8Array(w * h);
+    for (let row = 0; row < h; row++) {
+      patch.set(r.data.subarray((y + row) * r.w + x, (y + row) * r.w + x + w), row * w);
+    }
     gl.bindTexture(gl.TEXTURE_2D_ARRAY, this.maskTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
-    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, r.w);
-    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, x);
-    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, y);
-    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, slot, w, h, 1, gl.RED, gl.UNSIGNED_BYTE, r.data);
-    gl.pixelStorei(gl.UNPACK_ROW_LENGTH, 0);
-    gl.pixelStorei(gl.UNPACK_SKIP_PIXELS, 0);
-    gl.pixelStorei(gl.UNPACK_SKIP_ROWS, 0);
+    gl.texSubImage3D(gl.TEXTURE_2D_ARRAY, 0, x, y, slot, w, h, 1, gl.RED, gl.UNSIGNED_BYTE, patch);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
     this.slotContent[slot] = `${id}:${r.version}`;
   }
