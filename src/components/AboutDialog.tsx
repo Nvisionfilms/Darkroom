@@ -29,7 +29,10 @@ export function AboutDialog({
   onInstall,
   onClose,
 }: Props) {
-  const busy = canUpdate && (status.kind === "checking" || status.kind === "installing");
+  // Android checks and downloads; only the install is Android's own business
+  const android = !canUpdate && os === "android";
+  const shows = canUpdate || android;
+  const busy = shows && (status.kind === "checking" || status.kind === "installing");
   let line: string;
   switch (status.kind) {
     case "checking":
@@ -41,6 +44,9 @@ export function AboutDialog({
     case "available":
       line = `Version ${status.update.version} is available.`;
       break;
+    case "manual":
+      line = `Version ${status.version} is available. Downloading it opens Android's installer.`;
+      break;
     case "installing":
       line = status.progress === null ? "Downloading…" : `Downloading… ${Math.round(status.progress * 100)}%`;
       break;
@@ -48,7 +54,9 @@ export function AboutDialog({
       line = `Update check failed: ${status.message}`;
       break;
     default:
-      line = "Updates are delivered through the secure Darkroom update channel.";
+      line = android
+        ? "Darkroom checks the update channel and hands the download to your browser; Android installs it."
+        : "Updates are delivered through the secure Darkroom update channel.";
   }
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
@@ -56,13 +64,13 @@ export function AboutDialog({
         <h2>Darkroom</h2>
         <div className="about-version">Version {version}</div>
         <div className="about-line">
-          {canUpdate
+          {shows
             ? line
             : os === "ios"
               ? "Updates arrive through TestFlight, or by installing again from the Mac."
               : "Updates arrive however you installed the app; it cannot update itself."}
         </div>
-        {canUpdate && status.kind === "installing" && (
+        {shows && status.kind === "installing" && (
           <span className="update-progress about-progress">
             <span className="update-bar" style={{ width: `${Math.round((status.progress ?? 0) * 100)}%` }} />
           </span>
@@ -85,7 +93,7 @@ export function AboutDialog({
           </div>
         </div>
 
-        {canUpdate && (
+        {shows && (
           <div className="about-repo" title="Darkroom update channel">
             {UPDATE_CHANNEL}
           </div>
@@ -94,10 +102,14 @@ export function AboutDialog({
           <button onClick={onClose} disabled={busy}>
             Close
           </button>
-          {canUpdate &&
+          {shows &&
             (status.kind === "available" ? (
               <button className="primary" onClick={onInstall}>
                 Install {status.update.version} and restart
+              </button>
+            ) : status.kind === "manual" ? (
+              <button className="primary" onClick={onInstall}>
+                Download {status.version}
               </button>
             ) : (
               <button className="primary" onClick={onCheck} disabled={busy}>

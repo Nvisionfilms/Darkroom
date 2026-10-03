@@ -312,7 +312,7 @@ export default function App() {
   useEffect(() => {
     platform().then(setPlatformInfo).catch(() => {});
   }, []);
-  const updater = useUpdater(version, platformInfo.updates);
+  const updater = useUpdater(version, platformInfo.updates, platformInfo.os);
   const saveTimer = useRef<number | null>(null);
   const pendingSave = useRef<{ path: string; params: EditParams } | null>(null);
 
@@ -776,7 +776,7 @@ export default function App() {
   }, []);
 
   const runDetectSubject = useCallback(
-    async (id: string) => {
+    async (id: string, mainOnly = true) => {
       const api = maskApiRef.current;
       const capture = captureRef.current;
       if (!api || !capture) return;
@@ -785,7 +785,7 @@ export default function App() {
         const blob = await capture({ full: true });
         if (!blob) throw new Error("no picture to analyse");
         const { w, h } = api.size();
-        const raster = await detectSubject(blob, w, h);
+        const raster = await detectSubject(blob, w, h, mainOnly);
         const key = encodeRaster(raster, w, h);
         api.setRaster(id, raster, key);
         setParams((p) => ({ ...p, masks: p.masks.map((x) => (x.id === id ? { ...x, raster: key } : x)) }));
@@ -1815,7 +1815,7 @@ export default function App() {
               onDelete={deleteMask}
               onShowMask={setShowMask}
               onBrush={setBrush}
-              onDetectSubject={(id) => void runDetectSubject(id)}
+              onDetectSubject={(id, mainOnly) => void runDetectSubject(id, mainOnly)}
             />
           </InspectorSection>
 

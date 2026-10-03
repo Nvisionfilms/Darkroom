@@ -632,6 +632,11 @@ input[type="number"] {
 }
 
 /* Canvas overlays */
+/* Crop, mask handles, brush and retouch all live on one of these. A finger
+   drag on them is a drag, not a scroll: without touch-action the browser claims
+   the gesture for panning and cancels the pointer stream partway through, so on
+   a phone the brush painted nothing and the handles would not move - while a
+   mouse worked perfectly. */
 .mirror-overlay {
   position: absolute;
   inset: 0;
@@ -639,6 +644,7 @@ input[type="number"] {
   height: 100%;
   pointer-events: none;
   overflow: visible;
+  touch-action: none;
 }
 .mo-window {
   fill: rgba(138, 162, 255, 0.08);
@@ -1205,6 +1211,7 @@ input[type="number"] {
 .brush-surface {
   fill: transparent;
   pointer-events: all;
+  touch-action: none;
 }
 .brush-cursor {
   fill: rgba(79, 140, 255, 0.12);

@@ -15,7 +15,7 @@ interface Props {
   onDelete: (id: string) => void;
   onShowMask: (v: boolean) => void;
   onBrush: (b: BrushSettings) => void;
-  onDetectSubject: (id: string) => void;
+  onDetectSubject: (id: string, mainOnly: boolean) => void;
 }
 
 const KIND_GLYPH: Record<MaskKind, string> = {
@@ -53,6 +53,8 @@ export function MaskPanel({
   onDetectSubject,
 }: Props) {
   const [adding, setAdding] = useState<MaskMode | null>(null);
+  // the model finds whatever stands out, which on a field is often two players
+  const [mainOnly, setMainOnly] = useState(true);
   const sel = masks.find((m) => m.id === selectedId) ?? null;
   const selIdx = sel ? masks.indexOf(sel) : -1;
   // a subtraction needs something above it to cut into
@@ -175,12 +177,22 @@ export function MaskPanel({
           </div>
 
           {sel.kind === "subject" && (
-            <div className="field">
-              <button className="primary" onClick={() => onDetectSubject(sel.id)} disabled={detecting}>
-                {detecting ? "Detecting…" : sel.raster ? "Detect again" : "Detect subject"}
-              </button>
-              <em>{sel.raster ? "subject found" : "runs on this computer"}</em>
-            </div>
+            <>
+              <div className="field">
+                <button className="primary" onClick={() => onDetectSubject(sel.id, mainOnly)} disabled={detecting}>
+                  {detecting ? "Detecting…" : sel.raster ? "Detect again" : "Detect subject"}
+                </button>
+                <em>{sel.raster ? "subject found" : "runs on this computer"}</em>
+              </div>
+              <label className="mask-invert">
+                <input type="checkbox" checked={mainOnly} onChange={(e) => setMainOnly(e.target.checked)} />
+                Main subject only
+              </label>
+              <div className="hint">
+                The detector finds whatever stands out, so a second player or a referee can come back in the same
+                selection. Leave this on to keep just the largest one, and detect again after changing it.
+              </div>
+            </>
           )}
           {sel.kind === "radial" && (
             <Slider label="Feather" value={sel.feather} min={0} max={100} defaultValue={50} onChange={(v) => onChange({ ...sel, feather: v })} />

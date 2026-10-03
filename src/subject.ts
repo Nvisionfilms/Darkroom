@@ -129,7 +129,74 @@ export function refineMatte(mask: Uint8Array, guide: Uint8Array, w: number, h: n
   return out;
 }
 
-export async function detectSubject(picture: Blob, w: number, h: number): Promise<Uint8Array> {
+/**
+ * Keep only the biggest connected piece of a matte.
+ *
+ * The model finds whatever *stands out*, not one person: a second player on the
+ * far side of the field, or a referee, stands out too and comes back in the
+ * same matte. Everything it found is kept as separate islands, so dropping all
+ * but the largest leaves the subject that fills the frame and discards the ones
+ * behind it. Soft edges inside the kept island survive untouched - this decides
+ * which island, never how solid it is.
+ *
+ * Exported for the tests.
+ */
+export function largestRegion(mask: Uint8Array, w: number, h: number): Uint8Array {
+  const n = w * h;
+  if (n === 0 || mask.length < n) return mask;
+  const label = new Int32Array(n).fill(-1);
+  const stack = new Int32Array(n);
+  let best = -1;
+  let bestSize = 0;
+  let next = 0;
+  for (let seed = 0; seed < n; seed++) {
+    if (mask[seed] < 128 || label[seed] >= 0) continue;
+    const id = next++;
+    let top = 0;
+    let size = 0;
+    stack[top++] = seed;
+    label[seed] = id;
+    while (top > 0) {
+      const i = stack[--top];
+      size++;
+      const x = i % w;
+      const y = (i / w) | 0;
+      // four-connected: a diagonal touch is not the same object
+      if (x > 0 && mask[i - 1] >= 128 && label[i - 1] < 0) { label[i - 1] = id; stack[top++] = i - 1; }
+      if (x < w - 1 && mask[i + 1] >= 128 && label[i + 1] < 0) { label[i + 1] = id; stack[top++] = i + 1; }
+      if (y > 0 && mask[i - w] >= 128 && label[i - w] < 0) { label[i - w] = id; stack[top++] = i - w; }
+      if (y < h - 1 && mask[i + w] >= 128 && label[i + w] < 0) { label[i + w] = id; stack[top++] = i + w; }
+    }
+    if (size > bestSize) {
+      bestSize = size;
+      best = id;
+    }
+  }
+  // nothing found at all: leave the matte exactly as it came
+  if (best < 0) return mask;
+  const out = new Uint8Array(n);
+  for (let i = 0; i < n; i++) {
+    if (label[i] === best) out[i] = mask[i];
+    else if (label[i] < 0 && mask[i] >= 128) out[i] = 0;
+  }
+  // the soft fringe around the kept island belongs to it; the fringe around a
+  // discarded one does not, so weak pixels are kept only next to what survived
+  for (let y = 0; y < h; y++) {
+    for (let x = 0; x < w; x++) {
+      const i = y * w + x;
+      if (out[i] > 0 || mask[i] === 0) continue;
+      const near =
+        (x > 0 && label[i - 1] === best) ||
+        (x < w - 1 && label[i + 1] === best) ||
+        (y > 0 && label[i - w] === best) ||
+        (y < h - 1 && label[i + w] === best);
+      if (near) out[i] = mask[i];
+    }
+  }
+  return out;
+}
+
+export async function detectSubject(picture: Blob, w: number, h: number, mainOnly = true): Promise<Uint8Array> {
   const [[ort, sess], bitmap] = await Promise.all([session(), createImageBitmap(picture)]);
   const c = document.createElement("canvas");
   c.width = SIZE;
@@ -190,5 +257,6 @@ export async function detectSubject(picture: Blob, w: number, h: number): Promis
   for (let i = 0; i < guide.length; i++) {
     guide[i] = Math.round(gp[i * 4] * 0.2126 + gp[i * 4 + 1] * 0.7152 + gp[i * 4 + 2] * 0.0722);
   }
-  return refineMatte(raster, guide, w, h);
+  const refined = refineMatte(raster, guide, w, h);
+  return mainOnly ? largestRegion(refined, w, h) : refined;
 }

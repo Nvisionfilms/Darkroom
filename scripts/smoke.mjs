@@ -557,6 +557,106 @@ await step("the subject matte is pulled onto the picture's own edges", async () 
   expect(g.outside < 15, `the background was filled in: ${g.outside}`);
 });
 
+await step("subject detection can keep just the main subject", async () => {
+  // The model finds whatever stands out, so a player in the foreground and a
+  // referee behind them come back in one matte. Two islands here, one much
+  // bigger: only the bigger one may survive, with its soft edge intact.
+  const r = await js(`import('/src/subject.ts').then(m => {
+    const w = 200, h = 120;
+    const mask = new Uint8Array(w * h);
+    const blob = (cx, cy, rr) => {
+      for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+        const d = Math.hypot(x - cx, y - cy);
+        if (d <= rr) mask[y * w + x] = 255;
+        else if (d <= rr + 3) mask[y * w + x] = Math.round(255 * (1 - (d - rr) / 3));
+      }
+    };
+    blob(50, 60, 30);   // the subject
+    blob(160, 40, 10);  // someone in the background
+    const out = m.largestRegion(mask, w, h);
+    const sum = (v) => { let n = 0; for (let i = 0; i < v.length; i++) n += v[i] > 0 ? 1 : 0; return n; };
+    return JSON.stringify({
+      keptCentre: out[60 * w + 50],
+      keptEdge: out[60 * w + (50 + 31)],
+      dropped: out[40 * w + 160],
+      droppedFringe: out[40 * w + (160 + 11)],
+      before: sum(mask),
+      after: sum(out),
+    });
+  })`);
+  const g = JSON.parse(r);
+  expect(g.keptCentre === 255, `the main subject was not kept solid: ${g.keptCentre}`);
+  expect(g.keptEdge > 0 && g.keptEdge < 255, `the kept subject lost its soft edge: ${g.keptEdge}`);
+  expect(g.dropped === 0, `the background subject survived: ${g.dropped}`);
+  expect(g.droppedFringe === 0, `the background subject left a fringe behind: ${g.droppedFringe}`);
+  expect(g.after < g.before, `nothing was removed: ${g.before} -> ${g.after}`);
+});
+
+await step("a brush paints with a finger, not just a mouse", async () => {
+  // On a phone the browser claims a drag on the photo for scrolling and cancels
+  // the pointer stream, so the brush painted nothing while a mouse worked
+  // perfectly. Driven here as real touch events with touch emulation on, which
+  // is the only way that difference shows up.
+  await send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 5 });
+  try {
+    await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes('Add mask')).click(); true`);
+    await sleep(300);
+    await js(`[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === 'Brush').click(); true`);
+    await sleep(900);
+    expect(await js(`!!document.querySelector('.brush-overlay')`), "the brush surface is not on the photo");
+    // the phone needs this: without it the browser claims the drag for scrolling
+    expect(
+      await js(`getComputedStyle(document.querySelector('.brush-overlay')).touchAction === 'none'`),
+      "the brush surface still lets the browser take the gesture",
+    );
+
+    const box = await js(`(() => { const r = document.querySelector('.brush-overlay').getBoundingClientRect(); return JSON.stringify({ x: r.left + r.width / 2, y: r.top + r.height / 2 }); })()`);
+    const { x, y } = JSON.parse(box);
+    const at = (dx) => [{ x: x + dx, y, radiusX: 8, radiusY: 8, force: 1, id: 1 }];
+    await send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: at(-60) });
+    for (let dx = -40; dx <= 60; dx += 20) {
+      await send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: at(dx) });
+      await sleep(40);
+    }
+    await send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await sleep(1500);
+
+    const strokes = await js(`(window.__smokeMasks ?? 0, document.querySelectorAll('.mask-row').length)`);
+    expect(strokes > 0, "the brush mask vanished");
+    const painted = await js(`import('/src/api.ts').then(m => m.readEdits(${JSON.stringify(photo)})).then(e => {
+      const b = (e?.masks ?? []).find(m => m.kind === 'brush');
+      return b ? b.strokes.reduce((n, s) => n + s.x.length, 0) : 0;
+    })`);
+    expect(painted > 1, `a finger drag painted nothing (${painted} points recorded)`);
+  } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false });
+    await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+    await sleep(1500);
+  }
+});
+
+await step("the Android update check only offers a genuinely newer version", async () => {
+  // Android cannot replace itself - only its own package installer may - so it
+  // polls a manifest and hands the APK to the browser. Everything rests on the
+  // comparison, which must never nag about an equal or older version and must
+  // not be fooled by a malformed manifest.
+  const r = await js(`import('/src/updater.ts').then(m => JSON.stringify({
+    newer: m.isNewer('0.2.17', '0.2.16'),
+    same: m.isNewer('0.2.16', '0.2.16'),
+    older: m.isNewer('0.2.15', '0.2.16'),
+    minor: m.isNewer('0.3.0', '0.2.99'),
+    major: m.isNewer('1.0.0', '0.9.9'),
+    tagged: m.isNewer('v0.2.17', '0.2.16'),
+    short: m.isNewer('0.3', '0.2.16'),
+    junk: m.isNewer('', '0.2.16'),
+    junkBoth: m.isNewer('not-a-version', '0.2.16'),
+  }))`);
+  const v = JSON.parse(r);
+  expect(v.newer && v.minor && v.major && v.tagged && v.short, `a newer version was not offered: ${r}`);
+  expect(!v.same && !v.older, `an equal or older version was offered: ${r}`);
+  expect(!v.junk && !v.junkBoth, `a malformed manifest was offered as an update: ${r}`);
+});
+
 await step("the look exports as a .cube LUT and says what it left behind", async () => {
   const cube = join(dir, "look.cube").split("\\").join("/");
   // a colour setting a LUT can carry, and a spatial one it cannot

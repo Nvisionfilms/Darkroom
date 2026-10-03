@@ -22,6 +22,19 @@ export function UpdateBanner({ status, onInstall, onDismiss }: Props) {
       </div>
     );
   }
+  if (status.kind === "manual") {
+    return (
+      <div className="update-banner">
+        <span>
+          Darkroom {status.version} is available{status.notes ? `: ${status.notes.split("\n")[0]}` : ""}
+        </span>
+        <button className="primary" onClick={onInstall}>
+          Download
+        </button>
+        <button onClick={onDismiss}>Later</button>
+      </div>
+    );
+  }
   if (status.kind === "installing") {
     return (
       <div className="update-banner">
