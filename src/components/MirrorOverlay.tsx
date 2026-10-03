@@ -10,6 +10,14 @@ export interface Mapper {
   /** straightened-canvas pixel (crop space) <-> CSS pixel */
   canvasToScreen: (sx: number, sy: number) => [number, number];
   screenToCanvas: (sx: number, sy: number) => [number, number];
+  /** The cropped frame, in straightened-canvas pixels: origin and size. Things
+   *  that belong to the finished picture rather than to its content - the
+   *  watermark - are placed in this, so they keep their corner whatever the
+   *  crop is. */
+  outX: number;
+  outY: number;
+  outW: number;
+  outH: number;
   /** CSS px per image px */
   scale: number;
   /** total on-screen rotation of image axes, degrees */

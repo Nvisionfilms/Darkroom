@@ -40,15 +40,20 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     if req.params.star.is_active() {
         developed = crate::star::apply(&developed, img.width, img.height, &req.params.star);
     }
+    // crop + straighten + perspective + lens distortion/CA in one resample
+    let warp = req.params.warp(img.width, img.height);
+    let (mut developed, cw, ch) =
+        crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
+    // The watermark belongs to the cropped frame, not to the original: its
+    // place and its size are fractions of what you end up looking at. Put on
+    // before the crop, a mark in the corner of the photo ended up somewhere
+    // else once the photo was cropped, or outside it altogether. It goes on
+    // before the rotation, so it turns with the picture.
     let wmp = &req.params.watermark;
     if wmp.enabled && !wmp.path.is_empty() {
         let wm = pipeline::WatermarkImage::load(Path::new(&wmp.path))?;
-        pipeline::watermark_pass(&mut developed, img.width, img.height, wmp, &wm);
+        pipeline::watermark_pass(&mut developed, cw, ch, wmp, &wm);
     }
-    // crop + straighten + perspective + lens distortion/CA in one resample
-    let warp = req.params.warp(img.width, img.height);
-    let (developed, cw, ch) =
-        crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
     let (developed, dw, dh) = pipeline::rotate(&developed, cw, ch, req.params.rotation);
     let mut buf: ImageBuffer<Rgb<f32>, Vec<f32>> =
         ImageBuffer::from_raw(dw as u32, dh as u32, developed).context("buffer size mismatch")?;

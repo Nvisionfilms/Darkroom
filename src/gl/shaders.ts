@@ -8,8 +8,10 @@ in vec2 aPos;
 uniform mat3 uTransform;
 uniform mat3 uUvMat;   // unit quad -> texture coords (identity except for crop/straighten)
 out vec2 vUv;
+out vec2 vPos;   // the quad itself: where this pixel sits in the OUTPUT frame
 void main() {
   vUv = (uUvMat * vec3(aPos, 1.0)).xy;
+  vPos = aPos;
   vec3 p = uTransform * vec3(aPos, 1.0);
   gl_Position = vec4(p.xy, 0.0, 1.0);
 }`;
@@ -975,12 +977,20 @@ void main() {
 export const PRESENT_FRAG = `#version 300 es
 precision highp float;
 in vec2 vUv;
+in vec2 vPos;   // where this pixel sits in the cropped frame, 0..1
 out vec4 outColor;
 uniform sampler2D uTex;
 uniform vec2 uTexel;
 uniform vec2 uSize;
 uniform float uSharpen;
 uniform vec3 uOutside;   // colour for texels outside the image (straighten corners)
+// The watermark sits on the finished frame, so it is placed against the cropped
+// output rather than the original. Twin of the late watermark_pass in export.rs.
+uniform sampler2D uWmTex;
+uniform int uWmOn;
+uniform vec2 uOutSize;   // cropped output, px
+uniform vec4 uWmRect;    // x0, y0, w, h in those px
+uniform float uWmOpacity;
 // warp, twin of geometry.rs Warp
 uniform int uWarpOn;
 uniform int uTransformOn;
@@ -1047,6 +1057,15 @@ void main() {
       return;
     }
     c = texture(uTex, uv).rgb;
+  }
+  if (uWmOn == 1) {
+    // Placed against the cropped frame, so its corner stays its corner whatever
+    // the crop is. vPos is the quad itself, which covers exactly that frame.
+    vec2 wp = (vPos * uOutSize - uWmRect.xy) / uWmRect.zw;
+    if (all(greaterThanEqual(wp, vec2(0.0))) && all(lessThan(wp, vec2(1.0)))) {
+      vec4 ws = texture(uWmTex, wp);
+      c = mix(c, ws.rgb, ws.a * uWmOpacity);
+    }
   }
   if (uSharpen > 0.0) {
     float b = 0.0;

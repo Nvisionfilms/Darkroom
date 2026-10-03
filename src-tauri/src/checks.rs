@@ -907,3 +907,62 @@ fn feathering_a_masked_trail_does_not_weaken_it() {
         assert!((at(&soft, x, 32) - at(&img, x, 32)).abs() < 1e-6, "the subject was lightened at x={x}");
     }
 }
+
+/// A watermark belongs to the picture you end up with, not to the one you
+/// started from: cropping must not move it out of its corner, or off the frame.
+#[test]
+fn a_watermark_keeps_its_corner_when_the_photo_is_cropped() {
+    use crate::pipeline::{Watermark, WatermarkImage};
+
+    // a small solid red mark
+    let mark = WatermarkImage {
+        width: 8,
+        height: 8,
+        rgba: (0..8 * 8).flat_map(|_| [255u8, 0, 0, 255]).collect(),
+    };
+    let wm = Watermark {
+        enabled: true,
+        path: "x".into(),
+        // bottom right, as a signature would be
+        x: 0.85,
+        y: 0.9,
+        size: 0.12,
+        opacity: 100.0,
+    };
+
+    // Place it on a frame, and on the crop of that frame, and ask where it
+    // landed relative to each. Both have to put it in the same corner.
+    let red_centroid = |v: &[f32], w: usize, h: usize| -> (f32, f32) {
+        let (mut sx, mut sy, mut n) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 0..h {
+            for x in 0..w {
+                let i = (y * w + x) * 3;
+                if v[i] > 0.5 && v[i + 1] < 0.2 {
+                    sx += x as f32 / w as f32;
+                    sy += y as f32 / h as f32;
+                    n += 1.0;
+                }
+            }
+        }
+        assert!(n > 0.0, "the watermark is not on the frame at all");
+        (sx / n, sy / n)
+    };
+
+    let (fw, fh) = (200usize, 150usize);
+    let mut full = vec![0.5f32; fw * fh * 3];
+    crate::pipeline::watermark_pass(&mut full, fw, fh, &wm, &mark);
+    let on_full = red_centroid(&full, fw, fh);
+
+    // the same mark on a frame cropped to half the width and height
+    let (cw, ch) = (100usize, 75usize);
+    let mut cropped = vec![0.5f32; cw * ch * 3];
+    crate::pipeline::watermark_pass(&mut cropped, cw, ch, &wm, &mark);
+    let on_crop = red_centroid(&cropped, cw, ch);
+
+    assert!(
+        (on_full.0 - on_crop.0).abs() < 0.02 && (on_full.1 - on_crop.1).abs() < 0.02,
+        "the mark sits at {on_full:?} of the whole frame but {on_crop:?} of the cropped one"
+    );
+    // and it really is in the bottom right, not merely consistent
+    assert!(on_crop.0 > 0.7 && on_crop.1 > 0.75, "the mark is not in its corner: {on_crop:?}");
+}

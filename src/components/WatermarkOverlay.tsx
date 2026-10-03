@@ -13,17 +13,21 @@ interface Props {
 /** Draggable frame for the watermark: drag inside to move, corner to resize. */
 export function WatermarkOverlay({ watermark, aspect, mapper, onChange }: Props) {
   const drag = useRef<{ mode: "move" | "size"; sx: number; sy: number; start: Watermark } | null>(null);
-  const { width: W, height: H } = mapper;
+  // The watermark lives in the cropped frame, not in the original picture, so
+  // the frame is drawn and dragged in that same space - otherwise the handles
+  // sat somewhere other than the mark itself as soon as the photo was cropped.
+  const W = mapper.outW;
+  const H = mapper.outH;
   const long = Math.max(W, H);
   const wpx = watermark.size * long;
   const hpx = wpx / Math.max(aspect, 1e-3);
-  const cx = watermark.x * W;
-  const cy = watermark.y * H;
+  const cx = mapper.outX + watermark.x * W;
+  const cy = mapper.outY + watermark.y * H;
   const corners = [
-    mapper.toScreen(cx - wpx / 2, cy - hpx / 2),
-    mapper.toScreen(cx + wpx / 2, cy - hpx / 2),
-    mapper.toScreen(cx + wpx / 2, cy + hpx / 2),
-    mapper.toScreen(cx - wpx / 2, cy + hpx / 2),
+    mapper.canvasToScreen(cx - wpx / 2, cy - hpx / 2),
+    mapper.canvasToScreen(cx + wpx / 2, cy - hpx / 2),
+    mapper.canvasToScreen(cx + wpx / 2, cy + hpx / 2),
+    mapper.canvasToScreen(cx - wpx / 2, cy + hpx / 2),
   ];
   const points = corners.map((c) => c.join(",")).join(" ");
   const handle = corners[2];
@@ -31,7 +35,7 @@ export function WatermarkOverlay({ watermark, aspect, mapper, onChange }: Props)
   const localPoint = (e: React.PointerEvent): [number, number] => {
     const svg = (e.currentTarget as SVGElement).closest("svg")!;
     const rect = svg.getBoundingClientRect();
-    return mapper.toImage(e.clientX - rect.left, e.clientY - rect.top);
+    return mapper.screenToCanvas(e.clientX - rect.left, e.clientY - rect.top);
   };
 
   const onDown = (mode: "move" | "size") => (e: React.PointerEvent) => {

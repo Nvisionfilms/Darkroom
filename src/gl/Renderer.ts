@@ -1015,28 +1015,12 @@ export class Renderer {
       this.bindTex(0, this.t.fx.tex);
       gl.generateMipmap(gl.TEXTURE_2D);
     }
-    // watermark on top of whatever came out of the mirror stage
+    // The watermark is no longer a pass of its own: it is composited by the
+    // present pass, against the cropped output, so its corner stays its corner
+    // whatever the crop is. Twin of the late watermark_pass in export.rs.
     const wm = p.watermark;
     this.watermarkOn = wm.enabled && wm.opacity > 0 && !!this.wmTex && this.wmPath === wm.path;
-    if (this.watermarkOn) {
-      const src = this.mirrorOn ? this.t.fx : base;
-      const long = Math.max(this.imgW, this.imgH);
-      const dw = Math.max(1, wm.size * long);
-      const dh = (dw * this.wmH) / this.wmW;
-      const pr = this.prog.watermark;
-      this.pass(pr, this.t.fx2, () => {
-        this.bindTex(0, src.tex);
-        this.bindTex(1, this.wmTex!);
-        gl.uniform1i(this.loc(pr, "uTex"), 0);
-        gl.uniform1i(this.loc(pr, "uWm"), 1);
-        gl.uniform2f(this.loc(pr, "uSize"), this.imgW, this.imgH);
-        gl.uniform4f(this.loc(pr, "uRect"), wm.x * this.imgW - dw / 2, wm.y * this.imgH - dh / 2, dw, dh);
-        gl.uniform1f(this.loc(pr, "uOpacity"), Math.max(0, Math.min(1, wm.opacity / 100)));
-      });
-      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-      this.bindTex(0, this.t.fx2.tex);
-      gl.generateMipmap(gl.TEXTURE_2D);
-    }
+    this.wmPlace = { x: wm.x, y: wm.y, size: wm.size, opacity: Math.max(0, Math.min(1, wm.opacity / 100)) };
     // fence so the histogram read-back can wait without blocking the UI thread
     if (this.histFence) gl.deleteSync(this.histFence);
     this.histFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -1100,12 +1084,12 @@ export class Renderer {
   private starOn = false;
   private mirrorOn = false;
   private watermarkOn = false;
+  private wmPlace = { x: 0.85, y: 0.92, size: 0.2, opacity: 0.8 };
   private wmTex: WebGLTexture | null = null;
   private wmPath = "";
   private wmW = 1;
   private wmH = 1;
   private output(): Tex {
-    if (this.watermarkOn) return this.t.fx2;
     if (this.mirrorOn) return this.t.fx;
     return this.starOn ? this.t.fx0 : this.t.dev;
   }
@@ -1188,6 +1172,22 @@ export class Renderer {
     // crop/straighten: the quad shows the crop output (or the whole straightened
     // canvas in crop mode); uUvMat maps quad coords to source texture coords
     const out = this.cropSize(crop, cropMode);
+    // The watermark belongs to the finished frame, so it is measured against
+    // the cropped output rather than the original: its corner stays its corner
+    // however the photo is cropped.
+    // the quad covers the cropped frame before rotation, which is the space
+    // the watermark is stored in
+    gl.uniform1i(this.loc(pr, "uWmOn"), this.watermarkOn ? 1 : 0);
+    if (this.watermarkOn && this.wmTex) {
+      const wp = this.wmPlace;
+      const dw = Math.max(1, wp.size * Math.max(out.w, out.h));
+      const dh = (dw * this.wmH) / this.wmW;
+      this.bindTex(3, this.wmTex);
+      gl.uniform1i(this.loc(pr, "uWmTex"), 3);
+      gl.uniform2f(this.loc(pr, "uOutSize"), out.w, out.h);
+      gl.uniform4f(this.loc(pr, "uWmRect"), wp.x * out.w - dw / 2, wp.y * out.h - dh / 2, dw, dh);
+      gl.uniform1f(this.loc(pr, "uWmOpacity"), wp.opacity);
+    }
     const active = !!crop && crop.enabled && !cropIsIdentity(crop);
     const ang = active ? (crop!.angle * Math.PI) / 180 : 0;
     const ca = Math.cos(ang);
