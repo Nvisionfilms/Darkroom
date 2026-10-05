@@ -53,6 +53,8 @@ pub struct Star {
     pub falloff: f32,
     /// 0..100 rainbow spread towards the ends of the streaks
     pub dispersion: f32,
+    /// id of the mask the stars come from; empty = every highlight in the frame
+    pub mask: String,
 }
 
 impl Default for Star {
@@ -66,6 +68,7 @@ impl Default for Star {
             threshold: 75.0,
             falloff: 40.0,
             dispersion: 25.0,
+            mask: String::new(),
         }
     }
 }
@@ -126,6 +129,7 @@ fn highlight_map(
     width: usize,
     height: usize,
     threshold: f32,
+    weights: Option<&[f32]>,
 ) -> (Vec<f32>, usize, usize) {
     let qw = (width / 4).max(1);
     let qh = (height / 4).max(1);
@@ -135,6 +139,7 @@ fn highlight_map(
         .for_each(|(qy, row)| {
             for qx in 0..qw {
                 let mut sum = [0.0f32; 3];
+                let mut wsum = 0.0f32;
                 let mut n = 0.0f32;
                 for dy in 0..4 {
                     let y = qy * 4 + dy;
@@ -151,6 +156,9 @@ fn highlight_map(
                         sum[1] += img[i + 1];
                         sum[2] += img[i + 2];
                         n += 1.0;
+                        if let Some(w) = weights {
+                            wsum += w[y * width + x];
+                        }
                     }
                 }
                 let avg = if n > 0.0 {
@@ -158,7 +166,14 @@ fn highlight_map(
                 } else {
                     [0.0; 3]
                 };
-                row[qx * 3..qx * 3 + 3].copy_from_slice(&highlight(avg, threshold));
+                let mut h = highlight(avg, threshold);
+                // only the lights inside the mask star: the block's mean weight,
+                // which is what the GPU reads from a quarter-size copy of it
+                if weights.is_some() {
+                    let k = if n > 0.0 { wsum / n } else { 0.0 };
+                    h = [h[0] * k, h[1] * k, h[2] * k];
+                }
+                row[qx * 3..qx * 3 + 3].copy_from_slice(&h);
             }
         });
     (out, qw, qh)
@@ -245,11 +260,18 @@ fn streak_map(hi: &[f32], qw: usize, qh: usize, s: &Star, len_q: f32) -> Vec<f32
 
 /// Add the star to a developed (display-space, 0..1) buffer.
 pub fn apply(img: &[f32], width: usize, height: usize, s: &Star) -> Vec<f32> {
+    apply_masked(img, width, height, s, None)
+}
+
+/// As `apply`, with the stars coming only from lights where `weights` (one per
+/// pixel, 0..1) is lit. The streaks themselves run on past the mask's edge: a
+/// star is light spreading out of a source, not something cut off at a line.
+pub fn apply_masked(img: &[f32], width: usize, height: usize, s: &Star, weights: Option<&[f32]>) -> Vec<f32> {
     if !s.is_active() || width < 4 || height < 4 {
         return img.to_vec();
     }
     let threshold = (s.threshold / 100.0).clamp(0.0, 0.999);
-    let (hi, qw, qh) = highlight_map(img, width, height, threshold);
+    let (hi, qw, qh) = highlight_map(img, width, height, threshold, weights);
     let long = width.max(height) as f32;
     let len_q = s.len_px(long) / 4.0;
     if len_q < 0.25 {
@@ -317,7 +339,38 @@ mod tests {
             threshold: 50.0,
             falloff: 20.0,
             dispersion: 0.0,
+            mask: String::new(),
         }
+    }
+
+    /// Two lights; a mask over only the left one must leave the right one dark.
+    #[test]
+    fn a_masked_star_comes_only_from_lights_inside_the_mask() {
+        let mut img = vec![0.0f32; W * H * 3];
+        for (x0, x1) in [(14usize, 26usize), (70, 82)] {
+            for y in 26..38 {
+                for x in x0..x1 {
+                    for c in 0..3 {
+                        img[(y * W + x) * 3 + c] = 1.0;
+                    }
+                }
+            }
+        }
+        let mut weights = vec![0.0f32; W * H];
+        for y in 0..H {
+            for x in 0..W / 2 {
+                weights[y * W + x] = 1.0;
+            }
+        }
+        let s = Star { length: 30.0, ..cross() };
+        let whole = apply(&img, W, H, &s);
+        let masked = apply_masked(&img, W, H, &s, Some(&weights));
+        // a point on the right light's horizontal streak, just outside the block
+        let probe = (32usize, 84usize);
+        assert!(at(&whole, probe.1, probe.0) > 0.01, "control: the whole-frame star reaches the probe");
+        assert!(at(&masked, probe.1, probe.0) < 1e-4, "a light outside the mask grew a star");
+        // while the left one still stars past the mask's own edge
+        assert!(at(&masked, 28, 32) > 0.01, "the light inside the mask lost its star");
     }
 
     #[test]

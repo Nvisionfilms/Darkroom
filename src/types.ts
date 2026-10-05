@@ -107,6 +107,8 @@ export interface Star {
   falloff: number;
   /** 0..100 rainbow spread towards the ends of the streaks */
   dispersion: number;
+  /** id of the mask the stars come from; empty = every highlight in the frame */
+  mask: string;
 }
 
 /**
@@ -138,6 +140,7 @@ export function defaultStar(): Star {
     threshold: 75,
     falloff: 40,
     dispersion: 25,
+    mask: "",
   };
 }
 

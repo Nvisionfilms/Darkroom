@@ -6,6 +6,7 @@ import {
   decodeRaster,
   emptyRect,
   f16ToNumber,
+  maskGroupAlpha,
   rectValid,
   strokeStart,
   strokeTo,
@@ -359,6 +360,35 @@ export function Viewer({
     developDirty.current = true;
     requestRender();
   }, [params, requestRender]);
+
+  // the area a masked starburst takes its lights from
+  const starMaskId = params.star.enabled ? params.star.mask : "";
+  useEffect(() => {
+    const r = rendererRef.current;
+    if (!r || !image || !r.imgW) return;
+    if (!starMaskId) {
+      r.setStarMask(null, 1, 1);
+      developDirty.current = true;
+      requestRender();
+      return;
+    }
+    let cancelled = false;
+    const long = 384;
+    const gw = r.imgW >= r.imgH ? long : Math.max(1, Math.round((long * r.imgW) / r.imgH));
+    const gh = r.imgW >= r.imgH ? Math.max(1, Math.round((long * r.imgH) / r.imgW)) : long;
+    r.setStarMask(null, 1, 1); // nothing until the mask is ready
+    maskGroupAlpha(params.masks, starMaskId, gw, gh, null).then((a) => {
+      const rr = rendererRef.current;
+      if (cancelled || !rr) return;
+      rr.setStarMask(a ? a.data : null, gw, gh);
+      developDirty.current = true;
+      requestRender();
+    });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [starMaskId, params.masks, image, requestRender]);
 
   // mask overlay (red) on/off or a different mask selected
   useEffect(() => {

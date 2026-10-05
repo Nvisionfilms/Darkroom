@@ -2121,7 +2121,7 @@ export default function App() {
                 onChange={(e) => set("star")({ ...params.star, enabled: e.target.checked })}
               />
             </label>
-            <StarPanel star={params.star} onChange={set("star")} />
+            <StarPanel star={params.star} onChange={set("star")} masks={params.masks} />
           </InspectorSection>
 
           <InspectorSection title="Watermark" open={openSections.watermark} onToggle={() => toggleSection("watermark")}>

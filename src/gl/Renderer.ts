@@ -1067,6 +1067,9 @@ export class Renderer {
       this.bindTex(0, this.t.dev.tex);
       gl.uniform1i(this.loc(hi, "uTex"), 0);
       gl.uniform1f(this.loc(hi, "uThreshold"), starThreshold(s.threshold));
+      gl.uniform1i(this.loc(hi, "uUseMask"), s.mask ? 1 : 0);
+      gl.uniform1i(this.loc(hi, "uMask"), 1);
+      this.bindTex(1, this.starMaskTexture());
     });
     const sk = this.prog.starStreak;
     this.pass(sk, this.t.StQ, () => {
@@ -1094,6 +1097,38 @@ export class Renderer {
   }
 
   private starOn = false;
+  private starMaskTex: WebGLTexture | null = null;
+  private starMaskData: { data: Uint8Array; w: number; h: number } | null = null;
+  private starMaskDirty = false;
+
+  /**
+   * The area the stars come from, as an alpha map of any size (it is sampled by
+   * position), or null while it is still being worked out - in which case a
+   * starburst pointed at a mask shows nothing rather than the whole frame.
+   */
+  setStarMask(data: Uint8Array | null, w: number, h: number): void {
+    this.starMaskData = data ? { data, w, h } : null;
+    this.starMaskDirty = true;
+  }
+
+  private starMaskTexture(): WebGLTexture {
+    const gl = this.gl;
+    if (!this.starMaskTex) {
+      this.starMaskTex = gl.createTexture()!;
+      this.starMaskDirty = true;
+    }
+    gl.activeTexture(gl.TEXTURE0 + 1);
+    gl.bindTexture(gl.TEXTURE_2D, this.starMaskTex);
+    if (this.starMaskDirty) {
+      this.starMaskDirty = false;
+      const m = this.starMaskData ?? { data: new Uint8Array([0]), w: 1, h: 1 };
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.R8, m.w, m.h, 0, gl.RED, gl.UNSIGNED_BYTE, m.data);
+      gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+      this.setParams(gl.LINEAR, false);
+    }
+    return this.starMaskTex;
+  }
   private mirrorOn = false;
   private watermarkOn = false;
   private wmPlace = { x: 0.85, y: 0.92, size: 0.2, opacity: 0.8 };
