@@ -949,6 +949,67 @@ await step("a double exposure can use the photo you are editing, picked from the
   await sleep(1200);
 });
 
+await step("tone match pulls the photo towards a reference, backs off with strength, and undoes", async () => {
+  // A dark, low-contrast reference: the photo is bright, so a working match has
+  // to pull it down, and has to give every slider back when asked.
+  const dataUrl = await js(`(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 64; const g = c.getContext('2d'); const gr = g.createLinearGradient(0, 0, 64, 0); gr.addColorStop(0, '#0d0d0d'); gr.addColorStop(1, '#4a4a4a'); g.fillStyle = gr; g.fillRect(0, 0, 64, 64); return c.toDataURL('image/png'); })()`);
+  const refFile = join(dir, "smoke-reference.png").split("\\").join("/");
+  writeFileSync(refFile, Buffer.from(dataUrl.split(",")[1], "base64"));
+
+  const start = await js(`import('/src/api.ts').then(m => m.readEdits(${JSON.stringify(photo)})).then(e => JSON.stringify({ exposure: e?.exposure ?? 0, contrast: e?.contrast ?? 0, temperature: e?.temperature ?? 0 }))`);
+  const was = JSON.parse(start);
+
+  // the command itself, so a failure can be told apart from a UI problem
+  const direct = JSON.parse(
+    await js(`Promise.all([import('/src/api.ts'), import('/src/types.ts'), import('/src/curve.ts')]).then(async ([api, t, cv]) => {
+      const p = t.defaultParams();
+      const r = await api.matchTone(${JSON.stringify(refFile)}, p, Array.from(cv.buildLut(p.curves)));
+      return JSON.stringify({ exposure: r.values.exposure, before: r.distanceBefore, after: r.distanceAfter, refMedian: r.reference.q[3], beforeMedian: r.before.q[3], afterMedian: r.after.q[3] });
+    })`),
+  );
+  expect(direct.refMedian < direct.beforeMedian - 0.1, `the test reference is not darker than the photo: ${direct.refMedian} vs ${direct.beforeMedian}`);
+  expect(direct.exposure < -0.3, `a dark reference did not darken the photo: exposure ${direct.exposure}`);
+  expect(direct.after < direct.before * 0.5, `the match barely closed the gap: ${direct.before} -> ${direct.after}`);
+  expect(Math.abs(direct.afterMedian - direct.refMedian) < Math.abs(direct.beforeMedian - direct.refMedian) * 0.4, "the median did not move towards the reference");
+
+  // and through the app: the sliders move, strength backs them off, undo restores
+  await js(`window.__darkroom.toneMatch(${JSON.stringify(refFile)}); true`);
+  expect(await waitFor(`!!document.querySelector('.tonematch-panel .tm-curves')`, 20000), "the match result never appeared in the panel");
+  await sleep(800);
+  const matched = JSON.parse(await js(`JSON.stringify({ exposure: __smoke.sliderValue(__smoke.open('Tone'), 'Exposure') })`));
+  expect(matched.exposure < was.exposure - 0.3, `the Exposure slider did not move: ${was.exposure} -> ${matched.exposure}`);
+
+  await js(`__smoke.slider(__smoke.open('Tone Match'), 'Strength', 0); true`);
+  await sleep(700);
+  const off = JSON.parse(await js(`JSON.stringify({ exposure: __smoke.sliderValue(__smoke.open('Tone'), 'Exposure') })`));
+  expect(Math.abs(off.exposure - was.exposure) < 0.06, `strength 0 did not give the photo back: ${was.exposure} vs ${off.exposure}`);
+
+  await js(`__smoke.slider(__smoke.open('Tone Match'), 'Strength', 100); true`);
+  await sleep(700);
+  await js(`__smoke.button('Undo match')?.click(); true`);
+  await sleep(800);
+  const back = JSON.parse(await js(`JSON.stringify({ exposure: __smoke.sliderValue(__smoke.open('Tone'), 'Exposure'), contrast: __smoke.sliderValue(__smoke.open('Tone'), 'Contrast') })`));
+  expect(Math.abs(back.exposure - was.exposure) < 0.06, `Undo match left Exposure at ${back.exposure}, was ${was.exposure}`);
+  expect(Math.abs(back.contrast - was.contrast) < 1.5, `Undo match left Contrast at ${back.contrast}, was ${was.contrast}`);
+  expect(!(await js(`!!document.querySelector('.tonematch-panel .tm-curves')`)), "the result stayed up after Undo match");
+  await sleep(1500);
+});
+
+await step("tone match arithmetic backs a match off evenly", async () => {
+  const r = await js(`import('/src/toneMatch.ts').then(m => {
+    const from = { exposure: 0.2, contrast: 10, highlights: 0, shadows: 0, whites: 0, blacks: 0, temperature: 0, tint: 0, saturation: 0 };
+    const to = { exposure: 1.0, contrast: -30, highlights: 0, shadows: 0, whites: 0, blacks: 0, temperature: 40, tint: 0, saturation: 0 };
+    return JSON.stringify({ zero: m.blendTune(from, to, 0), one: m.blendTune(from, to, 1), half: m.blendTune(from, to, 0.5), over: m.blendTune(from, to, 7), closed: [m.closed(1, 0.1), m.closed(0, 0), m.closed(1, 3)] });
+  })`);
+  const v = JSON.parse(r);
+  expect(v.zero.exposure === 0.2 && v.zero.contrast === 10, "strength 0 is not the photo as it was");
+  expect(v.one.exposure === 1 && v.one.temperature === 40, "strength 1 is not the full match");
+  expect(Math.abs(v.half.exposure - 0.6) < 1e-9 && Math.abs(v.half.contrast + 10) < 1e-9 && Math.abs(v.half.temperature - 20) < 1e-9, `half strength is not halfway in each: ${JSON.stringify(v.half)}`);
+  expect(v.over.exposure === 1, "a strength past 100% extrapolated");
+  expect(Math.abs(v.closed[0] - 90) < 1e-6, `closed gap is ${v.closed[0]}`);
+  expect(v.closed[1] === 100 && v.closed[2] === 0, `closed gap edge cases: ${JSON.stringify(v.closed)}`);
+});
+
 await step("a library watermark lands on an export of a photo that had none", async () => {
   // Make a solid red mark, keep it in the library, then export the photo with it
   // chosen at export time. The photo itself has no watermark saved, which is the

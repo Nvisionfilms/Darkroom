@@ -19,6 +19,7 @@ import {
   findHealSource,
   exportCube,
   listPresets,
+  matchTone,
   pickSavePath,
   importPhoto,
   applyEdits,
@@ -62,6 +63,8 @@ import { useHistory } from "./history";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { StarPanel } from "./components/StarPanel";
 import { dropGoesToBlend, firstPhoto } from "./dropTarget";
+import { ToneMatchPanel } from "./components/ToneMatchPanel";
+import { blendTune, tuneOf, withTune } from "./toneMatch";
 import { VignettePanel } from "./components/VignettePanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
@@ -79,6 +82,8 @@ import {
   presetSettings,
   subtractInsertAt,
   type EditParams,
+  type ToneMatch,
+  type Tune,
   type Histogram as Hist,
   type ImageInfo,
   type HealSpot,
@@ -122,6 +127,7 @@ type InspectorKey =
   | "blend"
   | "star"
   | "vignette"
+  | "match"
   | "presets";
 
 /** The inspector section each phone tab opens, the rest start collapsed. */
@@ -334,6 +340,7 @@ export default function App() {
     blend: false,
     star: false,
     vignette: false,
+    match: false,
     presets: false,
   });
   // phones are updated by whatever installed them, never by themselves
@@ -389,8 +396,21 @@ export default function App() {
   const blendZone = useRef<HTMLDivElement | null>(null);
   // read by the drag-and-drop listener, which is set up once
   const blendOpenRef = useRef(false);
+  // the drop listener is set up once, so it reaches the latest handler this way
+  const runToneMatchRef = useRef<((p?: string) => Promise<void>) | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [cubeBusy, setCubeBusy] = useState(false);
+  // a tone match in progress: the reference, what the sliders were before, and
+  // the solver's answer, so strength can back it off and undo can put it back
+  const [toneMatch, setToneMatch] = useState<{
+    name: string;
+    path: string;
+    before: Tune;
+    result: ToneMatch;
+    strength: number;
+  } | null>(null);
+  const [matchBusy, setMatchBusy] = useState(false);
+  const matchOpenRef = useRef(false);
   const autoNrRef = useRef(autoNr);
   autoNrRef.current = autoNr;
 
@@ -406,6 +426,7 @@ export default function App() {
 
   masksRef.current = params.masks;
   blendOpenRef.current = openSections.blend;
+  matchOpenRef.current = openSections.match;
   const lut = useMemo(() => buildLut(params.curves), [params.curves]);
   const defaults = useMemo(() => defaultParamsForImage(current), [current?.metadata.kind]);
   const defaultLut = useMemo(() => buildLut(defaults.curves), [defaults]);
@@ -965,7 +986,7 @@ export default function App() {
     // (see dropTarget.ts); the box is the window, not the little zone.
     const over = (x: number, y: number) =>
       dropGoesToBlend(
-        blendOpenRef.current,
+        blendOpenRef.current || matchOpenRef.current,
         x,
         y,
         { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight },
@@ -982,7 +1003,10 @@ export default function App() {
           // the first thing dropped that is a photo, not just the first thing
           const photo = hit ? firstPhoto(p.paths, extensions) : null;
           if (hit && p.paths.length && !photo) setError("That is not a photo Darkroom can open.");
-          if (photo) void loadBlend(photo);
+          if (photo) {
+            if (blendOpenRef.current) void loadBlend(photo);
+            else void runToneMatchRef.current?.(photo);
+          }
         } else {
           setBlendDrop(false);
         }
@@ -998,6 +1022,56 @@ export default function App() {
   }, [loadBlend, extensions]);
 
   // ---- develop presets ----
+  /**
+   * Match the photo to a reference picture. The solver starts from the sliders
+   * as they were before any earlier match, not from the matched ones, so trying
+   * another reference does not build on the last.
+   */
+  const runToneMatch = useCallback(
+    async (dropped?: string) => {
+      if (!current) return;
+      setMatchBusy(true);
+      try {
+        const picked = dropped ?? (await pickPhoto(extensions.length ? extensions : ["*"], photoFolder));
+        if (!picked) return;
+        const path = await importPhoto(picked);
+        const before = toneMatch ? toneMatch.before : tuneOf(params);
+        const base = withTune(params, before);
+        const result = await matchTone(path, base, [...buildLut(base.curves)]);
+        setToneMatch({ name: fileName(path), path, before, result, strength: 100 });
+        setParams((p) => withTune(p, result.values));
+        setOpenSections((prev) => ({ ...prev, match: true }));
+      } catch (e) {
+        setError(`Could not match to that picture: ${String(e)}`);
+      } finally {
+        setMatchBusy(false);
+      }
+    },
+    [current, extensions, photoFolder, toneMatch, params],
+  );
+
+  runToneMatchRef.current = runToneMatch;
+
+  const setMatchStrength = useCallback(
+    (percent: number) => {
+      if (!toneMatch) return;
+      setToneMatch({ ...toneMatch, strength: percent });
+      setParams((p) => withTune(p, blendTune(toneMatch.before, toneMatch.result.values, percent / 100)));
+    },
+    [toneMatch],
+  );
+
+  const clearToneMatch = useCallback(() => {
+    if (!toneMatch) return;
+    setParams((p) => withTune(p, toneMatch.before));
+    setToneMatch(null);
+  }, [toneMatch]);
+
+  // a match belongs to the photo it was made for
+  useEffect(() => {
+    setToneMatch(null);
+  }, [current?.path]);
+
   /**
    * Write the look as a .cube 3D LUT. A LUT is a colour-for-colour lookup, so it
    * can only carry what depends on a pixel's own colour; whatever had to be left
@@ -1189,6 +1263,7 @@ export default function App() {
       load,
       autoEdit,
       doubleExpose: (path: string) => loadBlend(path),
+      toneMatch: (path: string) => runToneMatchRef.current?.(path),
       capture: (opts?: { full?: boolean }) => captureRef.current?.(opts) ?? null,
     };
   }, [load, autoEdit, loadBlend]);
@@ -1736,6 +1811,20 @@ export default function App() {
 
           <InspectorSection title="Color Grading" shortcut="G" open={openSections.grading} onToggle={() => toggleSection("grading")}>
             <GradingPanel grading={params.grading} onChange={set("grading")} />
+          </InspectorSection>
+
+          <InspectorSection title="Tone Match" open={openSections.match} onToggle={() => toggleSection("match")}>
+            <ToneMatchPanel
+              disabled={!current}
+              busy={matchBusy}
+              match={toneMatch}
+              strip={files.map((f) => ({ path: f.path, name: fileName(f.path) }))}
+              currentPath={current?.path ?? null}
+              onPick={() => void runToneMatch()}
+              onPickFromStrip={(path) => void runToneMatch(path)}
+              onStrength={setMatchStrength}
+              onClear={clearToneMatch}
+            />
           </InspectorSection>
 
           <InspectorSection title="Detail" shortcut="D" open={openSections.detail} onToggle={() => toggleSection("detail")}>

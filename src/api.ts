@@ -4,6 +4,7 @@ import type {
   EditParams,
   Preset,
   ExportRequest,
+  ToneMatch,
   ImageInfo,
   MonitorInfo,
   MonitorShot,
@@ -206,6 +207,14 @@ export async function savePreset(name: string, settings: unknown): Promise<Prese
 
 export async function deletePreset(name: string): Promise<void> {
   await invoke("delete_preset", { name });
+}
+
+/**
+ * Find the sliders that make the open photo look like a reference picture. The
+ * answer is nine ordinary slider values, so it stays editable and undoable.
+ */
+export async function matchTone(path: string, params: EditParams, lut: number[]): Promise<ToneMatch> {
+  return invoke<ToneMatch>("match_tone", { path, params, lut });
 }
 
 /** A watermark saved in the library. */

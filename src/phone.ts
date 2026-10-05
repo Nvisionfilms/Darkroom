@@ -62,7 +62,7 @@ export interface PhoneTab {
 /** In the order they sit along the bottom bar. */
 export const PHONE_TABS: PhoneTab[] = [
   { id: "light", label: "Light", glyph: "☀", sections: ["Tone"] },
-  { id: "color", label: "Color", glyph: "◑", sections: ["Color", "HSL", "Color Grading"] },
+  { id: "color", label: "Color", glyph: "◑", sections: ["Color", "HSL", "Color Grading", "Tone Match"] },
   { id: "curves", label: "Curves", glyph: "∿", sections: ["Curves"] },
   { id: "detail", label: "Detail", glyph: "◇", sections: ["Detail", "Noise Reduction", "Grain"] },
   { id: "effects", label: "Effects", glyph: "✦", sections: ["Double Exposure", "Vignette", "Starburst", "Watermark"] },

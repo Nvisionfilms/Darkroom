@@ -23,6 +23,7 @@ pub mod profiles;
 pub mod sidecar;
 pub mod cube;
 pub mod star;
+pub mod tonematch;
 pub mod vignette;
 pub mod wmlib;
 pub mod tether;
@@ -730,6 +731,38 @@ async fn mobile_update() -> Result<Option<serde_json::Value>, String> {
     }
 }
 
+/// Find the sliders that make the open photo look like a reference picture.
+///
+/// Both pictures are shrunk to a couple of hundred pixels and the real develop
+/// pipeline is run over the small copy of the photo while the solver searches,
+/// so the answer is what the app would actually produce, not an estimate of it.
+/// The result is nine ordinary slider values; nothing is written into pixels.
+#[tauri::command]
+async fn match_tone(
+    path: String,
+    params: pipeline::EditParams,
+    lut: Vec<f32>,
+    state: State<'_, AppState>,
+) -> Result<tonematch::Match, String> {
+    let image = {
+        let guard = state.loaded.lock().unwrap();
+        guard.as_ref().ok_or("no image loaded")?.image.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<tonematch::Match> {
+        let lut = if lut.len() == 1024 { lut } else { pipeline::identity_lut() };
+        let p = Path::new(&path);
+        let (reference_image, _) = decode::load(p)?;
+        let reference_small = decode::downsample(&reference_image, tonematch::PROXY_EDGE);
+        drop(reference_image);
+        let reference = tonematch::reference_stats(&reference_small, decode::is_raw(p), &lut);
+        let small = decode::downsample(&image, tonematch::PROXY_EDGE);
+        Ok(tonematch::run(&small, &params, &lut, &reference))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)
+}
+
 /// The watermarks saved for reuse.
 #[tauri::command]
 fn watermark_library(app: tauri::AppHandle) -> Result<Vec<wmlib::Mark>, String> {
@@ -781,6 +814,7 @@ pub fn run() {
             export_image,
             export_cube,
             mobile_update,
+            match_tone,
             watermark_library,
             watermark_save,
             watermark_delete,

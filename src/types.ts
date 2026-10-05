@@ -654,6 +654,37 @@ export interface PreviewImage {
   noiseShadow: number;
 }
 
+/** What a picture looks like for tone matching. Twin of tonematch.rs. */
+export interface ToneStats {
+  /** brightness at the 1st, 5th, 25th, 50th, 75th, 95th and 99th percentiles */
+  q: number[];
+  /** red and blue share of the light in the mid tones */
+  mid: [number, number];
+  sat: number;
+}
+
+/** The sliders a tone match sets. */
+export interface Tune {
+  exposure: number;
+  contrast: number;
+  highlights: number;
+  shadows: number;
+  whites: number;
+  blacks: number;
+  temperature: number;
+  tint: number;
+  saturation: number;
+}
+
+export interface ToneMatch {
+  values: Tune;
+  reference: ToneStats;
+  before: ToneStats;
+  after: ToneStats;
+  distanceBefore: number;
+  distanceAfter: number;
+}
+
 export interface Histogram {
   r: Uint32Array;
   g: Uint32Array;
