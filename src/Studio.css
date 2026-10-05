@@ -1,0 +1,107 @@
+/* Darkroom studio shell: neutral surfaces keep the photograph authoritative. */
+:root {
+  --bg: #101013;
+  --chrome: #16161a;
+  --panel: #19191e;
+  --panel-2: #222229;
+  --panel-3: #2b2b34;
+  --border: #303039;
+  --border-soft: #25252d;
+  --text: #eeeef2;
+  --muted: #aaaab8;
+  --muted-2: #858594;
+  --accent: #b9a2ff;
+  --accent-strong: #8b6fe0;
+  --accent-soft: #b9a2ff18;
+  font-size: 13px;
+}
+button:focus-visible, input:focus-visible, select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+input[type="checkbox"] { accent-color: var(--accent); }
+.app { grid-template-rows: 76px minmax(0, 1fr) 120px; }
+.topbar { background: var(--chrome); padding: 0 22px; grid-template-columns: 210px minmax(0, 1fr) auto; }
+.brand-mark { position: relative; width: 38px; height: 38px; background: #b9a2ff12; border-color: #b9a2ff35; color: #d4c6ff; border-radius: 12px; font-size: 26px; font-weight: 600; }
+.brand-spark { position: absolute; right: 3px; bottom: 2px; font-size: 13px; color: var(--accent); }
+.brand-copy strong { font-size: 18px; letter-spacing: -.04em; }
+.brand-copy small { font-size: 8px; letter-spacing: .15em; color: var(--muted); }
+.file-context { align-items: flex-start; text-align: left; padding-left: 16px; border-left: 1px solid var(--border); }
+.file-context strong { font-weight: 500; }
+.top-actions { gap: 6px; }
+.zoom-pill { display: none; }
+.export-button { padding: 10px 20px; border-radius: 9px; }
+.main { grid-template-columns: 86px minmax(0, 1fr) 340px; background: var(--bg); }
+.toolrail { background: var(--chrome); padding: 16px 10px; gap: 7px; }
+.toolrail button { min-height: 61px; border-radius: 12px; color: var(--muted); }
+.toolrail button.active { background: var(--accent-soft); border-color: #b9a2ff30; color: #ded3ff; }
+.toolrail button:hover:not(:disabled) { background: var(--panel-2); }
+.tool-glyph { font-size: 21px; }
+.viewer-shell, .viewer { background: #0c0c0f; }
+.viewer { background: radial-gradient(ellipse at center, #1d1d23, #0c0c0f 80%); }
+.viewer-toolbar { height: 43px; flex-basis: 43px; background: #121216; padding-inline: 18px; }
+.viewer-toolbar button { background: transparent; color: var(--muted); border-color: var(--border-soft); }
+.workspace-caption { margin-left: 10px; color: var(--muted-2); font-size: 10px; }
+.panel { background: var(--panel); border-left-color: var(--border-soft); }
+.inspector-top { min-height: 72px; padding: 14px 18px; background: #19191efa; }
+.inspector-top strong { font-size: 19px; font-weight: 550; letter-spacing: -.025em; }
+.inspector-top span { font-size: 11px; color: var(--muted); margin-top: 5px; }
+.histogram-card { background: #131318; margin: 14px 16px; border-color: var(--border-soft); padding: 12px; }
+.histogram-card.hidden { display: none; }
+.histogram-head { margin-bottom: 10px; }
+.scope-tabs .tab { padding: 4px 6px; }
+.inspector-section { margin: 0 16px 8px; border-color: var(--border-soft); background: transparent; border-radius: 10px; }
+.inspector-section.open { background: #1e1e25; }
+.inspector-section-head { min-height: 46px; padding: 0 13px; }
+.inspector-section-head:hover:not(:disabled) { background: #25252d; }
+.inspector-section-title { font-size: 12px; color: var(--text); }
+.inspector-section-body { padding: 8px 13px 14px; border-color: var(--border-soft); }
+.inspector-section-meta kbd { background: #16161b; color: var(--muted-2); }
+.slider { margin: 12px 0; }
+.slider-label { color: #c4c4cf; font-size: 11px; }
+.slider-range { background: #41414d; }
+.slider-range::-webkit-slider-thumb { background: #d6c8ff; }
+.slider-range::-moz-range-thumb { width: 11px; height: 11px; border-radius: 50%; background: #d6c8ff; border: 1px solid #101013; }
+.feature-toggle { background: #16161b; }
+.feature-toggle small, .hint, .section-note { color: var(--muted-2); }
+.effect-launcher { display: grid; gap: 8px; margin: 0 16px 16px; }
+.effect-launcher button { display: grid; grid-template-columns: 42px 1fr; gap: 3px 12px; padding: 12px; text-align: left; background: #22212b; border-color: #b9a2ff20; }
+.effect-launcher button > span { grid-row: span 2; display: grid; place-items: center; font-size: 30px; color: var(--accent); background: #b9a2ff0c; border-radius: 8px; }
+.effect-launcher strong { font-size: 12px; font-weight: 550; }
+.effect-launcher small { font-size: 10px; color: var(--muted); }
+.filmstrip { background: var(--chrome); grid-template-columns: 290px minmax(0, 1fr); }
+.filmstrip-summary { padding-inline: 20px; }
+.filmstrip-track { gap: 10px; padding-inline: 16px; }
+.thumb { border-radius: 8px; }
+.thumb.active { background: var(--accent-soft); border-color: var(--accent); }
+.thumb-name { color: var(--muted); }
+.app.strip-hidden { grid-template-rows: 76px minmax(0, 1fr) 0; }
+.app.strip-hidden > .filmstrip { display: none; }
+.viewer-empty { gap: 16px; }
+.viewer-empty-kicker { color: var(--accent); font-size: 10px; letter-spacing: .22em; }
+.viewer-empty-title { text-transform: none; color: #eeeef2; font-size: clamp(24px, 3vw, 42px); letter-spacing: -.045em; font-weight: 500; }
+.viewer-empty-formats { padding: 8px 14px; border: 1px solid var(--border); border-radius: 20px; font-size: 10px; letter-spacing: .14em; }
+.viewer-empty .hint { max-width: 340px; line-height: 1.8; }
+@media (max-width: 1180px) {
+  .topbar { grid-template-columns: 185px minmax(0, 1fr) auto; padding-inline: 14px; }
+  .main { grid-template-columns: 74px minmax(0, 1fr) 310px; }
+  .toolrail { padding-inline: 7px; }
+  .file-context { padding-left: 10px; }
+  .workspace-caption { display: none; }
+}
+/* Shared controls retain the phone sheet's touch targets. */
+.app.phone .main { display: flex; }
+.phone-topbar, .phone-tabs { background: var(--chrome); }
+.phone-tabs button.active { background: var(--accent-soft); color: #ded3ff; }
+.sheet-head { background: var(--panel); padding: 14px 16px; }
+.app.phone.sheet-open .panel { background: var(--panel); border-radius: 20px 20px 0 0; }
+.app.phone .effect-launcher { display: none; }
+.app.phone .slider-range::-moz-range-thumb { width: 24px; height: 24px; }
+.app.phone .viewer-empty { padding: 24px; gap: 12px; }
+.app.phone .viewer-empty-title { font-size: 28px; }
+@media (orientation: landscape) {
+  .app.phone.sheet-open .panel { border-radius: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  button { transition: none; }
+}

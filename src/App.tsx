@@ -97,6 +97,7 @@ import {
   type TetherStatus,
 } from "./types";
 import "./App.css";
+import "./Studio.css";
 
 /**
  * A trail being switched on picks up the mask the photo already has, which is
@@ -144,6 +145,24 @@ const PHONE_TAB_OPENS: Record<PhoneTabId, InspectorKey> = {
   repair: "heal",
   presets: "presets",
 };
+
+type WorkspaceId = "edit" | "effects" | "masks" | "connect" | "crop" | "repair";
+const WORKSPACES: Record<WorkspaceId, { label: string; hint: string; sections: ReadonlySet<string> }> = {
+  edit: { label: "Edit", hint: "Light, color & finishing", sections: new Set(["Tone", "Color", "Curves", "HSL", "Color Grading", "Tone Match", "Detail", "Noise Reduction", "Presets", "Lens Corrections", "Transform"]) },
+  effects: { label: "Effects", hint: "Shape light. Create movement.", sections: new Set(["Grain", "Motion Trails", "Double Exposure", "Vignette", "Starburst", "Watermark"]) },
+  masks: { label: "Masks", hint: "Precision, where it matters", sections: new Set(["Masks", "Motion Trails"]) },
+  connect: { label: "Connect", hint: "Capture & phone monitoring", sections: new Set(["Tethered Capture", "Phone Monitor"]) },
+  crop: { label: "Crop", hint: "Compose your frame", sections: new Set(["Crop & Straighten", "Transform", "Lens Corrections"]) },
+  repair: { label: "Repair", hint: "Heal & clone real pixels", sections: new Set(["Object Remover"]) },
+};
+function workspaceFor(key: InspectorKey): WorkspaceId {
+  if (["grain", "mirror", "blend", "vignette", "star", "watermark"].includes(key)) return "effects";
+  if (key === "masks") return "masks";
+  if (key === "tether" || key === "monitor") return "connect";
+  if (key === "crop") return "crop";
+  if (key === "heal") return "repair";
+  return "edit";
+}
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
 const PHOTO_FOLDER_KEY = "darkroom.photoFolder";
@@ -294,6 +313,8 @@ function applyAutoEdit(p: EditParams, noiseSigma: number): EditParams {
 }
 
 export default function App() {
+  const [workspace, setWorkspace] = useState<WorkspaceId>("edit");
+  const [stripVisible, setStripVisible] = useState(true);
   const [extensions, setExtensions] = useState<string[]>([]);
   const [files, setFiles] = useState<ImageInfo[]>([]);
   const [current, setCurrent] = useState<ImageInfo | null>(null);
@@ -1282,6 +1303,7 @@ export default function App() {
     setOpenSections((prev) => ({ ...prev, [key]: !prev[key] }));
   }, []);
   const revealSection = useCallback((key: InspectorKey) => {
+    setWorkspace(workspaceFor(key));
     setOpenSections((prev) => ({ ...prev, [key]: true }));
   }, []);
 
@@ -1523,7 +1545,7 @@ export default function App() {
   );
 
   return (
-    <div className={"app" + (phone ? " phone" : "") + (phone && phoneTab ? " sheet-open" : "")}>
+    <div className={"app" + (!stripVisible && !phone ? " strip-hidden" : "") + (phone ? " phone" : "") + (phone && phoneTab ? " sheet-open" : "")}>
       {phone && (
         <header className="phone-topbar">
           <button type="button" className="phone-icon" onClick={() => setPhoneLibrary(true)} aria-label="Photos">
@@ -1558,10 +1580,10 @@ export default function App() {
       )}
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">◢</span>
+          <span className="brand-mark" aria-hidden="true">D<span className="brand-spark">✦</span></span>
           <span className="brand-copy">
             <strong>Darkroom</strong>
-            <small>RAW Photography. Deeper.</small>
+            <small>Creative photo studio</small>
           </span>
         </div>
 
@@ -1619,16 +1641,16 @@ export default function App() {
           <button type="button" onClick={openFiles} title="Open photos">
             <span className="tool-glyph">▧</span><span>Browse</span>
           </button>
-          <button type="button" className={!cropMode ? "active" : ""} onClick={() => revealSection("tone")}>
-            <span className="tool-glyph">☷</span><span>Develop</span>
+          <button type="button" className={workspace === "edit" && !cropMode && !healTool ? "active" : ""} onClick={() => { setCropMode(false); setHealTool(false); setSelectedMaskId(null); revealSection("tone"); }}>
+            <span className="tool-glyph">☷</span><span>Edit</span>
           </button>
           <button type="button" className={cropMode ? "active" : ""} onClick={toggleCropMode} disabled={!current}>
             <span className="tool-glyph">⌗</span><span>Crop</span>
           </button>
           <button
             type="button"
-            className={selectedMaskId ? "active" : ""}
-            onClick={() => revealSection("masks")}
+            className={workspace === "masks" && !cropMode && !healTool ? "active" : ""}
+            onClick={() => { setCropMode(false); setHealTool(false); revealSection("masks"); }}
             disabled={!current}
             title="Local adjustments: gradients, brush, luminance range, subject"
           >
@@ -1645,10 +1667,10 @@ export default function App() {
           </button>
           <button
             type="button"
+            className={workspace === "effects" && !cropMode && !healTool ? "active" : ""}
             onClick={() => {
-              revealSection("blend");
-              revealSection("mirror");
-              revealSection("watermark");
+              setCropMode(false); setHealTool(false); setSelectedMaskId(null);
+              revealSection("star");
             }}
             disabled={!current}
           >
@@ -1656,17 +1678,15 @@ export default function App() {
           </button>
           <button
             type="button"
-            className={tether.active || monitor?.active ? "live" : ""}
+            className={(workspace === "connect" && !cropMode && !healTool ? "active " : "") + (tether.active || monitor?.active ? "live" : "")}
             onClick={() => {
+              setCropMode(false); setHealTool(false); setSelectedMaskId(null);
               revealSection("tether");
               revealSection("monitor");
             }}
             title="Shoot into Darkroom and watch on a phone"
           >
-            <span className="tool-glyph">⌁</span><span>Tether</span>
-          </button>
-          <button type="button" onClick={() => setShowExport(true)} disabled={!current}>
-            <span className="tool-glyph">⇧</span><span>Export</span>
+            <span className="tool-glyph">⌁</span><span>Connect</span>
           </button>
           <span className="toolrail-spacer" />
           <button type="button" onClick={() => setShowAbout(true)}>
@@ -1687,10 +1707,11 @@ export default function App() {
                 Hold Original
               </button>
               <span className="viewer-hint">\\</span>
+              <span className="workspace-caption">{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].label} workspace</span>
             </div>
             <div className="viewer-toolbar-group">
               <button onClick={reset} disabled={!current}>Reset edit</button>
-              <span className="viewer-zoom">{zoom}</span>
+              <button type="button" onClick={() => setStripVisible((v) => !v)} aria-pressed={stripVisible} title="Toggle photo filmstrip">{stripVisible ? "Hide photos" : "Show photos"}</button>
             </div>
           </div>
 
@@ -1733,7 +1754,7 @@ export default function App() {
           />
         </div>
 
-        <SectionFilter.Provider value={phone ? phoneSections : null}>
+        <SectionFilter.Provider value={phone ? phoneSections : WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].sections}>
         <aside className="panel">
           {phone && (
             <div className="sheet-head">
@@ -1748,13 +1769,13 @@ export default function App() {
           )}
           <div className="inspector-top">
             <div>
-              <strong>Edit</strong>
-              <span>Non-destructive develop</span>
+              <strong>{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].label}</strong>
+              <span>{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].hint}</span>
             </div>
             <button onClick={reset} disabled={!current}>Reset all</button>
           </div>
 
-          <div className="histogram-card">
+          <div className={"histogram-card" + (workspace === "connect" ? " hidden" : "")}>
             <div className="histogram-head">
               <span className="scope-tabs">
                 {SCOPE_LABELS.map((s) => (
@@ -1775,6 +1796,15 @@ export default function App() {
             <Scopes kind={scope} hist={hist} frame={scopeFrame} skinLine={skinLine} />
           </div>
 
+          {!phone && workspace === "effects" && !cropMode && !healTool && (
+            <div className="effect-launcher" aria-label="Creative effects">
+              {([ ["star", "Starburst", "✧", "Turn highlights into light"], ["mirror", "Motion Trails", "≋", "Echo movement through a mask"], ["blend", "Double Exposure", "◈", "Layer a second photograph"] ] as const).map(([key, label, glyph, hint]) => (
+                <button key={key} type="button" onClick={() => { revealSection(key); window.requestAnimationFrame(() => document.querySelector(`[data-section="${label}"]`)?.scrollIntoView({ block: "nearest", behavior: "smooth" })); }}>
+                  <span aria-hidden="true">{glyph}</span><strong>{label}</strong><small>{hint}</small>
+                </button>
+              ))}
+            </div>
+          )}
           <InspectorSection title="Tone" shortcut="L" open={openSections.tone} onToggle={() => toggleSection("tone")}>
             <label className="field">
               <span>Profile</span>

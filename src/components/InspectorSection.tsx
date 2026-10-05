@@ -2,8 +2,7 @@ import { createContext, useContext, useEffect, useRef, type ReactNode } from "re
 
 /**
  * The section titles to show, or null for all of them. The phone layout sets
- * this to one tab's sections so its bottom sheet holds only those; the
- * desktop never provides it.
+ * this to one tab's sections so its bottom sheet holds only those; desktop provides the selected workspace.
  */
 export const SectionFilter = createContext<ReadonlySet<string> | null>(null);
 
@@ -55,16 +54,7 @@ export function InspectorSection({ title, open, onToggle, shortcut, note, childr
     const railButton = document.querySelector(`.toolrail button:nth-of-type(${buttonIndex})`) as HTMLButtonElement | null;
     if (!railButton) return;
 
-    const onRailClick = () => {
-      // Develop should return to the normal develop workspace even if the crop
-      // workspace is active. App.tsx owns crop state, so use its existing Crop
-      // button to exit that mode rather than duplicating state here.
-      if (title === "Tone") {
-        const cropButton = document.querySelector(".toolrail button:nth-of-type(3)") as HTMLButtonElement | null;
-        if (cropButton?.classList.contains("active")) cropButton.click();
-      }
-      jump();
-    };
+    const onRailClick = () => jump();
 
     railButton.addEventListener("click", onRailClick);
     return () => railButton.removeEventListener("click", onRailClick);

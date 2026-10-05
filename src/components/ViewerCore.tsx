@@ -1032,8 +1032,11 @@ export function Viewer({
       {error && <div className="viewer-error">{error}</div>}
       {!image && !error && (
         <div className="viewer-empty">
-          <div className="viewer-empty-title">Darkroom</div>
-          <div>Open a RAW (CR2, CR3, ARW, NEF, DNG, RAF…), JPEG, PNG or TIFF to begin.</div>
+          <div className="viewer-empty-kicker">DARKROOM / CREATIVE STUDIO</div>
+          <div className="viewer-empty-title">Make the frame yours.</div>
+          <div>Light, color, motion. Start with your photograph.
+          </div>
+          <div className="viewer-empty-formats">RAW · JPEG · PNG · TIFF</div>
           <div className="hint">Ctrl+O to open · scroll to zoom · drag to pan · double-click for 1:1 · hold \ for before</div>
         </div>
       )}
