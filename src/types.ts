@@ -636,6 +636,8 @@ export interface ImageInfo {
   previewHeight: number;
   /** noise sigma of the preview in the sqrt-luma domain */
   noiseSigma: number;
+  /** how fast noise rises into the shadows; see denoise.rs noise_factor */
+  noiseShadow: number;
   metadata: Metadata;
   edits: EditParams | null;
   thumbnail: string;
@@ -649,6 +651,7 @@ export interface PreviewImage {
   /** interleaved RGB half floats */
   data: Uint16Array;
   noiseSigma: number;
+  noiseShadow: number;
 }
 
 export interface Histogram {

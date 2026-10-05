@@ -61,6 +61,7 @@ import { PHONE_TABS, usePhone, type PhoneTabId } from "./phone";
 import { useHistory } from "./history";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { StarPanel } from "./components/StarPanel";
+import { dropGoesToBlend, firstPhoto } from "./dropTarget";
 import { VignettePanel } from "./components/VignettePanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
@@ -201,6 +202,7 @@ function placeholder(path: string): ImageInfo {
     previewWidth: 0,
     previewHeight: 0,
     noiseSigma: 0,
+    noiseShadow: 0,
     metadata: { kind: "" },
     edits: null,
     thumbnail: "",
@@ -385,6 +387,8 @@ export default function App() {
   const [blendBusy, setBlendBusy] = useState(false);
   const [blendDrop, setBlendDrop] = useState(false);
   const blendZone = useRef<HTMLDivElement | null>(null);
+  // read by the drag-and-drop listener, which is set up once
+  const blendOpenRef = useRef(false);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [cubeBusy, setCubeBusy] = useState(false);
   const autoNrRef = useRef(autoNr);
@@ -401,6 +405,7 @@ export default function App() {
   }, []);
 
   masksRef.current = params.masks;
+  blendOpenRef.current = openSections.blend;
   const lut = useMemo(() => buildLut(params.curves), [params.curves]);
   const defaults = useMemo(() => defaultParamsForImage(current), [current?.metadata.kind]);
   const defaultLut = useMemo(() => buildLut(defaults.curves), [defaults]);
@@ -470,7 +475,7 @@ export default function App() {
       const info = await openImage(path);
       performance.measure("ipc.open_image", { start: t0 });
       const t1 = performance.now();
-      const pv = await getPreview(info.previewWidth, info.previewHeight, info.noiseSigma);
+      const pv = await getPreview(info.previewWidth, info.previewHeight, info.noiseSigma, info.noiseShadow);
       performance.measure("ipc.get_preview", { start: t1 });
       setCurrent(info);
       setPreview(pv);
@@ -956,24 +961,28 @@ export default function App() {
   useEffect(() => {
     let un: (() => void) | undefined;
     let cancelled = false;
-    const overZone = (x: number, y: number) => {
-      const el = blendZone.current;
-      if (!el) return false;
-      const r = el.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const cx = x / dpr;
-      const cy = y / dpr;
-      return cx >= r.left && cx <= r.right && cy >= r.top && cy <= r.bottom;
-    };
+    // While the Double Exposure section is open the whole window takes the drop
+    // (see dropTarget.ts); the box is the window, not the little zone.
+    const over = (x: number, y: number) =>
+      dropGoesToBlend(
+        blendOpenRef.current,
+        x,
+        y,
+        { left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight },
+        window.devicePixelRatio || 1,
+      );
     void getCurrentWebview()
       .onDragDropEvent((e) => {
         const p = e.payload;
         if (p.type === "over" || p.type === "enter") {
-          setBlendDrop(overZone(p.position.x, p.position.y));
+          setBlendDrop(over(p.position.x, p.position.y));
         } else if (p.type === "drop") {
-          const hit = overZone(p.position.x, p.position.y);
+          const hit = over(p.position.x, p.position.y);
           setBlendDrop(false);
-          if (hit && p.paths.length) void loadBlend(p.paths[0]);
+          // the first thing dropped that is a photo, not just the first thing
+          const photo = hit ? firstPhoto(p.paths, extensions) : null;
+          if (hit && p.paths.length && !photo) setError("That is not a photo Darkroom can open.");
+          if (photo) void loadBlend(photo);
         } else {
           setBlendDrop(false);
         }
@@ -986,7 +995,7 @@ export default function App() {
       cancelled = true;
       un?.();
     };
-  }, [loadBlend]);
+  }, [loadBlend, extensions]);
 
   // ---- develop presets ----
   /**
@@ -1857,7 +1866,13 @@ export default function App() {
               busy={healBusy}
               onToggle={toggleHealTool}
               onRadius={setHealRadius}
-              onKind={setHealKind}
+              // Choosing Heal or Clone is choosing to retouch, so it starts the tool.
+              // It only set the mode before, and tapping it looked like nothing
+              // had happened.
+              onKind={(k) => {
+                setHealKind(k);
+                if (!healTool) toggleHealTool();
+              }}
               onSelect={setSelectedSpotId}
               onChange={changeSpot}
               onDelete={deleteSpot}
@@ -1918,7 +1933,10 @@ export default function App() {
                 blend={params.blend}
                 busy={blendBusy}
                 dropping={blendDrop}
+                strip={files.map((f) => ({ path: f.path, name: fileName(f.path) }))}
+                currentPath={current?.path ?? null}
                 onPick={() => void loadBlend()}
+                onPickFromStrip={(path) => void loadBlend(path)}
                 onChange={set("blend")}
               />
             </div>

@@ -121,6 +121,7 @@ uniform sampler2D uImage; // linear DWG
 uniform sampler2D uP;     // sqrt domain rgb + luma
 uniform vec2 uTexel;
 uniform float uSigma;
+uniform float uShadowK;   // how fast noise rises into the shadows, see denoise.rs
 uniform float uHl2;
 uniform float uHc2;
 uniform int uUseL;
@@ -139,7 +140,10 @@ void main() {
     for (int px = -uPr; px <= uPr; px++)
       cp[k++] = texture(uP, vUv + vec2(px, py) * uTexel);
   vec3 orig = texture(uImage, vUv).rgb;
-  float noise2 = 2.0 * uSigma * uSigma;
+  // Twin of noise_factor in denoise.rs: shadows are noisier than the baseline on
+  // a real sensor, and the filter has to know it or it hardly averages them.
+  float nf = min(1.0 + uShadowK / pow(max(cp[(uPr * 2 + 1) * (uPr * 2 + 1) / 2].a, 0.05), 2.0), 9.0);
+  float noise2 = 2.0 * uSigma * uSigma * nf;
   float wl = 0.0, wc = 0.0;
   vec3 accL = vec3(0.0), accC = vec3(0.0);
   for (int oy = -uR; oy <= uR; oy++) {
@@ -157,11 +161,11 @@ void main() {
       }
       vec3 s = texture(uImage, vUv + o).rgb;
       if (uUseL == 1) {
-        float w = exp(-max(dl / 9.0 - noise2, 0.0) / uHl2);
+        float w = exp(-max(dl / 9.0 - noise2, 0.0) / (uHl2 * nf));
         wl += w; accL += w * s;
       }
       if (uUseC == 1) {
-        float w = exp(-max(dc / 27.0 - noise2, 0.0) / uHc2);
+        float w = exp(-max(dc / 27.0 - noise2, 0.0) / (uHc2 * nf));
         wc += w; accC += w * s;
       }
     }
@@ -176,7 +180,7 @@ void main() {
   // Twin of denoise.rs soft_threshold: nothing at the noise floor comes back,
   // anything well clear of it comes back whole. A straight ramp scored a
   // noise-sized residual half marks, which restored a quarter of the noise.
-  float tt = clamp((abs(rs) / max(uSigma, 1e-6) - 1.0) / (2.5 - 1.0), 0.0, 1.0);
+  float tt = clamp((abs(rs) / max(uSigma * sqrt(nf), 1e-6) - 1.0) / (2.5 - 1.0), 0.0, 1.0);
   float kk = uDetail * tt * tt * (3.0 - 2.0 * tt);
   float yf = max(yl + kk * (yo - yl), 0.0);
   outColor = vec4(rgbC * (yf / yc), 1.0);
@@ -1003,6 +1007,7 @@ in vec2 vPos;   // where this pixel sits in the cropped frame, 0..1
 out vec4 outColor;
 uniform sampler2D uTex;
 uniform vec2 uTexel;
+uniform vec2 uSharpStep; // how far the sharpening kernel reaches, as texture coords
 uniform vec2 uSize;
 uniform float uSharpen;
 uniform vec3 uOutside;   // colour for texels outside the image (straighten corners)
@@ -1104,15 +1109,15 @@ void main() {
   }
   if (uSharpen > 0.0) {
     float b = 0.0;
-    b += sharpLuma(uv + uTexel * vec2(-1.0, -1.0)) * 1.0;
-    b += sharpLuma(uv + uTexel * vec2( 0.0, -1.0)) * 2.0;
-    b += sharpLuma(uv + uTexel * vec2( 1.0, -1.0)) * 1.0;
-    b += sharpLuma(uv + uTexel * vec2(-1.0,  0.0)) * 2.0;
+    b += sharpLuma(uv + uSharpStep * vec2(-1.0, -1.0)) * 1.0;
+    b += sharpLuma(uv + uSharpStep * vec2( 0.0, -1.0)) * 2.0;
+    b += sharpLuma(uv + uSharpStep * vec2( 1.0, -1.0)) * 1.0;
+    b += sharpLuma(uv + uSharpStep * vec2(-1.0,  0.0)) * 2.0;
     b += dot(c, LUMA) * 4.0;
-    b += sharpLuma(uv + uTexel * vec2( 1.0,  0.0)) * 2.0;
-    b += sharpLuma(uv + uTexel * vec2(-1.0,  1.0)) * 1.0;
-    b += sharpLuma(uv + uTexel * vec2( 0.0,  1.0)) * 2.0;
-    b += sharpLuma(uv + uTexel * vec2( 1.0,  1.0)) * 1.0;
+    b += sharpLuma(uv + uSharpStep * vec2( 1.0,  0.0)) * 2.0;
+    b += sharpLuma(uv + uSharpStep * vec2(-1.0,  1.0)) * 1.0;
+    b += sharpLuma(uv + uSharpStep * vec2( 0.0,  1.0)) * 2.0;
+    b += sharpLuma(uv + uSharpStep * vec2( 1.0,  1.0)) * 1.0;
     b /= 16.0;
     float sy = dot(c, LUMA);
     float sd = (sy - b) * uSharpen;

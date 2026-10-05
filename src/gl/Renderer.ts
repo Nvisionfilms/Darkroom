@@ -150,6 +150,9 @@ export function mirrorGeom(m: Mirror, width: number, height: number): MirrorGeom
   };
 }
 
+/** Same as SHARPEN_REF in pipeline.rs. */
+const SHARPEN_REF = 2048;
+
 /** Same as FEATHER_MIN / FEATHER_MAX in vignette.rs. */
 const VIG_FEATHER_MIN = 0.04;
 const VIG_FEATHER_MAX = 0.6;
@@ -206,6 +209,7 @@ export class Renderer {
   private uni = new Map<string, WebGLUniformLocation | null>();
   private prepKey = "";
   private sigma = 0;
+  private shadow = 0;
   imgW = 0;
   imgH = 0;
   private qw = 1;
@@ -343,6 +347,7 @@ export class Renderer {
     this.imgW = img.width;
     this.imgH = img.height;
     this.sigma = img.noiseSigma;
+    this.shadow = img.noiseShadow ?? 0;
     this.prepKey = "";
     gl.bindTexture(gl.TEXTURE_2D, this.imageTex);
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 2);
@@ -539,6 +544,7 @@ export class Renderer {
           gl.uniform1i(this.loc(pr, "uP"), 1);
           gl.uniform2f(this.loc(pr, "uTexel"), 1 / dst.w, 1 / dst.h);
           gl.uniform1f(this.loc(pr, "uSigma"), sigma);
+          gl.uniform1f(this.loc(pr, "uShadowK"), this.shadow);
           gl.uniform1f(this.loc(pr, "uHl2"), hLuma(sigma, nl) ** 2);
           gl.uniform1f(this.loc(pr, "uHc2"), hChroma(sigma, nc) ** 2);
           gl.uniform1i(this.loc(pr, "uUseL"), nl > 0 ? 1 : 0);
@@ -1161,6 +1167,16 @@ export class Renderer {
     this.bindTex(0, this.output().tex);
     gl.uniform1i(this.loc(pr, "uTex"), 0);
     gl.uniform2f(this.loc(pr, "uTexel"), 1 / this.imgW, 1 / this.imgH);
+    // The sharpening kernel reaches in proportion to the picture, as it does in
+    // the export (pipeline.rs sharpen_step): measured against the cropped frame,
+    // one pixel at the reference size and never less. A fixed one-texel kernel
+    // sharpened a 2000-pixel preview three times coarser than the file it
+    // stood in for. Twin of sharpen_step in pipeline.rs.
+    {
+      const frame = this.cropSize(crop, cropMode);
+      const reach = Math.max(1, Math.max(frame.w, frame.h) / SHARPEN_REF);
+      gl.uniform2f(this.loc(pr, "uSharpStep"), reach / this.imgW, reach / this.imgH);
+    }
     gl.uniform1f(this.loc(pr, "uSharpen"), Math.max(0, Math.min(1.5, sharpen / 100)));
     gl.uniform3f(this.loc(pr, "uOutside"), 0.09, 0.09, 0.09);
     // lens distortion / chromatic aberration / perspective, twin of geometry.rs

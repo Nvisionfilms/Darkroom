@@ -24,6 +24,7 @@ pub mod sidecar;
 pub mod cube;
 pub mod star;
 pub mod vignette;
+pub mod wmlib;
 pub mod tether;
 pub mod thumb;
 
@@ -53,6 +54,7 @@ pub struct Loaded {
     preview_w: usize,
     preview_h: usize,
     preview_sigma: f32,
+    preview_shadow: f32,
 }
 
 #[derive(Default)]
@@ -318,6 +320,8 @@ pub struct ImageInfo {
     preview_height: usize,
     /// noise sigma of the preview in the sqrt-luma domain (see denoise.rs)
     noise_sigma: f32,
+    /// how fast noise rises into the shadows; see denoise::noise_factor
+    noise_shadow: f32,
     metadata: Metadata,
     edits: Option<EditParams>,
     thumbnail: String,
@@ -362,6 +366,7 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
         let thumb = export::thumbnail_data_url(&preview, THUMB_MAX_EDGE)?;
         let t3 = t0.elapsed();
         let sigma = denoise::estimate_sigma(&preview.data, preview.width, preview.height);
+        let shadow = denoise::estimate_shadow(&preview.data, preview.width, preview.height);
         let t4 = t0.elapsed();
         let f16 = decode::to_f16_bytes(&preview.data);
         log::info!(
@@ -382,6 +387,7 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
                 preview_w: preview.width,
                 preview_h: preview.height,
                 preview_sigma: sigma,
+                preview_shadow: shadow,
             },
             meta,
             thumb,
@@ -404,6 +410,7 @@ async fn open_image(path: String, state: State<'_, AppState>) -> Result<ImageInf
         preview_width: loaded.preview_w,
         preview_height: loaded.preview_h,
         noise_sigma: loaded.preview_sigma,
+        noise_shadow: loaded.preview_shadow,
         metadata: meta,
         edits: sidecar::load(Path::new(&loaded.path)),
         thumbnail: thumb,
@@ -723,6 +730,26 @@ async fn mobile_update() -> Result<Option<serde_json::Value>, String> {
     }
 }
 
+/// The watermarks saved for reuse.
+#[tauri::command]
+fn watermark_library(app: tauri::AppHandle) -> Result<Vec<wmlib::Mark>, String> {
+    let d = wmlib::dir(&app).map_err(err)?;
+    wmlib::list_in(&d).map_err(err)
+}
+
+/// Save an image into the library, by copy, and return the saved mark.
+#[tauri::command]
+fn watermark_save(app: tauri::AppHandle, path: String, name: Option<String>) -> Result<wmlib::Mark, String> {
+    let d = wmlib::dir(&app).map_err(err)?;
+    wmlib::save_in(&d, Path::new(&path), name.as_deref()).map_err(err)
+}
+
+#[tauri::command]
+fn watermark_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
+    let d = wmlib::dir(&app).map_err(err)?;
+    wmlib::delete_in(&d, &name).map_err(err)
+}
+
 #[tauri::command]
 fn supported_extensions() -> Vec<String> {
     decode::RAW_EXTENSIONS
@@ -754,6 +781,9 @@ pub fn run() {
             export_image,
             export_cube,
             mobile_update,
+            watermark_library,
+            watermark_save,
+            watermark_delete,
             export_path,
             read_edits,
             marked_photos,

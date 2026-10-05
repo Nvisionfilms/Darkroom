@@ -24,6 +24,8 @@ pub struct NoiseParams {
     pub chroma: f32,
     /// 0..1, restores strong residuals
     pub detail: f32,
+    /// How fast noise rises into the shadows; 0 treats the picture as evenly noisy
+    pub shadow: f32,
 }
 
 impl NoiseParams {
@@ -32,10 +34,17 @@ impl NoiseParams {
             luma: (luma / 100.0).clamp(0.0, 1.0),
             chroma: (chroma / 100.0).clamp(0.0, 1.0),
             detail: (detail / 100.0).clamp(0.0, 1.0),
+            shadow: 0.0,
         }
     }
     pub fn is_noop(&self) -> bool {
         self.luma <= 0.0 && self.chroma <= 0.0
+    }
+
+    /// How much noisier the shadows are than the rest, from `estimate_shadow`.
+    pub fn with_shadow(mut self, k: f32) -> Self {
+        self.shadow = k.clamp(0.0, SHADOW_MAX_K);
+        self
     }
 }
 
@@ -77,6 +86,112 @@ pub fn h_chroma(sigma: f32, amount: f32) -> f32 {
 #[inline]
 fn sqrt_luma(p: &[f32]) -> f32 {
     luma_proxy([p[0], p[1], p[2]]).max(0.0).sqrt()
+}
+
+/// Darkest brightness, in the sqrt domain, the shadow model trusts.
+pub const SHADOW_FLOOR: f32 = 0.05;
+/// How many times larger the noise level is allowed to be than the baseline,
+/// squared. Past this the picture is mostly black and not worth chasing.
+pub const SHADOW_MAX: f32 = 9.0;
+/// The steepest rise `estimate_shadow` will report.
+pub const SHADOW_MAX_K: f32 = 60.0;
+
+/// How much larger the noise VARIANCE is, relative to the baseline, at a pixel
+/// whose sqrt-luma is `s`. Twin of noiseFactor in the shader.
+///
+/// A sensor has two kinds of noise. Shot noise grows with the square root of the
+/// signal and is flat once the picture is put in the sqrt domain; read noise is
+/// constant in light, which in the sqrt domain grows towards black as 1/s^2. At
+/// high ISO the second dominates the shadows, which is exactly where a RAW file
+/// is worst. Taking one noise level for the whole picture - the quietest blocks,
+/// found in the mid tones - left the shadows looking different to the filter
+/// from how noise looks, so it hardly averaged them at all.
+#[inline]
+pub fn noise_factor(s: f32, k: f32) -> f32 {
+    let s = s.max(SHADOW_FLOOR);
+    (1.0 + k / (s * s)).min(SHADOW_MAX)
+}
+
+/// Estimate `k` for `noise_factor` from the picture itself.
+///
+/// Every 8x8 block gives a (brightness, variance) pair. Blocks are binned by
+/// brightness, the quietest fifth of each bin is kept (texture only ever adds
+/// variance, so the low end is the noise), and variance = a + b / s^2 is fitted
+/// across the bins. Returns b / a, or 0 when there is not enough range to tell.
+pub fn estimate_shadow(rgb: &[f32], width: usize, height: usize) -> f32 {
+    const B: usize = 8;
+    const BINS: usize = 10;
+    if width < B * 4 || height < B * 4 {
+        return 0.0;
+    }
+    let py: Vec<f32> = rgb.par_chunks_exact(3).map(sqrt_luma).collect();
+    let (bw, bh) = (width / B, height / B);
+    let blocks: Vec<(f32, f32)> = (0..bh)
+        .into_par_iter()
+        .flat_map_iter(|by| {
+            let py = &py;
+            (0..bw).filter_map(move |bx| {
+                let (mut sum, mut sum2, mut su, mut sv) = (0.0f64, 0.0f64, 0.0f64, 0.0f64);
+                for y in by * B..by * B + B {
+                    for x in bx * B..bx * B + B {
+                        let v = py[y * width + x] as f64;
+                        // position within the block, centred so the two slopes
+                        // can be read off independently
+                        let u = (x - bx * B) as f64 - 3.5;
+                        let w = (y - by * B) as f64 - 3.5;
+                        sum += v;
+                        sum2 += v * v;
+                        su += u * v;
+                        sv += w * v;
+                    }
+                }
+                let n = (B * B) as f64;
+                let mean = sum / n;
+                if mean < 0.06 || mean > 0.95 {
+                    return None;
+                }
+                // The variance left once the block's own slope is taken out. A
+                // smooth ramp - a sky, a vignette, a gradient across a wall - is
+                // not noise, and left in it made the shadows of every graduated
+                // picture look noisier than they were. Sum of squared centred
+                // positions across an 8x8 block is 336 along each axis.
+                let plane = (su * su + sv * sv) / 336.0;
+                Some((mean as f32, ((sum2 - sum * sum / n - plane) / n).max(0.0) as f32))
+            })
+        })
+        .collect();
+    let (lo, hi) = (0.06f32.ln(), 0.95f32.ln());
+    let mut bins: Vec<Vec<(f32, f32)>> = vec![Vec::new(); BINS];
+    for (m, v) in blocks {
+        let t = ((m.ln() - lo) / (hi - lo)).clamp(0.0, 0.9999);
+        bins[(t * BINS as f32) as usize].push((m, v));
+    }
+    // one (1/s^2, variance, weight) point per bin that has enough blocks
+    let mut pts: Vec<(f64, f64, f64)> = Vec::new();
+    for mut b in bins {
+        if b.len() < 6 {
+            continue;
+        }
+        b.sort_by(|x, y| x.1.partial_cmp(&y.1).unwrap());
+        let quiet = &b[..(b.len() / 5).max(2)];
+        let m = quiet.iter().map(|q| q.0 as f64).sum::<f64>() / quiet.len() as f64;
+        let v = quiet.iter().map(|q| q.1 as f64).sum::<f64>() / quiet.len() as f64;
+        pts.push((1.0 / (m * m), v, b.len() as f64));
+    }
+    if pts.len() < 3 {
+        return 0.0;
+    }
+    // weighted least squares for v = a + b x
+    let sw: f64 = pts.iter().map(|p| p.2).sum();
+    let mx = pts.iter().map(|p| p.0 * p.2).sum::<f64>() / sw;
+    let mv = pts.iter().map(|p| p.1 * p.2).sum::<f64>() / sw;
+    let sxx: f64 = pts.iter().map(|p| p.2 * (p.0 - mx).powi(2)).sum();
+    if sxx < 1e-9 {
+        return 0.0;
+    }
+    let b_coef = (pts.iter().map(|p| p.2 * (p.0 - mx) * (p.1 - mv)).sum::<f64>() / sxx).max(0.0);
+    let a_coef = (mv - b_coef * mx).max(1e-9);
+    ((b_coef / a_coef) as f32).clamp(0.0, SHADOW_MAX_K)
 }
 
 /// Noise estimate on the sqrt-luma image: the 20th percentile of the standard
@@ -143,6 +258,8 @@ pub fn nlm(rgb: &[f32], width: usize, height: usize, sigma: f32, p: &NoiseParams
     let hl2 = h_luma(sigma, p.luma).powi(2);
     let hc2 = h_chroma(sigma, p.chroma).powi(2);
     let noise2 = 2.0 * sigma * sigma;
+    // how much noisier than the baseline each pixel is, from how dark it is
+    let fmap: Vec<f32> = sq.iter().map(|q| noise_factor(q[3], p.shadow)).collect();
     let use_l = p.luma > 0.0;
     let use_c = p.chroma > 0.0;
 
@@ -211,7 +328,8 @@ pub fn nlm(rgb: &[f32], width: usize, height: usize, sigma: f32, p: &NoiseParams
                             let i = ry * width + x;
                             if use_l {
                                 let d = (bl[r0 * width + x] + bl[r1 * width + x] + bl[r2 * width + x]) / PATCH as f32;
-                                let w = (-((d - noise2).max(0.0)) / hl2).exp();
+                                let f = fmap[(y0 + ry) * width + x];
+                                let w = (-((d - noise2 * f).max(0.0)) / (hl2 * f)).exp();
                                 wl_sum[i] += w;
                                 acc_l[i * 3] += w * px[0];
                                 acc_l[i * 3 + 1] += w * px[1];
@@ -219,7 +337,8 @@ pub fn nlm(rgb: &[f32], width: usize, height: usize, sigma: f32, p: &NoiseParams
                             }
                             if use_c {
                                 let d = (bc[r0 * width + x] + bc[r1 * width + x] + bc[r2 * width + x]) / (3.0 * PATCH as f32);
-                                let w = (-((d - noise2).max(0.0)) / hc2).exp();
+                                let f = fmap[(y0 + ry) * width + x];
+                                let w = (-((d - noise2 * f).max(0.0)) / (hc2 * f)).exp();
                                 wc_sum[i] += w;
                                 acc_c[i * 3] += w * px[0];
                                 acc_c[i * 3 + 1] += w * px[1];
@@ -249,7 +368,7 @@ pub fn nlm(rgb: &[f32], width: usize, height: usize, sigma: f32, p: &NoiseParams
                     } else {
                         orig
                     };
-                    let o = combine(orig, rgb_l, rgb_c, sigma, p.detail);
+                    let o = combine(orig, rgb_l, rgb_c, sigma * fmap[y * width + x].sqrt(), p.detail);
                     out_band[i * 3] = o[0];
                     out_band[i * 3 + 1] = o[1];
                     out_band[i * 3 + 2] = o[2];

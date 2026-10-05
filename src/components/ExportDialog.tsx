@@ -1,5 +1,6 @@
-import { useState } from "react";
-import { exportImage, exportPath, pickFolder, pickSavePath, readEdits } from "../api";
+import { useEffect, useState } from "react";
+import { exportImage, exportPath, pickFolder, pickSavePath, readEdits, watermarkLibrary, type WatermarkMark } from "../api";
+import { withMark, type MarkChoice } from "../exportMark";
 import { buildLut } from "../curve";
 import { defaultParams, type EditParams, type ExportFormat, type ImageInfo } from "../types";
 
@@ -32,6 +33,13 @@ export function ExportDialog({ image, params, batch, onClose }: Props) {
   const [longEdge, setLongEdge] = useState(2048);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  // "photo" keeps each photo's own saved watermark, which for a batch is usually
+  // none; choosing a mark here puts it on all of them
+  const [mark, setMark] = useState<MarkChoice>("photo");
+  const [marks, setMarks] = useState<WatermarkMark[]>([]);
+  useEffect(() => {
+    watermarkLibrary().then(setMarks).catch(() => {});
+  }, []);
 
   const ext = format === "jpeg" ? "jpg" : format === "tiff" ? "tif" : "png";
 
@@ -50,7 +58,7 @@ export function ExportDialog({ image, params, batch, onClose }: Props) {
       const written = await exportImage({
         outPath: out,
         ...settings,
-        params,
+        params: withMark(params, mark, params.watermark),
         lut: Array.from(buildLut(params.curves)),
       });
       setMessage(`Saved ${written}`);
@@ -73,7 +81,10 @@ export function ExportDialog({ image, params, batch, onClose }: Props) {
     for (const path of paths) {
       setMessage(`Exporting ${done + 1} of ${paths.length}: ${fileName(path)}…`);
       try {
-        const edits = (await readEdits(path)) ?? defaultParams();
+        // Each photo keeps its own edits; the watermark is the one thing chosen
+        // here, placed like the open photo's and measured against each photo's
+        // own cropped frame
+        const edits = withMark((await readEdits(path)) ?? defaultParams(), mark, params.watermark);
         const name = fileName(stripExt(path));
         await exportPath(path, {
           outPath: `${dir}/${name}-edit.${ext}`,
@@ -145,6 +156,24 @@ export function ExportDialog({ image, params, batch, onClose }: Props) {
           />
           <em>px long edge</em>
         </label>
+        <label className="field">
+          <span>Watermark</span>
+          <select value={mark} onChange={(e) => setMark(e.target.value)}>
+            <option value="photo">As set on each photo</option>
+            <option value="none">None</option>
+            {marks.map((m) => (
+              <option key={m.path} value={m.path}>
+                {m.name} on every photo
+              </option>
+            ))}
+          </select>
+        </label>
+        {mark !== "photo" && mark !== "none" && (
+          <div className="hint">
+            Placed and sized like the one on the photo you have open, so put it where you want it first. A corner stays
+            a corner on photos of every shape and crop.
+          </div>
+        )}
         <div className="field">
           <span>Source</span>
           <em>

@@ -1172,47 +1172,90 @@ pub fn develop_buffer_full(
     out
 }
 
-/// Luma unsharp mask with a 3x3 binomial blur, matching the shader's second pass.
-/// `amount` is the 0..150 slider value.
+/// The long edge, in pixels, at which the sharpening kernel is exactly one pixel
+/// wide. Twin of SHARPEN_REF in Renderer.ts.
+pub const SHARPEN_REF: f32 = 2048.0;
+
+/// How far from the centre the sharpening kernel reaches, in pixels, for a
+/// picture of this size: one pixel at the reference size and in proportion above
+/// it, never less than a pixel (there is nothing finer to sharpen).
+///
+/// It used to be one pixel at every size. A RAW file is several times the size of
+/// the preview it is edited on, so the same slider sharpened features several
+/// times coarser on screen than in the exported file: measured, a picture three
+/// times the size got one eleventh of the sharpening when seen at the same scale.
+/// The file you set the slider on and the file you exported looked like two
+/// different settings.
+#[inline]
+pub fn sharpen_step(width: usize, height: usize) -> f32 {
+    sharpen_step_at(width, height, SHARPEN_REF)
+}
+
+/// As `sharpen_step`, with the reference size given - so a test can straddle it
+/// with small pictures instead of building ones of several megapixels.
+#[inline]
+pub fn sharpen_step_at(width: usize, height: usize, reference: f32) -> f32 {
+    (width.max(height) as f32 / reference).max(1.0)
+}
+
+/// Linear interpolation of a row or column at a fractional position, with the
+/// edges held. `get(i)` reads sample `i`.
+#[inline]
+fn lerp_at(get: impl Fn(usize) -> f32, pos: f32, len: usize) -> f32 {
+    let p = pos.clamp(0.0, len as f32 - 1.0);
+    let i0 = p.floor() as usize;
+    let i1 = (i0 + 1).min(len - 1);
+    let t = p - i0 as f32;
+    get(i0) * (1.0 - t) + get(i1) * t
+}
+
+/// Luma unsharp mask with a binomial blur whose reach scales with the picture
+/// (see `sharpen_step`), matching the shader's second pass. `amount` is the
+/// 0..150 slider value.
 pub fn sharpen(img: &mut [f32], width: usize, height: usize, amount: f32) {
+    sharpen_at(img, width, height, amount, SHARPEN_REF);
+}
+
+/// As `sharpen`, with the reference size given.
+pub fn sharpen_at(img: &mut [f32], width: usize, height: usize, amount: f32, reference: f32) {
     let k = (amount / 100.0).clamp(0.0, 1.5);
     if k <= 0.0 || width < 3 || height < 3 {
         return;
     }
+    let step = sharpen_step_at(width, height, reference);
     let mut luma = vec![0.0f32; width * height];
     luma.par_iter_mut().enumerate().for_each(|(i, l)| {
         let p = &img[i * 3..i * 3 + 3];
         *l = p[0] * LUMA_709[0] + p[1] * LUMA_709[1] + p[2] * LUMA_709[2];
     });
+    // The 3x3 binomial is separable, and bilinear interpolation is too, so the
+    // two passes below are exactly what nine bilinear taps would be - which is
+    // what the shader takes.
     let mut tmp = vec![0.0f32; width * height];
     tmp.par_chunks_mut(width)
         .zip(luma.par_chunks(width))
         .for_each(|(t, l)| {
             for x in 0..width {
-                let a = l[x.saturating_sub(1)];
-                let b = l[x];
-                let c = l[(x + 1).min(width - 1)];
-                t[x] = (a + 2.0 * b + c) * 0.25;
+                let xf = x as f32;
+                let at = |p: f32| lerp_at(|i| l[i], p, width);
+                t[x] = (at(xf - step) + 2.0 * l[x] + at(xf + step)) * 0.25;
             }
         });
-    img.par_chunks_mut(width * 3)
-        .enumerate()
-        .for_each(|(y, row)| {
-            let y0 = y.saturating_sub(1);
-            let y2 = (y + 1).min(height - 1);
-            for x in 0..width {
-                let blur =
-                    (tmp[y0 * width + x] + 2.0 * tmp[y * width + x] + tmp[y2 * width + x]) * 0.25;
-                let y0v = luma[y * width + x];
-                let delta = (y0v - blur) * k;
-                // a gain, not an offset, so only brightness moves
-                let gain = ((y0v + delta) / y0v.max(1e-4)).clamp(0.0, 4.0);
-                let p = &mut row[x * 3..x * 3 + 3];
-                p[0] = (p[0] * gain).clamp(0.0, 1.0);
-                p[1] = (p[1] * gain).clamp(0.0, 1.0);
-                p[2] = (p[2] * gain).clamp(0.0, 1.0);
-            }
-        });
+    img.par_chunks_mut(width * 3).enumerate().for_each(|(y, row)| {
+        let yf = y as f32;
+        for x in 0..width {
+            let col = |p: f32| lerp_at(|i| tmp[i * width + x], p, height);
+            let blur = (col(yf - step) + 2.0 * tmp[y * width + x] + col(yf + step)) * 0.25;
+            let y0v = luma[y * width + x];
+            let delta = (y0v - blur) * k;
+            // a gain, not an offset, so only brightness moves
+            let gain = ((y0v + delta) / y0v.max(1e-4)).clamp(0.0, 4.0);
+            let p = &mut row[x * 3..x * 3 + 3];
+            p[0] = (p[0] * gain).clamp(0.0, 1.0);
+            p[1] = (p[1] * gain).clamp(0.0, 1.0);
+            p[2] = (p[2] * gain).clamp(0.0, 1.0);
+        }
+    });
 }
 
 /// Resolved mirror geometry in pixels. Shared derivation with `MIRROR_FRAG`.

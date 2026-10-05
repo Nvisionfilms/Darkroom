@@ -1143,3 +1143,239 @@ mod profiles {
         }
     }
 }
+
+#[cfg(test)]
+mod raw_noise {
+    use super::*;
+    use crate::denoise::{self, NoiseParams};
+
+    const W: usize = 240;
+    const H: usize = 160;
+
+    struct Rng(u32);
+    impl Rng {
+        fn next(&mut self) -> f32 {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 17;
+            self.0 ^= self.0 << 5;
+            (self.0 >> 8) as f32 / 8_388_608.0 - 1.0
+        }
+        fn gauss(&mut self) -> f32 {
+            self.next() + self.next() + self.next()
+        }
+    }
+
+    /// Three flat tones with Poisson-Gaussian noise: the shot noise of a real
+    /// sensor grows with the square root of the signal, on top of a constant
+    /// read noise. `gain` is electrons per unit of light.
+    fn sensor_card(gain: f32, read: f32) -> Vec<f32> {
+        let tones = [0.02f32, 0.18, 0.6];
+        let mut rng = Rng(0x9e37_79b9);
+        let mut v = vec![0.0f32; W * H * 3];
+        for y in 0..H {
+            for x in 0..W {
+                let t = tones[(x * 3 / W).min(2)];
+                for c in 0..3 {
+                    let shot = (t * gain).sqrt() / gain * rng.gauss();
+                    let n = read / gain * rng.gauss();
+                    v[(y * W + x) * 3 + c] = (t + shot + n).max(0.0);
+                }
+            }
+        }
+        v
+    }
+
+    fn patch_noise(v: &[f32], tone: usize) -> f32 {
+        let x0 = tone * W / 3 + 12;
+        let x1 = (tone + 1) * W / 3 - 12;
+        let (mut n, mut s, mut q) = (0.0f32, 0.0f32, 0.0f32);
+        for y in 12..H - 12 {
+            for x in x0..x1 {
+                let i = (y * W + x) * 3;
+                let p = (0.2627 * v[i] + 0.678 * v[i + 1] + 0.0593 * v[i + 2]).max(0.0).sqrt();
+                n += 1.0;
+                s += p;
+                q += p * p;
+            }
+        }
+        (q / n - (s / n).powi(2)).max(0.0).sqrt()
+    }
+
+    fn removed(img: &[f32], out: &[f32], tone: usize) -> f32 {
+        (1.0 - patch_noise(out, tone) / patch_noise(img, tone)) * 100.0
+    }
+
+    /// High-ISO RAW noise is dominated by read noise in the shadows, so the
+    /// shadows are noisier than the rest and need more smoothing, not the same.
+    /// With one noise level for the whole picture they got far less: 59% of
+    /// their noise removed against 77-79% in the mid tones and highlights.
+    #[test]
+    fn shadows_get_as_much_noise_reduction_as_everything_else() {
+        let img = sensor_card(800.0, 6.0);
+        let sigma = denoise::estimate_sigma(&img, W, H);
+        let k = denoise::estimate_shadow(&img, W, H);
+        assert!(k > 0.01, "no rise into the shadows was detected on a high-ISO card: {k}");
+
+        let np = NoiseParams::from_sliders(60.0, 60.0, 35.0).with_shadow(k);
+        let out = denoise::denoise_image(&img, W, H, sigma, &np);
+        let (sh, mid, hi) = (removed(&img, &out, 0), removed(&img, &out, 1), removed(&img, &out, 2));
+        println!("
+shadow {sh:.1}%  mid {mid:.1}%  highlight {hi:.1}%  (k = {k:.3})");
+        assert!(
+            sh > mid - 8.0,
+            "the shadows are still left behind: {sh:.1}% against {mid:.1}% in the mid tones"
+        );
+        // and the cure must not have been bought by wrecking the other tones
+        assert!(mid > 70.0 && hi > 70.0, "the mid tones and highlights got worse: {mid:.1}% / {hi:.1}%");
+    }
+
+    /// A clean, evenly lit picture has no rise to find, and must come out exactly
+    /// as it did before the shadow model existed.
+    #[test]
+    fn an_evenly_noisy_picture_is_left_as_it_was() {
+        let mut rng = Rng(7);
+        let mut v = vec![0.0f32; W * H * 3];
+        for y in 0..H {
+            for x in 0..W {
+                let base = 0.05 + 0.5 * (x as f32 / W as f32);
+                for c in 0..3 {
+                    // noise that is flat in the sqrt domain, as pure shot noise is
+                    let s = base.sqrt() + rng.gauss() * 0.006;
+                    v[(y * W + x) * 3 + c] = (s * s).max(0.0);
+                }
+            }
+        }
+        let k = denoise::estimate_shadow(&v, W, H);
+        assert!(k < 0.05, "a flat-noise picture was given a shadow term: {k}");
+        let sigma = denoise::estimate_sigma(&v, W, H);
+        let flat = NoiseParams::from_sliders(60.0, 60.0, 35.0);
+        let with = NoiseParams::from_sliders(60.0, 60.0, 35.0).with_shadow(k);
+        let a = denoise::denoise_image(&v, W, H, sigma, &flat);
+        let b = denoise::denoise_image(&v, W, H, sigma, &with);
+        assert!(max_diff(&a, &b) < 0.01, "the shadow term moved a picture that had none: {}", max_diff(&a, &b));
+    }
+
+    /// The estimate follows the sensor's noise rather than a constant.
+    #[test]
+    fn the_noise_estimate_follows_the_noise() {
+        let mut last = 0.0f32;
+        for gain in [20000.0f32, 6000.0, 2000.0, 700.0, 250.0] {
+            let img = sensor_card(gain, 6.0);
+            let sigma = denoise::estimate_sigma(&img, W, H);
+            assert!(sigma > last, "the estimate fell as the noise rose: {last} -> {sigma} at gain {gain}");
+            // within a fifth of what is actually in the mid tones
+            let truth = patch_noise(&img, 1);
+            assert!((sigma - truth).abs() / truth < 0.2, "gain {gain}: estimate {sigma:.5} against {truth:.5}");
+            last = sigma;
+        }
+    }
+
+    /// Detail restore must keep real edges at high ISO too, now that shadows are
+    /// smoothed harder.
+    #[test]
+    fn a_hard_edge_in_the_shadows_survives() {
+        let mut img = sensor_card(800.0, 6.0);
+        // a hard step inside the shadow third
+        for y in 0..H {
+            for x in 0..W / 3 {
+                let lift = if x < W / 6 { 0.0 } else { 0.05 };
+                for c in 0..3 {
+                    img[(y * W + x) * 3 + c] += lift;
+                }
+            }
+        }
+        let sigma = denoise::estimate_sigma(&img, W, H);
+        let k = denoise::estimate_shadow(&img, W, H);
+        let np = NoiseParams::from_sliders(80.0, 80.0, 35.0).with_shadow(k);
+        let out = denoise::denoise_image(&img, W, H, sigma, &np);
+        let step = |v: &[f32]| {
+            let (mut lo, mut hi) = (0.0f32, 0.0f32);
+            for y in 12..H - 12 {
+                lo += v[(y * W + W / 6 - 6) * 3 + 1];
+                hi += v[(y * W + W / 6 + 6) * 3 + 1];
+            }
+            (hi - lo) / (H - 24) as f32
+        };
+        assert!(step(&out) > step(&img) * 0.8, "the edge was softened: {} -> {}", step(&img), step(&out));
+    }
+}
+
+#[cfg(test)]
+mod sharpen_scale {
+    use super::*;
+    use crate::pipeline::{sharpen_at, sharpen_step_at};
+
+    /// The test pictures are a few hundred pixels, so the size at which the
+    /// kernel is one pixel wide is brought down to match; what is under test is
+    /// that the kernel follows the picture, not the particular number.
+    const REF: f32 = 200.0;
+
+    /// A soft edge with some fine texture, drawn at any size: `n` pixels long.
+    fn picture(n: usize) -> (Vec<f32>, usize, usize) {
+        let (w, h) = (n, n * 2 / 3);
+        let mut v = vec![0.0f32; w * h * 3];
+        for y in 0..h {
+            for x in 0..w {
+                let u = x as f32 / w as f32;
+                let t = ((u - 0.5) * 22.0).tanh() * 0.5 + 0.5; // a soft edge
+                let tex = 0.04 * ((u * 90.0).sin() * (y as f32 / h as f32 * 70.0).cos());
+                let g = (0.25 + 0.4 * t + tex).clamp(0.0, 1.0);
+                for c in 0..3 {
+                    v[(y * w + x) * 3 + c] = g;
+                }
+            }
+        }
+        (v, w, h)
+    }
+
+    /// Box-average a picture down by an integer factor.
+    fn shrink(v: &[f32], w: usize, h: usize, k: usize) -> (Vec<f32>, usize, usize) {
+        let (nw, nh) = (w / k, h / k);
+        let mut out = vec![0.0f32; nw * nh * 3];
+        for y in 0..nh {
+            for x in 0..nw {
+                for c in 0..3 {
+                    let mut s = 0.0;
+                    for dy in 0..k {
+                        for dx in 0..k {
+                            s += v[((y * k + dy) * w + x * k + dx) * 3 + c];
+                        }
+                    }
+                    out[(y * nw + x) * 3 + c] = s / (k * k) as f32;
+                }
+            }
+        }
+        (out, nw, nh)
+    }
+
+    /// The picture is the same picture at 3x the pixels. Sharpening it and then
+    /// looking at it at the smaller size has to give what sharpening the smaller
+    /// one gave, or the preview and the export are two different looks.
+    #[test]
+    fn sharpening_looks_the_same_at_any_resolution() {
+        let (small, sw, sh) = picture(600);
+        let (big, bw, bh) = picture(1800);
+        // 3 and 9 pixels: a picture three times the size reaches three times as far
+        assert!((sharpen_step_at(bw, bh, REF) / sharpen_step_at(sw, sh, REF) - 3.0).abs() < 1e-4);
+
+        let mut s = small.clone();
+        sharpen_at(&mut s, sw, sh, 100.0, REF);
+        let mut b = big.clone();
+        sharpen_at(&mut b, bw, bh, 100.0, REF);
+        let (b_small, _, _) = shrink(&b, bw, bh, 3);
+
+        // how far each sharpened result is from its own unsharpened picture
+        let (plain_small, _, _) = shrink(&big, bw, bh, 3);
+        let effect_small = mean_diff(&s, &small);
+        let effect_big = mean_diff(&b_small, &plain_small);
+        let disagreement = mean_diff(&s, &b_small);
+        println!(
+            "\nsharpening effect: small {effect_small:.5}, big seen small {effect_big:.5}, they differ by {disagreement:.5}"
+        );
+        assert!(effect_small > 1e-4, "sharpening did nothing at all: {effect_small}");
+        assert!(
+            effect_big > effect_small * 0.6 && effect_big < effect_small * 1.6,
+            "the same slider does {effect_small:.5} at one size and {effect_big:.5} at another"
+        );
+    }
+}

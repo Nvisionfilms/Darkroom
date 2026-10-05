@@ -3,13 +3,52 @@ import { usePhone } from "../phone";
 import { defaultBlend, type Blend } from "../types";
 import { Slider } from "./Slider";
 
+/** A photo already in the filmstrip, offered as the second exposure. */
+export interface StripPhoto {
+  path: string;
+  name: string;
+}
+
 interface Props {
   blend: Blend;
   busy: boolean;
   /** true while a file is being dragged over this panel */
   dropping: boolean;
+  /** the photos already imported, including the one being edited */
+  strip: StripPhoto[];
+  /** the path of the photo being edited, which can be its own second exposure */
+  currentPath: string | null;
   onPick: () => void;
+  /** use a photo from the filmstrip */
+  onPickFromStrip: (path: string) => void;
   onChange: (b: Blend) => void;
+}
+
+/**
+ * Photos you have already imported, as a list to choose from. The photo being
+ * edited is in it: laying a picture over itself, offset or turned or at another
+ * brightness, is a perfectly good double exposure and used to mean hunting for
+ * the same file again in a dialog.
+ */
+function StripPicker({ strip, currentPath, onPickFromStrip, chosen }: Pick<Props, "strip" | "currentPath" | "onPickFromStrip"> & { chosen: string }) {
+  if (strip.length === 0) return null;
+  return (
+    <label className="field">
+      <span>From your photos</span>
+      <select
+        value={strip.some((p) => p.path === chosen) ? chosen : ""}
+        onChange={(e) => e.target.value && onPickFromStrip(e.target.value)}
+      >
+        <option value="">Choose…</option>
+        {strip.map((p) => (
+          <option key={p.path} value={p.path}>
+            {p.name}
+            {p.path === currentPath ? "  (this photo)" : ""}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
 }
 
 /**
@@ -20,7 +59,7 @@ interface Props {
  * other modes are the familiar display-referred layer blends and run after
  * the point curves and the creative look.
  */
-export function DoubleExposurePanel({ blend, busy, dropping, onPick, onChange }: Props) {
+export function DoubleExposurePanel({ blend, busy, dropping, strip, currentPath, onPick, onPickFromStrip, onChange }: Props) {
   const loaded = !!blend.path;
   // there is nothing to drag from on a phone
   const phone = usePhone();
@@ -43,6 +82,7 @@ export function DoubleExposurePanel({ blend, busy, dropping, onPick, onChange }:
           <strong>{busy ? "Reading the photo…" : dropping ? "Drop it here" : phone ? "Choose a second photo" : "Drag a photo here"}</strong>
           <small>{phone ? "Tap to pick one. RAW files work too." : "or click to choose one. RAW files work too."}</small>
         </button>
+        <StripPicker strip={strip} currentPath={currentPath} onPickFromStrip={onPickFromStrip} chosen="" />
       </div>
     );
   }
@@ -60,6 +100,8 @@ export function DoubleExposurePanel({ blend, busy, dropping, onPick, onChange }:
           </button>
         </div>
       </div>
+
+      <StripPicker strip={strip} currentPath={currentPath} onPickFromStrip={onPickFromStrip} chosen={blend.path} />
 
       <label className="look-enable">
         <input type="checkbox" checked={blend.enabled} onChange={(e) => set("enabled")(e.target.checked)} />

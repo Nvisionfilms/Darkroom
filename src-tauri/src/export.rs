@@ -150,7 +150,7 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
     } else {
         std::borrow::Cow::Borrowed(&img.data)
     };
-    let np = NoiseParams::from_sliders(
+    let mut np = NoiseParams::from_sliders(
         params.denoise_luma,
         params.denoise_chroma,
         params.denoise_detail,
@@ -159,7 +159,9 @@ pub fn develop_full(img: &LinearImage, params: &EditParams, lut: &[f32]) -> Vec<
         healed
     } else {
         let sigma = denoise::estimate_sigma(&healed, img.width, img.height);
-        log::info!("export denoise sigma={sigma:.5}");
+        // noise rises into the shadows on a real sensor; follow it
+        np = np.with_shadow(denoise::estimate_shadow(&healed, img.width, img.height));
+        log::info!("export denoise sigma={sigma:.5} shadow={:.2}", np.shadow);
         std::borrow::Cow::Owned(denoise::denoise_image(
             &healed, img.width, img.height, sigma, &np,
         ))

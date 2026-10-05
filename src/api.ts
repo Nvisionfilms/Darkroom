@@ -68,12 +68,12 @@ export async function openImage(path: string): Promise<ImageInfo> {
   return invoke<ImageInfo>("open_image", { path });
 }
 
-export async function getPreview(width: number, height: number, noiseSigma: number): Promise<PreviewImage> {
+export async function getPreview(width: number, height: number, noiseSigma: number, noiseShadow = 0): Promise<PreviewImage> {
   const buf = await invoke<ArrayBuffer>("get_preview");
   // `data` is deliberately non-enumerable: React's dev-mode performance
   // tracking serialises component props, and walking a multi-million-element
   // typed array froze the UI for seconds on every load.
-  const img = { width, height, noiseSigma } as PreviewImage;
+  const img = { width, height, noiseSigma, noiseShadow } as PreviewImage;
   Object.defineProperty(img, "data", { value: new Uint16Array(buf), enumerable: false, writable: false });
   return img;
 }
@@ -206,6 +206,25 @@ export async function savePreset(name: string, settings: unknown): Promise<Prese
 
 export async function deletePreset(name: string): Promise<void> {
   await invoke("delete_preset", { name });
+}
+
+/** A watermark saved in the library. */
+export interface WatermarkMark {
+  name: string;
+  path: string;
+}
+
+export async function watermarkLibrary(): Promise<WatermarkMark[]> {
+  return invoke<WatermarkMark[]>("watermark_library");
+}
+
+/** Copy an image into the library. A copy, so it outlives the original. */
+export async function watermarkSave(path: string, name?: string): Promise<WatermarkMark> {
+  return invoke<WatermarkMark>("watermark_save", { path, name: name ?? null });
+}
+
+export async function watermarkDelete(name: string): Promise<void> {
+  return invoke<void>("watermark_delete", { name });
 }
 
 export async function pickWatermark(): Promise<string | null> {

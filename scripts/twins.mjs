@@ -36,6 +36,24 @@ const groups = [
     ],
   },
   {
+    what: "sharpening reach",
+    rust: read("src-tauri/src/pipeline.rs"),
+    glsl: read("src/gl/Renderer.ts"),
+    pairs: [
+      ["SHARPEN_REF: f32 = 2048.0", "SHARPEN_REF = 2048"],
+      [".max(1.0)", "Math.max(1,"],
+    ],
+  },
+  {
+    what: "noise by tone",
+    rust: read("src-tauri/src/denoise.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [
+      ["SHADOW_FLOOR: f32 = 0.05", "max(cp[(uPr * 2 + 1) * (uPr * 2 + 1) / 2].a, 0.05)"],
+      ["SHADOW_MAX: f32 = 9.0", "uShadowK / pow(max(cp[(uPr * 2 + 1) * (uPr * 2 + 1) / 2].a, 0.05), 2.0), 9.0)"],
+    ],
+  },
+  {
     what: "vignette",
     rust: read("src-tauri/src/vignette.rs"),
     glsl: read("src/gl/shaders.ts"),

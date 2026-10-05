@@ -7,7 +7,7 @@
 // `bun run test -- --app <photo>` runner does that on Windows). The photo is
 // copied to a temp folder first, so its real sidecar is never touched.
 
-import { copyFileSync, mkdtempSync, readFileSync, existsSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -381,7 +381,7 @@ await step("double exposure loads, blends and clears", async () => {
     await sleep(1200);
     expect(sidecar()?.blend?.opacity === 60, `opacity is ${sidecar()?.blend?.opacity}`);
     await js(
-      `(() => { const sel = document.querySelector('.blend-panel select'); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'screen'); sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
+      `(() => { const sel = [...document.querySelectorAll('.blend-panel select')].find(x => [...x.options].some(o => o.value === 'screen')); Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, 'screen'); sel.dispatchEvent(new Event('change', { bubbles: true })); return true; })()`,
     );
     await sleep(1200);
     expect(sidecar()?.blend?.mode === "screen", `mode is ${sidecar()?.blend?.mode}`);
@@ -508,12 +508,15 @@ await step("the starburst filter lights up the highlights", async () => {
 await step("a subtract mask takes its area back out of the mask above it", async () => {
   const plain = await js(`__smoke.shot()`);
   const addMask = async (kind, button) => {
+    const before = await js(`document.querySelectorAll('.mask-row').length`);
     await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes(${JSON.stringify(button)})).click(); true`);
-    await sleep(300);
+    // wait for the list of kinds to open rather than guessing how long that takes
+    expect(await waitFor(`!!document.querySelector('.mask-add-item')`, 5000), "the list of mask kinds did not open");
     await js(
       `[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === ${JSON.stringify(kind)}).click(); true`,
     );
-    await sleep(600);
+    expect(await waitFor(`document.querySelectorAll('.mask-row').length > ${before}`, 5000), "the mask did not appear in the list");
+    await sleep(300);
   };
   await addMask("Radial gradient", "Add mask");
   expect(await js(`document.querySelectorAll('.mask-row').length === 1`), "the mask was not added");
@@ -883,6 +886,106 @@ await step("the scopes read the picture, not an empty buffer", async () => {
   expect(v.total === 32, `the waveform counted ${v.total} pixels of 32`);
   // brightness runs up the plot, so the bright end must sit higher
   expect(v.brightCol < v.darkCol, `the waveform is upside down or flat: dark ${v.darkCol}, bright ${v.brightCol}`);
+});
+
+await step("a file dropped anywhere in the window reaches the double exposure", async () => {
+  // OS drags cannot be synthesised, so the decision is checked where it is made.
+  const r = await js(`import('/src/dropTarget.ts').then(m => {
+    const win = { left: 0, top: 0, right: 1400, bottom: 900 };
+    return JSON.stringify({
+      onPhoto: m.dropGoesToBlend(true, 600 * 2, 400 * 2, win, 2),
+      offZone: m.dropGoesToBlend(true, 40 * 2, 880 * 2, win, 2),
+      outside: m.dropGoesToBlend(true, 1500 * 2, 400 * 2, win, 2),
+      closed: m.dropGoesToBlend(false, 600 * 2, 400 * 2, win, 2),
+      noDpr: m.dropGoesToBlend(true, 600, 400, win, 0),
+      first: m.firstPhoto(['C:/x/notes.txt', 'C:/x/folder', 'C:/x/IMG_0001.CR3', 'C:/x/b.jpg']),
+      none: m.firstPhoto(['C:/x/notes.txt', 'C:/x/archive.zip']),
+      dotDir: m.firstPhoto(['C:/some.dir/readme']),
+      extra: m.firstPhoto(['C:/x/shot.zzz'], ['.zzz']),
+      braw: m.firstPhoto(['D:/clip/frame.braw']),
+    });
+  })`);
+  const v = JSON.parse(r);
+  expect(v.onPhoto, "a drop on the photo was not taken");
+  expect(v.offZone, "a drop a little off the zone was not taken");
+  expect(!v.outside, "a drop outside the window was taken");
+  expect(!v.closed, "a drop was claimed with the section closed");
+  expect(v.noDpr, "a missing pixel ratio broke the hit test");
+  expect(v.first === "C:/x/IMG_0001.CR3", `the first photo was not found: ${v.first}`);
+  expect(v.none === null, `a drop with no photo in it found one: ${v.none}`);
+  expect(v.dotDir === null, `a dot in a folder name was read as an extension: ${v.dotDir}`);
+  expect(v.extra === "C:/x/shot.zzz", "the app's own list of formats was ignored");
+  expect(v.braw === "D:/clip/frame.braw", "a cinema RAW was not recognised");
+});
+
+await step("a double exposure can use the photo you are editing, picked from the filmstrip", async () => {
+  await js(`__smoke.open('Double Exposure'); true`);
+  await sleep(500);
+  // start clean: whatever an earlier step left in the panel
+  await js(`(() => { const b = [...document.querySelectorAll('.blend-panel button')].find(x => x.textContent.trim() === 'Remove'); if (b) b.click(); return 1; })()`);
+  await sleep(700);
+  const listed = await js(`(() => {
+    const sel = [...document.querySelectorAll('.blend-panel select')].find(x => [...x.options].some(o => o.textContent.includes('this photo')));
+    return sel ? JSON.stringify([...sel.options].map(o => o.textContent.trim())) : null;
+  })()`);
+  expect(listed, "the filmstrip picker is not in the panel");
+  expect(listed.includes("(this photo)"), `the open photo is not offered as its own second exposure: ${listed}`);
+
+  await js(`(() => {
+    const sel = [...document.querySelectorAll('.blend-panel select')].find(x => [...x.options].some(o => o.textContent.includes('this photo')));
+    const opt = [...sel.options].find(o => o.textContent.includes('this photo'));
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, opt.value);
+    sel.dispatchEvent(new Event('change', { bubbles: true }));
+  })(); true`);
+  expect(
+    await waitFor(`(() => { const t = document.querySelector('.blend-file strong'); return !!t && t.textContent.includes(${JSON.stringify(basename(photo))}); })()`, 12000),
+    "choosing the open photo from the filmstrip did not load it",
+  );
+  await sleep(1800);
+  const saved = sidecar()?.blend;
+  expect(saved?.path === photo, `the second exposure is not the same photo: ${saved?.path}`);
+
+  await js(`(() => { const b = [...document.querySelectorAll('.blend-panel button')].find(x => x.textContent.trim() === 'Remove'); if (b) b.click(); return 1; })()`);
+  await sleep(1200);
+});
+
+await step("a library watermark lands on an export of a photo that had none", async () => {
+  // Make a solid red mark, keep it in the library, then export the photo with it
+  // chosen at export time. The photo itself has no watermark saved, which is the
+  // normal case for a batch: the mark was only ever placed on one photo.
+  const dataUrl = await js(`(() => { const c = document.createElement('canvas'); c.width = 64; c.height = 32; const g = c.getContext('2d'); g.fillStyle = '#ff0000'; g.fillRect(0, 0, 64, 32); return c.toDataURL('image/png'); })()`);
+  const markFile = join(dir, "smoke-mark.png").split("\\").join("/");
+  writeFileSync(markFile, Buffer.from(dataUrl.split(",")[1], "base64"));
+  const out = join(dir, "marked.jpg").split("\\").join("/");
+
+  const r = await js(`Promise.all([import('/src/api.ts'), import('/src/exportMark.ts'), import('/src/curve.ts')]).then(async ([api, em, cv]) => {
+    const saved = await api.watermarkSave(${JSON.stringify(markFile)}, 'smoke-mark');
+    const lib = await api.watermarkLibrary();
+    const edits = (await api.readEdits(${JSON.stringify(photo)})) ?? (await import('/src/types.ts')).defaultParams();
+    const placed = { ...edits.watermark, x: 0.85, y: 0.88, size: 0.2, opacity: 100 };
+    const marked = em.withMark({ ...edits, watermark: { ...edits.watermark, enabled: false, path: '' } }, saved.path, placed);
+    await api.exportPath(${JSON.stringify(photo)}, {
+      outPath: ${JSON.stringify(out)}, format: 'jpeg', quality: 95, bitDepth: 8, maxLongEdge: 800,
+      params: marked, lut: Array.from(cv.buildLut(marked.curves)),
+    });
+    const none = em.withMark(marked, 'none', placed);
+    return JSON.stringify({ inLibrary: lib.some(m => m.name === 'smoke-mark'), enabled: marked.watermark.enabled, noneEnabled: none.watermark.enabled, kept: em.withMark(edits, 'photo', placed) === edits });
+  })`);
+  const v = JSON.parse(r);
+  expect(v.inLibrary, "the mark did not reach the library");
+  expect(v.enabled, "choosing a mark did not switch the watermark on");
+  expect(!v.noneEnabled, "choosing None left the watermark on");
+  expect(v.kept, "leaving it as set on each photo changed the photo's edits");
+
+  // and it is actually in the file, in the corner it was placed
+  const b64 = readFileSync(out).toString("base64");
+  const px = JSON.parse(await js(`new Promise((res, rej) => { const i = new Image(); i.onload = () => { const c = document.createElement('canvas'); c.width = i.naturalWidth; c.height = i.naturalHeight; const g = c.getContext('2d', { willReadFrequently: true }); g.drawImage(i, 0, 0); let sx = 0, sy = 0, n = 0; const d = g.getImageData(0, 0, c.width, c.height).data; for (let y = 0; y < c.height; y++) for (let x = 0; x < c.width; x++) { const k = (y * c.width + x) * 4; if (d[k] > 200 && d[k + 1] < 60 && d[k + 2] < 60) { sx += x / c.width; sy += y / c.height; n++; } } res(JSON.stringify({ n, x: n ? sx / n : 0, y: n ? sy / n : 0 })); }; i.onerror = rej; i.src = 'data:image/jpeg;base64,${b64}'; })`));
+  expect(px.n > 100, `the watermark is not in the exported file (${px.n} red pixels)`);
+  expect(px.x > 0.7 && px.y > 0.75, `the watermark is not in its corner: ${px.x.toFixed(2)}, ${px.y.toFixed(2)}`);
+
+  await js(`import('/src/api.ts').then(m => m.watermarkDelete('smoke-mark'))`);
+  const gone = await js(`import('/src/api.ts').then(m => m.watermarkLibrary()).then(l => !l.some(x => x.name === 'smoke-mark'))`);
+  expect(gone, "the mark stayed in the library after being deleted");
 });
 
 await step("the Android update check only offers a genuinely newer version", async () => {
