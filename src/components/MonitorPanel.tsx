@@ -32,7 +32,7 @@ export function MonitorPanel({ info, onToggle }: Props) {
         </div>
       )}
       <div className="hint">
-        The phone must be on the same Wi‑Fi as this computer; a phone hotspot works too. If Windows asks to let Darkroom
+        The phone must be on the same Wi‑Fi as this computer; a phone hotspot works too. If Windows asks to let NFrame Studio
         through the firewall, allow it on private networks. The page shows the developed image and follows your edits.
       </div>
     </div>

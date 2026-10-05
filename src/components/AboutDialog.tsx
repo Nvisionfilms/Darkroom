@@ -55,13 +55,14 @@ export function AboutDialog({
       break;
     default:
       line = android
-        ? "Darkroom checks the update channel and hands the download to your browser; Android installs it."
-        : "Updates are delivered through the secure Darkroom update channel.";
+        ? "NFrame Studio checks the update channel and hands the download to your browser; Android installs it."
+        : "Updates are delivered through the secure NFrame Studio update channel.";
   }
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
       <div className="modal about" onClick={(e) => e.stopPropagation()}>
-        <h2>Darkroom</h2>
+        <h2>NFrame Studio</h2>
+        <div className="about-version">Photo editing &amp; creative effects · by NVision</div>
         <div className="about-version">Version {version}</div>
         <div className="about-line">
           {shows
@@ -94,7 +95,7 @@ export function AboutDialog({
         </div>
 
         {shows && (
-          <div className="about-repo" title="Darkroom update channel">
+          <div className="about-repo" title="NFrame Studio update channel">
             {UPDATE_CHANNEL}
           </div>
         )}

@@ -39,7 +39,7 @@ pub fn resolve<R: Runtime>(app: &AppHandle<R>, uri: &str, ext: Option<&str>) -> 
         Some(e) => (e.trim_start_matches('.').to_ascii_lowercase(), "imports"),
         None => (
             sniff(&bytes)
-                .ok_or_else(|| anyhow!("that file is not a photo Darkroom can open"))?
+                .ok_or_else(|| anyhow!("that file is not a photo NFrame Studio can open"))?
                 .to_string(),
             "photos",
         ),

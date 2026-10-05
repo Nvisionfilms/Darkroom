@@ -93,7 +93,7 @@ export function ToneMatchPanel({ disabled, busy, match, strip, currentPath, onPi
         </>
       ) : (
         <div className="hint">
-          Pick a picture whose look you want. Darkroom measures how it is spread from shadow to highlight and how its
+          Pick a picture whose look you want. NFrame Studio measures how it is spread from shadow to highlight and how its
           colour is balanced, then sets Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Temperature, Tint and
           Saturation to bring the photo as close as it can. They are ordinary sliders, so you can adjust them, back the
           whole match off with Strength, or undo it.

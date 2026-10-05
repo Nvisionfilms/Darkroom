@@ -104,8 +104,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           tagName: ${{ steps.release.outputs.tag }}
-          releaseName: Darkroom ${{ steps.release.outputs.tag }}
-          releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update through the Darkroom update channel.
+          releaseName: NFrame Studio ${{ steps.release.outputs.tag }}
+          releaseBody: Download the installer for your platform. Windows users should use the x64 setup.exe. Installed copies update through the NFrame Studio update channel.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
@@ -233,7 +233,7 @@ jobs:
           cat > dist-android/android.json <<JSON
           {
             "version": "${VERSION}",
-            "notes": "Darkroom ${VERSION}",
+            "notes": "NFrame Studio ${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
             "url": "https://updates.nvisionfilms.com/darkroom/assets/Darkroom_${VERSION}_aarch64.apk"
           }

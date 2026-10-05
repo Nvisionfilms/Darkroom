@@ -13,7 +13,7 @@ export function UpdateBanner({ status, onInstall, onDismiss }: Props) {
     return (
       <div className="update-banner">
         <span>
-          Darkroom {u.version} is available{u.body ? `: ${u.body.split("\n")[0]}` : ""}
+          NFrame Studio {u.version} is available{u.body ? `: ${u.body.split("\n")[0]}` : ""}
         </span>
         <button className="primary" onClick={onInstall}>
           Install and restart
@@ -26,7 +26,7 @@ export function UpdateBanner({ status, onInstall, onDismiss }: Props) {
     return (
       <div className="update-banner">
         <span>
-          Darkroom {status.version} is available{status.notes ? `: ${status.notes.split("\n")[0]}` : ""}
+          NFrame Studio {status.version} is available{status.notes ? `: ${status.notes.split("\n")[0]}` : ""}
         </span>
         <button className="primary" onClick={onInstall}>
           Download

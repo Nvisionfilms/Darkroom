@@ -282,7 +282,7 @@ const PAGE: &str = r##"<!doctype html>
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="theme-color" content="#111111">
-<title>Darkroom Monitor</title>
+<title>NFrame Studio Monitor</title>
 <style>
 html,body{margin:0;height:100%;background:#111;color:#ddd;font:14px -apple-system,system-ui,"Segoe UI",sans-serif;-webkit-user-select:none;user-select:none}
 body{display:flex;flex-direction:column;height:100dvh;overflow:hidden}
@@ -303,7 +303,7 @@ main.full img{max-width:none;max-height:none}
 main.full{overflow:auto;display:block}
 </style></head>
 <body>
-<header><span class="dot" id="dot"></span><b id="name">Darkroom</b><small id="count"></small></header>
+<header><span class="dot" id="dot"></span><b id="name">NFrame Studio</b><small id="count"></small></header>
 <main id="main"><img id="frame" hidden alt=""><div id="empty" class="empty">Waiting for the first shot…<br><small>Keep this phone on the same Wi‑Fi as the computer.</small></div><div class="meta" id="meta"></div></main>
 <footer id="strip"></footer>
 <script>
@@ -321,7 +321,7 @@ main.full{overflow:auto;display:block}
         img.src='/frame.jpg?s='+frameSeq;
       }
     }
-    $('name').textContent=s.name||'Darkroom';
+    $('name').textContent=s.name||'NFrame Studio';
     $('count').textContent=s.total?(s.index+' / '+s.total):'';
     $('meta').textContent=s.meta||'';
     var key=JSON.stringify(s.thumbs.map(function(t){return [t.name,t.active,t.src.length]}));

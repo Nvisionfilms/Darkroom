@@ -237,7 +237,7 @@ function placeholder(path: string): ImageInfo {
 }
 
 /**
- * RAW files start with Darkroom's Standard develop profile. Already-developed
+ * RAW files start with NFrame Studio's Standard develop profile. Already-developed
  * bitmap files should not silently receive a second contrast curve, sharpening
  * pass, or colour denoise just by being opened.
  */
@@ -253,7 +253,7 @@ function defaultParamsForImage(info: ImageInfo | null): EditParams {
 
 /**
  * Auto Edit is deliberately a simple deterministic develop recipe. It only
- * changes normal Darkroom sliders; it does not generate, replace, mask, or
+ * changes normal NFrame Studio sliders; it does not generate, replace, mask, or
  * invent image content.
  */
 /**
@@ -1050,7 +1050,7 @@ export default function App() {
           setBlendDrop(false);
           // the first thing dropped that is a photo, not just the first thing
           const photo = hit ? firstPhoto(p.paths, extensions) : null;
-          if (hit && p.paths.length && !photo) setError("That is not a photo Darkroom can open.");
+          if (hit && p.paths.length && !photo) setError("That is not a photo NFrame Studio can open.");
           if (photo) {
             if (blendOpenRef.current) void loadBlend(photo);
             else void runToneMatchRef.current?.(photo);
@@ -1136,7 +1136,7 @@ export default function App() {
         const left = await exportCube(out, params, [...buildLut(params.curves)], size, base);
         setNotice(
           left.length
-            ? `Wrote ${fileName(out)}. A LUT cannot carry ${left.join(", ")} - those stay in Darkroom.`
+            ? `Wrote ${fileName(out)}. A LUT cannot carry ${left.join(", ")} - those stay in NFrame Studio.`
             : `Wrote ${fileName(out)}. It carries the whole look.`,
         );
       } catch (e) {
@@ -1552,7 +1552,7 @@ export default function App() {
             ▦
           </button>
           <div className="phone-title">
-            <strong>{loading ? `Loading ${loading}…` : current ? fileName(current.path) : "Darkroom"}</strong>
+            <strong>{loading ? `Loading ${loading}…` : current ? fileName(current.path) : "NFrame Studio"}</strong>
           </div>
           <button
             type="button"
@@ -1580,10 +1580,10 @@ export default function App() {
       )}
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">D<span className="brand-spark">✦</span></span>
+          <span className="brand-mark" aria-hidden="true">N<span className="brand-spark">✦</span></span>
           <span className="brand-copy">
-            <strong>Darkroom</strong>
-            <small>Creative photo studio</small>
+            <strong>NFrame Studio</strong>
+            <small>by NVision</small>
           </span>
         </div>
 
@@ -1684,7 +1684,7 @@ export default function App() {
               revealSection("tether");
               revealSection("monitor");
             }}
-            title="Shoot into Darkroom and watch on a phone"
+            title="Shoot into NFrame Studio and watch on a phone"
           >
             <span className="tool-glyph">⌁</span><span>Connect</span>
           </button>

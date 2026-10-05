@@ -1032,7 +1032,7 @@ export function Viewer({
       {error && <div className="viewer-error">{error}</div>}
       {!image && !error && (
         <div className="viewer-empty">
-          <div className="viewer-empty-kicker">DARKROOM / CREATIVE STUDIO</div>
+          <div className="viewer-empty-kicker">NFRAME STUDIO / BY NVISION</div>
           <div className="viewer-empty-title">Make the frame yours.</div>
           <div>Light, color, motion. Start with your photograph.
           </div>

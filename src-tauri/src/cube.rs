@@ -2,7 +2,7 @@
 //! Premiere, FCP, OBS, a camera, or anything else that loads a cube.
 //!
 //! A cube is a lookup from one colour to another: 3 numbers in, 3 numbers out.
-//! That makes it a faithful carrier for everything in Darkroom that depends
+//! That makes it a faithful carrier for everything in NFrame Studio that depends
 //! only on a pixel's own colour - white balance, exposure, the tone controls,
 //! the base and point curves, vibrance and saturation, HSL, colour grading, the
 //! picture profile and a creative look - and it cannot carry anything that
@@ -12,7 +12,7 @@
 //! are all left out, and `excluded()` says which of them were actually in use
 //! so the app can tell the photographer rather than quietly dropping them.
 //!
-//! The LUT is display-referred: feed it Rec.709/sRGB and you get Darkroom's
+//! The LUT is display-referred: feed it Rec.709/sRGB and you get NFrame Studio's
 //! look back. Each lattice point is decoded from sRGB to linear light, taken
 //! into the working space, run through exactly the same `develop_pixel` the
 //! export uses, and written out as the display value that comes back. So the
@@ -139,7 +139,7 @@ pub fn format(values: &[[f32; 3]], size: usize, title: &str) -> String {
         .map(|c| if c == '"' || c == '\n' || c == '\r' { ' ' } else { c })
         .collect();
     let mut s = String::with_capacity(values.len() * 26 + 256);
-    let _ = writeln!(s, "# Created by Darkroom");
+    let _ = writeln!(s, "# Created by NFrame Studio");
     let _ = writeln!(s, "# Display-referred: Rec.709 / sRGB in, Rec.709 / sRGB out.");
     let _ = writeln!(s, "# Carries tone, colour, curves, HSL, grading, profile and look only.");
     let _ = writeln!(s, "TITLE \"{}\"", clean.trim());
@@ -205,7 +205,7 @@ mod tests {
     }
 
     /// The real promise: a host applying this cube to an sRGB image gets what
-    /// Darkroom shows. Round-trip it through the app's own .cube parser and
+    /// NFrame Studio shows. Round-trip it through the app's own .cube parser and
     /// compare against the pipeline, pixel for pixel.
     #[test]
     fn applying_the_cube_reproduces_the_pipeline() {

@@ -1,4 +1,4 @@
-/* Darkroom studio shell: neutral surfaces keep the photograph authoritative. */
+/* NFrame Studio shell: neutral surfaces keep the photograph authoritative. */
 :root {
   --bg: #101013;
   --chrome: #16161a;
@@ -21,7 +21,7 @@ button:focus-visible, input:focus-visible, select:focus-visible {
 }
 input[type="checkbox"] { accent-color: var(--accent); }
 .app { grid-template-rows: 76px minmax(0, 1fr) 120px; }
-.topbar { background: var(--chrome); padding: 0 22px; grid-template-columns: 210px minmax(0, 1fr) auto; }
+.topbar { background: var(--chrome); padding: 0 22px; grid-template-columns: 235px minmax(0, 1fr) auto; }
 .brand-mark { position: relative; width: 38px; height: 38px; background: #b9a2ff12; border-color: #b9a2ff35; color: #d4c6ff; border-radius: 12px; font-size: 26px; font-weight: 600; }
 .brand-spark { position: absolute; right: 3px; bottom: 2px; font-size: 13px; color: var(--accent); }
 .brand-copy strong { font-size: 18px; letter-spacing: -.04em; }
@@ -83,7 +83,7 @@ input[type="checkbox"] { accent-color: var(--accent); }
 .viewer-empty-formats { padding: 8px 14px; border: 1px solid var(--border); border-radius: 20px; font-size: 10px; letter-spacing: .14em; }
 .viewer-empty .hint { max-width: 340px; line-height: 1.8; }
 @media (max-width: 1180px) {
-  .topbar { grid-template-columns: 185px minmax(0, 1fr) auto; padding-inline: 14px; }
+  .topbar { grid-template-columns: 210px minmax(0, 1fr) auto; padding-inline: 14px; }
   .main { grid-template-columns: 74px minmax(0, 1fr) 310px; }
   .toolrail { padding-inline: 7px; }
   .file-context { padding-left: 10px; }

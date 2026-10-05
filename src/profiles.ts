@@ -28,7 +28,7 @@ const base = (): ProfileLook => ({
 });
 
 export const PROFILES: { id: string; name: string; hint: string }[] = [
-  { id: "standard", name: "Standard", hint: "Darkroom's neutral starting point" },
+  { id: "standard", name: "Standard", hint: "NFrame Studio's neutral starting point" },
   { id: "neutral", name: "Neutral", hint: "Softer contrast, easy to grade from" },
   { id: "portrait", name: "Portrait", hint: "Gentle contrast, calmer skin tones" },
   { id: "landscape", name: "Landscape", hint: "Stronger contrast, deeper greens and skies" },
