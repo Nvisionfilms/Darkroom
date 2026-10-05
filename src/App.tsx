@@ -24,6 +24,9 @@ import {
   pickSavePath,
   importPhoto,
   importToLibrary,
+  listSessionPhotos,
+  listSessions,
+  type LibrarySession,
   applyEdits,
   markedPhotos,
   openBlend,
@@ -340,6 +343,9 @@ export default function App() {
       return "";
     }
   });
+  // the sessions in the library, for the filmstrip's folder menu
+  const [sessions, setSessions] = useState<LibrarySession[]>([]);
+  const [sessionPath, setSessionPath] = useState("");
   // filmstrip selection: what the batch actions work on. The photo being
   // edited is always in it, so the actions apply to what you can see.
   const [selected, setSelected] = useState<ReadonlySet<string>>(new Set());
@@ -669,6 +675,17 @@ export default function App() {
     return () => window.clearInterval(id);
   }, [monitor?.active]);
 
+  const refreshSessions = useCallback(() => {
+    if (!libraryFolder) {
+      setSessions([]);
+      return;
+    }
+    listSessions(libraryFolder)
+      .then(setSessions)
+      .catch(() => setSessions([]));
+  }, [libraryFolder]);
+  useEffect(refreshSessions, [refreshSessions]);
+
   const openFiles = useCallback(async () => {
     const picked = await pickImages(extensions.length ? extensions : ["*"], photoFolder);
     if (!picked.length) return;
@@ -690,6 +707,10 @@ export default function App() {
         setLoading("Copying into the library…");
         const got = await importToLibrary(libraryFolder, sessionName(), paths);
         paths = got.files;
+        if (got.session) {
+          setSessionPath(got.session);
+          refreshSessions();
+        }
         if (got.session) setNotice(`Imported ${paths.length} into ${got.session.split(/[\/]/).pop()}`);
       } catch (e) {
         setError(`Could not copy into the library: ${String(e)}`);
@@ -705,7 +726,7 @@ export default function App() {
       return next;
     });
     await load(paths[0]);
-  }, [extensions, load, photoFolder, libraryFolder]);
+  }, [extensions, load, photoFolder, libraryFolder, refreshSessions]);
 
   /**
    * Take photos out of the filmstrip and the saved session. The files on disk
@@ -857,6 +878,25 @@ export default function App() {
       /* private mode */
     }
   }, []);
+
+  /** Swap the filmstrip for the photos of a session imported earlier. */
+  const openSession = useCallback(
+    async (path: string) => {
+      setSessionPath(path);
+      if (!path) return;
+      try {
+        const photos = await listSessionPhotos(path);
+        if (!photos.length) return;
+        setPhoneLibrary(false);
+        setSelected(new Set());
+        setFiles(photos.map(placeholder));
+        await load(photos[0]);
+      } catch (e) {
+        setError(`Could not open that session: ${String(e)}`);
+      }
+    },
+    [load],
+  );
 
   const chooseLibraryFolder = useCallback(async () => {
     const f = await pickFolder("Choose the library folder imports are copied into");
@@ -2234,6 +2274,22 @@ export default function App() {
         <div className="filmstrip-summary">
           <div className="filmstrip-count">
             <span className="filmstrip-grid">▦</span>
+            {sessions.length > 0 && (
+              <select
+                className="session-select"
+                title="Open a session you imported earlier"
+                value={sessions.some((s) => s.path === sessionPath) ? sessionPath : ""}
+                onFocus={refreshSessions}
+                onChange={(e) => void openSession(e.target.value)}
+              >
+                <option value="">Sessions…</option>
+                {sessions.map((s) => (
+                  <option key={s.path} value={s.path}>
+                    {s.name} ({s.count})
+                  </option>
+                ))}
+              </select>
+            )}
             <span>
               {files.length === 0
                 ? "No photos open"

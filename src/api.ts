@@ -71,6 +71,20 @@ export async function importToLibrary(library: string, session: string, paths: s
   return invoke<LibraryImport>("import_to_library", { library, session, paths });
 }
 
+export interface LibrarySession {
+  name: string;
+  path: string;
+  count: number;
+}
+
+export async function listSessions(library: string): Promise<LibrarySession[]> {
+  return invoke<LibrarySession[]>("list_sessions", { library });
+}
+
+export async function listSessionPhotos(path: string): Promise<string[]> {
+  return invoke<string[]>("list_session_photos", { path });
+}
+
 export async function importPhoto(uri: string, ext?: string): Promise<string> {
   return invoke<string>("import_photo", { uri, ext: ext ?? null });
 }
