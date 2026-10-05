@@ -1,9 +1,10 @@
-import { defaultStar, type Star } from "../types";
+import { defaultStar, type Mask, type Star } from "../types";
 import { Slider } from "./Slider";
 
 interface Props {
   star: Star;
   onChange: (s: Star) => void;
+  masks: Mask[];
 }
 
 const POINTS = [4, 6, 8, 10, 12];
@@ -13,7 +14,9 @@ const POINTS = [4, 6, 8, 10, 12];
  * the lens to turn street lamps and specular highlights into stars. Every
  * streak is made from light already in the frame.
  */
-export function StarPanel({ star, onChange }: Props) {
+export function StarPanel({ star, onChange, masks }: Props) {
+  const sources = masks.filter((m) => m.mode !== "subtract");
+  const chosen = sources.find((m) => m.id === star.mask) ?? null;
   const set =
     <K extends keyof Star>(key: K) =>
     (v: Star[K]) =>
@@ -25,6 +28,25 @@ export function StarPanel({ star, onChange }: Props) {
         Smears the highlights that are already in the photo along a few directions, the way a ruled glass filter
         diffracts light. Nothing is generated: with no highlights above the threshold the picture is untouched.
       </div>
+      <div className="field">
+        <label htmlFor="star-source">Stars from</label>
+        <select id="star-source" value={chosen ? chosen.id : ""} onChange={(e) => set("mask")(e.target.value)}>
+          <option value="">Whole photo</option>
+          {sources.map((m) => (
+            <option key={m.id} value={m.id}>
+              {m.name}
+            </option>
+          ))}
+        </select>
+      </div>
+      {chosen ? (
+        <div className="hint">
+          Only the lights inside <strong>{chosen.name}</strong> grow stars, whether or not the mask is shown. The streaks
+          run on past its edge, the way light does.
+        </div>
+      ) : sources.length === 0 ? (
+        <div className="hint">Add a mask under Masks to star just some of the lights.</div>
+      ) : null}
       <div className="field">
         <label htmlFor="star-points">Points</label>
         <select id="star-points" value={star.points} onChange={(e) => set("points")(Number(e.target.value))}>

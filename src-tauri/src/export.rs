@@ -38,7 +38,20 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     // that is added to the picture afterwards - the watermark included - and
     // before the crop, exactly as the preview applies it to the whole frame
     if req.params.star.is_active() {
-        developed = crate::star::apply(&developed, img.width, img.height, &req.params.star);
+        let sw = if req.params.star.mask.is_empty() {
+            None
+        } else {
+            let luma: Vec<f32> = developed
+                .chunks_exact(3)
+                .map(|p| p[0] * 0.2126 + p[1] * 0.7152 + p[2] * 0.0722)
+                .collect();
+            // a star asked to come from a mask that is gone has no source
+            match crate::mask::weight_map(&req.params.masks, &req.params.star.mask, img.width, img.height, &luma) {
+                Some(w) => Some(w),
+                None => Some(vec![0.0; img.width * img.height]),
+            }
+        };
+        developed = crate::star::apply_masked(&developed, img.width, img.height, &req.params.star, sw.as_deref());
     }
     // crop + straighten + perspective + lens distortion/CA in one resample
     let warp = req.params.warp(img.width, img.height);

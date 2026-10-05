@@ -864,6 +864,8 @@ in vec2 vUv;
 out vec4 outColor;
 uniform sampler2D uTex;       // the developed picture, mipmapped
 uniform float uThreshold;     // 0..1 luma
+uniform sampler2D uMask;      // where the stars may come from
+uniform int uUseMask;         // 0 = the whole frame
 ${COMMON}
 void main() {
   // mip level 2 is the 4x4 box average star.rs builds by hand
@@ -873,6 +875,8 @@ void main() {
   float k = t * t;
   // keep the highlight's own colour: a tungsten lamp stars warm
   vec3 h = (y > 1e-4 ? c / y : vec3(1.0)) * k;
+  // only the lights inside the mask star; the streaks run on past its edge
+  if (uUseMask != 0) h *= texture(uMask, vUv).r;
   outColor = vec4(h, 1.0);
 }`;
 

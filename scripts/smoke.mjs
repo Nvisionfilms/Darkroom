@@ -562,6 +562,40 @@ await step("the starburst filter lights up the highlights", async () => {
   expect(Math.abs(back.mean - off.mean) < 0.004, `switching the star off did not restore the picture: ${off.mean.toFixed(3)} -> ${back.mean.toFixed(3)}`);
 });
 
+await step("a starburst can be limited to the lights inside a mask", async () => {
+  const base = await js(`__smoke.shot()`);
+  await js(`[...__smoke.open('Masks').querySelectorAll('.mask-toolbar button')].find(b => b.textContent.includes('Add mask')).click(); true`);
+  await sleep(300);
+  await js(`[...document.querySelectorAll('.mask-add-item')].find(b => b.querySelector('strong').textContent === 'Radial gradient').click(); true`);
+  await sleep(600);
+  // hide the red overlay: the star must stay inside the mask without it
+  await js(`(() => { const c = document.querySelector('.mask-show input'); if (c && c.checked) c.click(); })(); true`);
+  expect(await js(`__smoke.toggle('Starburst')`), "the starburst toggle did not switch on");
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Threshold', 10); true`);
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Amount', 100); true`);
+  await js(`__smoke.slider(__smoke.open('Starburst'), 'Length', 100); true`);
+  await sleep(1600);
+  const whole = await js(`__smoke.shot()`);
+  expect(whole.mean > base.mean + 0.008, "the whole-frame star brightened nothing");
+  const set = (v) => js(`(() => { const s = document.querySelector('#star-source'); const d = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set; d.call(s, ${JSON.stringify(v)}); s.dispatchEvent(new Event('change', { bubbles: true })); return s.value; })()`);
+  const picked = await js(`[...document.querySelectorAll('#star-source option')].map(o => o.value).find(v => v) || ''`);
+  expect(picked.length > 0, "the starburst offers no mask to come from");
+  await set(picked);
+  await sleep(2500);
+  const masked = await js(`__smoke.shot()`);
+  expect(
+    masked.mean - base.mean < (whole.mean - base.mean) * 0.9,
+    `a starburst limited to a mask still lit the whole frame: +${(whole.mean - base.mean).toFixed(4)} -> +${(masked.mean - base.mean).toFixed(4)}`,
+  );
+  await set("");
+  await sleep(1500);
+  const again = await js(`__smoke.shot()`);
+  expect(Math.abs(again.mean - whole.mean) < 0.004, "going back to the whole photo did not bring the whole-frame star back");
+  expect(!(await js(`__smoke.toggle('Starburst')`)), "the starburst toggle did not switch off");
+  await js(`[...document.querySelectorAll('.mask-delete')].forEach(b => b.click()); true`);
+  await sleep(1500);
+});
+
 await step("a subtract mask takes its area back out of the mask above it", async () => {
   const plain = await js(`__smoke.shot()`);
   const addMask = async (kind, button) => {
