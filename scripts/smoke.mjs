@@ -828,6 +828,63 @@ await step("a brush paints with a finger, not just a mouse", async () => {
   }
 });
 
+await step("the vectorscope's skin line is where skin actually lands", async () => {
+  // The line is derived from real complexions rather than copied from a
+  // diagram, so what has to hold is that complexions fall on it and other
+  // colours do not.
+  const r = await js(`import('/src/scopes.ts').then(m => {
+    const deg = (x) => (x * 180) / Math.PI;
+    const onLine = m.SKIN_REFERENCES.map(([r, g, b]) => deg(m.angleFromSkinLine(r, g, b)));
+    const others = {
+      sky: deg(m.angleFromSkinLine(0.45, 0.62, 0.86)),
+      grass: deg(m.angleFromSkinLine(0.35, 0.55, 0.24)),
+      lips: deg(m.angleFromSkinLine(0.72, 0.25, 0.28)),
+      magenta: deg(m.angleFromSkinLine(0.8, 0.2, 0.7)),
+    };
+    const grey = m.chroma(0.5, 0.5, 0.5);
+    return JSON.stringify({ worstSkin: Math.max(...onLine), others, grey, angle: deg(m.skinAngle()) });
+  })`);
+  const v = JSON.parse(r);
+  // every complexion, light through deep, has to sit close to the line
+  expect(v.worstSkin < 12, `a complexion sits ${v.worstSkin.toFixed(1)} degrees off the skin line`);
+  // and things that are not skin have to sit clearly off it
+  for (const [name, d] of Object.entries(v.others)) {
+    expect(d > 25, `${name} sits only ${d.toFixed(1)} degrees off the skin line`);
+  }
+  // grey has no hue, so it belongs at the middle of the scope
+  expect(Math.abs(v.grey[0]) < 1e-6 && Math.abs(v.grey[1]) < 1e-6, `grey is not at the centre: ${JSON.stringify(v.grey)}`);
+  // Skin is warm - more red than blue - so it sits up and to the left on the
+  // scope, which is the second quadrant. Worked out from the complexions alone
+  // it lands within a few degrees of the broadcast I-line at 123, which is a
+  // good sign that the derivation is sound rather than a coincidence of taste.
+  expect(
+    v.angle > 110 && v.angle < 140,
+    `the skin line points somewhere odd: ${v.angle.toFixed(1)} degrees, expected near 123`,
+  );
+});
+
+await step("the scopes read the picture, not an empty buffer", async () => {
+  // Waveform and parade are built from the frame the renderer hands over; if
+  // that ever came back empty the scopes would be blank and look "broken".
+  const r = await js(`import('/src/scopes.ts').then(m => {
+    const w = 8, h = 4;
+    const data = new Uint8Array(w * h * 4);
+    for (let i = 0; i < w * h; i++) {
+      // a left-to-right ramp, so the waveform has to slope
+      const v = Math.round((i % w) / (w - 1) * 255);
+      data[i * 4] = v; data[i * 4 + 1] = v; data[i * 4 + 2] = v; data[i * 4 + 3] = 255;
+    }
+    const frame = { data, width: w, height: h };
+    const wf = m.waveform(frame, w, 16, m.luma);
+    const rowOf = (col) => { for (let row = 0; row < 16; row++) if (wf[row * w + col] > 0) return row; return -1; };
+    return JSON.stringify({ total: wf.reduce((a, b) => a + b, 0), darkCol: rowOf(0), brightCol: rowOf(w - 1) });
+  })`);
+  const v = JSON.parse(r);
+  expect(v.total === 32, `the waveform counted ${v.total} pixels of 32`);
+  // brightness runs up the plot, so the bright end must sit higher
+  expect(v.brightCol < v.darkCol, `the waveform is upside down or flat: dark ${v.darkCol}, bright ${v.brightCol}`);
+});
+
 await step("the Android update check only offers a genuinely newer version", async () => {
   // Android cannot replace itself - only its own package installer may - so it
   // polls a manifest and hands the APK to the browser. Everything rests on the

@@ -385,6 +385,29 @@ input[type="number"] {
 .histogram-head span:last-child {
   color: var(--muted-2);
 }
+.scope-tabs {
+  display: inline-flex;
+  gap: 1px;
+}
+.scope-tabs .tab {
+  padding: 1px 5px;
+  font-size: 9px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+.scope-tabs .tab.active {
+  background: rgba(138, 162, 255, 0.18);
+  color: #eef2ff;
+}
+.scope-skin {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 9px;
+  color: var(--muted);
+}
 .histogram {
   width: 100%;
   height: 86px;

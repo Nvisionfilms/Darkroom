@@ -96,7 +96,7 @@ interface Props {
   cropMode?: boolean;
   cropAspect?: number | null;
   onCropChange?: (c: Crop) => void;
-  onHistogram: (h: Histogram) => void;
+  onHistogram: (h: Histogram, frame: { data: Uint8Array; width: number; height: number } | null) => void;
   onZoom: (label: string) => void;
 }
 
@@ -282,7 +282,7 @@ export function Viewer({
     if (histPending.current) {
       if (r.histogramReady()) {
         histPending.current = false;
-        onHistogram(r.readHistogram());
+        onHistogram(r.readHistogram(), r.scopeFrame());
       } else {
         requestRender();
       }

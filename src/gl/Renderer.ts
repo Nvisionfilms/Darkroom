@@ -1292,6 +1292,17 @@ export class Renderer {
     return { r, g, b };
   }
 
+  /**
+   * The downsampled developed frame the histogram was just read from, for the
+   * scopes to measure. Handed over rather than copied: the caller draws from it
+   * straight away, and copying 170 kilobytes every render to avoid a tear that
+   * would last one frame is not worth it.
+   */
+  scopeFrame(): { data: Uint8Array; width: number; height: number } | null {
+    if (!this.imgW || this.histPixels.length === 0) return null;
+    return { data: this.histPixels, width: HIST_W, height: this.histH };
+  }
+
   dispose(): void {
     const gl = this.gl;
     if (this.maskTex) gl.deleteTexture(this.maskTex);

@@ -53,7 +53,7 @@ import { detectSubject } from "./subject";
 import { aspectRatio, CropPanel, fitAspect } from "./components/CropPanel";
 import { CurveEditor } from "./components/CurveEditor";
 import { ExportDialog } from "./components/ExportDialog";
-import { Histogram } from "./components/Histogram";
+import { Scopes, SCOPE_LABELS, type ScopeKind } from "./components/Scopes";
 import { GradingPanel } from "./components/GradingPanel";
 import { HslPanel } from "./components/HslPanel";
 import { InspectorSection, SectionFilter } from "./components/InspectorSection";
@@ -269,6 +269,11 @@ export default function App() {
   const setParams = history.set;
   const [before, setBefore] = useState(false);
   const [hist, setHist] = useState<Hist | null>(null);
+  // the downsampled developed frame the scopes measure, read back with the
+  // histogram so they cost nothing extra on the GPU
+  const [scopeFrame, setScopeFrame] = useState<{ data: Uint8Array; width: number; height: number } | null>(null);
+  const [scope, setScope] = useState<ScopeKind>("histogram");
+  const [skinLine, setSkinLine] = useState(true);
   const [zoom, setZoom] = useState("");
   const [loading, setLoading] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1603,7 +1608,10 @@ export default function App() {
             cropMode={cropMode}
             cropAspect={cropAspect}
             onCropChange={set("crop")}
-            onHistogram={setHist}
+            onHistogram={(h, f) => {
+              setHist(h);
+              setScopeFrame(f);
+            }}
             onZoom={setZoom}
           />
         </div>
@@ -1631,10 +1639,23 @@ export default function App() {
 
           <div className="histogram-card">
             <div className="histogram-head">
-              <span>Histogram</span>
-              <span>{current?.metadata.iso ? `ISO ${current.metadata.iso}` : "RGB"}</span>
+              <span className="scope-tabs">
+                {SCOPE_LABELS.map((s) => (
+                  <button key={s.id} className={"tab" + (scope === s.id ? " active" : "")} onClick={() => setScope(s.id)}>
+                    {s.label}
+                  </button>
+                ))}
+              </span>
+              {scope === "vector" ? (
+                <label className="scope-skin" title="The line complexions sit on, whatever the complexion">
+                  <input type="checkbox" checked={skinLine} onChange={(e) => setSkinLine(e.target.checked)} />
+                  Skin
+                </label>
+              ) : (
+                <span>{current?.metadata.iso ? `ISO ${current.metadata.iso}` : "RGB"}</span>
+              )}
             </div>
-            <Histogram hist={hist} />
+            <Scopes kind={scope} hist={hist} frame={scopeFrame} skinLine={skinLine} />
           </div>
 
           <InspectorSection title="Tone" shortcut="L" open={openSections.tone} onToggle={() => toggleSection("tone")}>
