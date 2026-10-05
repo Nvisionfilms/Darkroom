@@ -183,6 +183,10 @@ await step("opens the photo", async () => {
   await js(`window.__darkroom.load(${JSON.stringify(photo)})`);
   expect(await waitFor(`document.querySelector('.file-context strong')?.textContent === ${JSON.stringify(basename(photo))}`), "the photo did not open");
   await sleep(1500);
+  // the redesign lists one workspace's sections at a time; the steps below open
+  // sections from every workspace, so they are all listed from here on
+  await js(`window.__darkroom.showAllSections(true)`);
+  await sleep(400);
 });
 
 await step("filmstrip thumbnail generated", async () => {

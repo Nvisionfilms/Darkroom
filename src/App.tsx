@@ -327,6 +327,8 @@ function applyAutoEdit(p: EditParams, noiseSigma: number): EditParams {
 
 export default function App() {
   const [workspace, setWorkspace] = useState<WorkspaceId>("edit");
+  // test harness only: lists every inspector section regardless of workspace
+  const [showEverySection, setShowEverySection] = useState(false);
   const [stripVisible, setStripVisible] = useState(true);
   const [extensions, setExtensions] = useState<string[]>([]);
   const [files, setFiles] = useState<ImageInfo[]>([]);
@@ -1413,6 +1415,7 @@ export default function App() {
       doubleExpose: (path: string) => loadBlend(path),
       toneMatch: (path: string) => runToneMatchRef.current?.(path),
       capture: (opts?: { full?: boolean }) => captureRef.current?.(opts) ?? null,
+      showAllSections: (on: boolean) => setShowEverySection(on),
     };
   }, [load, autoEdit, loadBlend]);
 
@@ -1843,7 +1846,7 @@ export default function App() {
           />
         </div>
 
-        <SectionFilter.Provider value={phone ? phoneSections : WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].sections}>
+        <SectionFilter.Provider value={showEverySection ? null : phone ? phoneSections : WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].sections}>
         <aside className="panel">
           {phone && (
             <div className="sheet-head">
