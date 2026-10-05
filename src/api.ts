@@ -61,6 +61,16 @@ export async function publishFrame(jpeg: Uint8Array): Promise<number> {
  * desktop that is the path itself; on Android the picker returns content://
  * handles, which are copied into the app's own storage first.
  */
+export interface LibraryImport {
+  session: string;
+  files: string[];
+}
+
+/** Copy photos into a new session folder inside the library folder. */
+export async function importToLibrary(library: string, session: string, paths: string[]): Promise<LibraryImport> {
+  return invoke<LibraryImport>("import_to_library", { library, session, paths });
+}
+
 export async function importPhoto(uri: string, ext?: string): Promise<string> {
   return invoke<string>("import_photo", { uri, ext: ext ?? null });
 }

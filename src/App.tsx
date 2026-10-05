@@ -23,6 +23,7 @@ import {
   matchTone,
   pickSavePath,
   importPhoto,
+  importToLibrary,
   applyEdits,
   markedPhotos,
   openBlend,
@@ -166,6 +167,13 @@ function workspaceFor(key: InspectorKey): WorkspaceId {
 
 const TETHER_FOLDER_KEY = "darkroom.tetherFolder";
 const PHOTO_FOLDER_KEY = "darkroom.photoFolder";
+const LIBRARY_FOLDER_KEY = "darkroom.libraryFolder";
+
+/** 2026-10-05_2145: the name of the session folder an import is copied into. */
+function sessionName(d = new Date()): string {
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}_${p(d.getHours())}${p(d.getMinutes())}`;
+}
 const GUIDE_KEY = "darkroom.guide";
 const AUTO_NR_KEY = "darkroom.autoNr";
 
@@ -341,6 +349,14 @@ export default function App() {
   const [photoFolder, setPhotoFolder] = useState(() => {
     try {
       return localStorage.getItem(PHOTO_FOLDER_KEY) ?? "";
+    } catch {
+      return "";
+    }
+  });
+  // the library folder imports are copied into, a session folder each; empty = off
+  const [libraryFolder, setLibraryFolder] = useState(() => {
+    try {
+      return localStorage.getItem(LIBRARY_FOLDER_KEY) ?? "";
     } catch {
       return "";
     }
@@ -679,7 +695,7 @@ export default function App() {
     if (!picked.length) return;
     // One at a time: on a phone each is copied into app storage, and RAW files
     // are tens of megabytes. On the desktop this returns the paths unchanged.
-    const paths: string[] = [];
+    let paths: string[] = [];
     for (const uri of picked) {
       try {
         paths.push(await importPhoto(uri));
@@ -688,6 +704,21 @@ export default function App() {
       }
     }
     if (!paths.length) return;
+    // With a library folder set, the import is a session in it: the photos are
+    // copied there and it is the copies that open, so the edits live with them.
+    if (libraryFolder) {
+      try {
+        setLoading("Copying into the library…");
+        const got = await importToLibrary(libraryFolder, sessionName(), paths);
+        paths = got.files;
+        if (got.session) setNotice(`Imported ${paths.length} into ${got.session.split(/[\/]/).pop()}`);
+      } catch (e) {
+        setError(`Could not copy into the library: ${String(e)}`);
+        setLoading(null);
+        return;
+      }
+      setLoading(null);
+    }
     setPhoneLibrary(false);
     setFiles((prev) => {
       const next = [...prev];
@@ -695,7 +726,7 @@ export default function App() {
       return next;
     });
     await load(paths[0]);
-  }, [extensions, load, photoFolder]);
+  }, [extensions, load, photoFolder, libraryFolder]);
 
   /**
    * Take photos out of the filmstrip and the saved session. The files on disk
@@ -843,6 +874,26 @@ export default function App() {
     setPhotoFolder(f);
     try {
       localStorage.setItem(PHOTO_FOLDER_KEY, f);
+    } catch {
+      /* private mode */
+    }
+  }, []);
+
+  const chooseLibraryFolder = useCallback(async () => {
+    const f = await pickFolder("Choose the library folder imports are copied into");
+    if (!f) return;
+    setLibraryFolder(f);
+    try {
+      localStorage.setItem(LIBRARY_FOLDER_KEY, f);
+    } catch {
+      /* private mode */
+    }
+  }, []);
+
+  const clearLibraryFolder = useCallback(() => {
+    setLibraryFolder("");
+    try {
+      localStorage.removeItem(LIBRARY_FOLDER_KEY);
     } catch {
       /* private mode */
     }
@@ -2315,6 +2366,9 @@ export default function App() {
           canUpdate={platformInfo.updates}
           os={platformInfo.os}
           photoFolder={photoFolder}
+          libraryFolder={libraryFolder}
+          onPickLibraryFolder={() => void chooseLibraryFolder()}
+          onClearLibraryFolder={clearLibraryFolder}
           onPickPhotoFolder={() => void choosePhotoFolder()}
           onClearPhotoFolder={clearPhotoFolder}
           onCheck={updater.checkNow}

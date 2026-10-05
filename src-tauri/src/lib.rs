@@ -13,6 +13,7 @@ pub mod heal;
 pub mod icc;
 pub mod import;
 pub mod lensdb;
+pub mod library;
 pub mod lossless;
 pub mod lut3d;
 pub mod mask;
@@ -434,6 +435,15 @@ fn save_edits(path: String, edits: EditParams) -> Result<(), String> {
     sidecar::save(Path::new(&path), &edits).map_err(err)
 }
 
+/// Copy photos into a new session folder inside the library folder.
+#[tauri::command]
+async fn import_to_library(library: String, session: String, paths: Vec<String>) -> Result<library::Imported, String> {
+    tauri::async_runtime::spawn_blocking(move || library::import(Path::new(&library), &session, &paths))
+        .await
+        .map_err(|e| e.to_string())?
+        .map_err(|e| format!("{e:#}"))
+}
+
 /// Write the current look as a .cube 3D LUT, for Resolve and anything else
 /// that loads one. Returns the settings it could not carry, so the app can say
 /// so rather than letting the photographer assume the file holds everything.
@@ -838,6 +848,7 @@ pub fn run() {
             save_edits,
             export_image,
             export_cube,
+            import_to_library,
             mobile_update,
             match_tone,
             auto_look,
