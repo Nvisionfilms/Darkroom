@@ -380,6 +380,32 @@ uniform float uMaskAdj[96];   // 12 per mask: exposure contrast highlights shado
 
 ${COMMON}
 const float CENTERS[8] = float[8](0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 310.0);
+
+// Shortest way round the hue circle, signed. Twin of hue_delta in pipeline.rs.
+float hueDelta(float a, float b) {
+  float d = mod(a - b, 360.0);
+  return d > 180.0 ? d - 360.0 : d;
+}
+
+// How much band i owns a hue: nothing at the centres either side of it, so the
+// weights add to one everywhere. The bands are not evenly spaced, and with a
+// fixed reach one band reached past its neighbour's centre - the Red slider
+// moved orange more than red. Twin of hsl_band_weight in pipeline.rs.
+float hslBandWeight(float hdeg, int i) {
+  float d = hueDelta(hdeg, CENTERS[i]);
+  if (d >= 0.0) {
+    float gap = abs(hueDelta(CENTERS[(i + 1) % 8], CENTERS[i]));
+    return max(1.0 - d / max(gap, 1e-3), 0.0);
+  }
+  float gap = abs(hueDelta(CENTERS[i], CENTERS[(i + 7) % 8]));
+  return max(1.0 + d / max(gap, 1e-3), 0.0);
+}
+
+// Move a 0..1 quantity without hitting the ceiling. Twin of hsl_push.
+float hslPush(float v, float amount) {
+  float a = clamp(amount, -1.0, 1.0);
+  return a >= 0.0 ? clamp(v + (1.0 - v) * a, 0.0, 1.0) : clamp(v * (1.0 + a), 0.0, 1.0);
+}
 const float LOG_MID = -2.473931188;
 // DaVinci Wide Gamut -> linear sRGB (column-major for GLSL)
 const mat3 DWG_TO_SRGB = mat3(
@@ -629,21 +655,17 @@ vec3 developPixel(vec3 rgb, Tone t) {
   // 8. HSL bands
   vec3 hsv = rgb2hsv(g);
   float hdeg = hsv.x * 360.0;
-  float dh = 0.0, ds = 0.0, dl = 0.0, wsum = 0.0;
+  float dh = 0.0, ds = 0.0, dl = 0.0;
   for (int i = 0; i < 8; i++) {
-    float d = abs(hdeg - CENTERS[i]);
-    d = min(d, 360.0 - d);
-    float w = max(1.0 - d / 40.0, 0.0);
+    float w = hslBandWeight(hdeg, i);
     dh += w * uHslHue[i];
     ds += w * uHslSat[i];
     dl += w * uHslLum[i];
-    wsum += w;
   }
-  if (wsum > 0.0) { dh /= wsum; ds /= wsum; dl /= wsum; }
   float sv = hsv.y;
   hsv.x = mod(hsv.x + dh * (30.0 / 360.0) * sv, 1.0);
-  hsv.y = clamp(hsv.y * (1.0 + ds), 0.0, 1.0);
-  hsv.z = clamp(hsv.z * (1.0 + dl * 0.5 * sv), 0.0, 1.0);
+  hsv.y = hslPush(hsv.y, ds);
+  hsv.z = hslPush(hsv.z, dl * sv);
   return hsv2rgb(hsv);
 }
 
@@ -988,6 +1010,11 @@ uniform vec3 uOutside;   // colour for texels outside the image (straighten corn
 // output rather than the original. Twin of the late watermark_pass in export.rs.
 uniform sampler2D uWmTex;
 uniform int uWmOn;
+// Vignette, measured against the same cropped frame. Twin of vignette.rs.
+uniform int uVigOn2;
+uniform float uVigK;      // amount x opacity, -1..1
+uniform float uVigMid;    // 0..1 of the way to the corner
+uniform float uVigHalf;   // half-width of the ramp
 uniform vec2 uOutSize;   // cropped output, px
 uniform vec4 uWmRect;    // x0, y0, w, h in those px
 uniform float uWmOpacity;
@@ -1057,6 +1084,14 @@ void main() {
       return;
     }
     c = texture(uTex, uv).rgb;
+  }
+  if (uVigOn2 == 1) {
+    // the ellipse inscribed in the frame: 0 in the middle, 1 at every corner
+    vec2 d = (vPos - 0.5) * 2.0;
+    float r = length(d) / 1.41421356;
+    float t = clamp((r - (uVigMid - uVigHalf)) / (2.0 * uVigHalf), 0.0, 1.0);
+    float f = t * t * (3.0 - 2.0 * t) * uVigK;
+    c = f < 0.0 ? clamp(c * (1.0 + f), 0.0, 1.0) : clamp(c + (1.0 - c) * f, 0.0, 1.0);
   }
   if (uWmOn == 1) {
     // Placed against the cropped frame, so its corner stays its corner whatever

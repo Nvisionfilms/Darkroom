@@ -619,6 +619,7 @@ input[type="number"] {
   height: 12px;
   border: 1px solid #000;
 }
+.vignette-panel.disabled .slider,
 .star-panel.disabled .slider,
 .mirror-panel.disabled .slider,
 .watermark-panel.disabled .slider {

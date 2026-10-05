@@ -44,6 +44,9 @@ pub fn export(img: &LinearImage, req: &ExportRequest) -> Result<()> {
     let warp = req.params.warp(img.width, img.height);
     let (mut developed, cw, ch) =
         crate::geometry::geometry_pass(&developed, img.width, img.height, &req.params.crop, &warp);
+    // The vignette belongs to the cropped frame too: crop in and it follows the
+    // new edges rather than staying where the corners used to be.
+    crate::vignette::apply(&mut developed, cw, ch, &req.params.vignette);
     // The watermark belongs to the cropped frame, not to the original: its
     // place and its size are fractions of what you end up looking at. Put on
     // before the crop, a mark in the corner of the photo ended up somewhere

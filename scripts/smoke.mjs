@@ -447,6 +447,49 @@ await step("film grain roughens the picture without moving its exposure", async 
   await sleep(500);
 });
 
+await step("the vignette darkens the corners and leaves the middle alone", async () => {
+  // The shader is a separate implementation of vignette.rs, so the preview is
+  // where that twin is actually exercised.
+  const corners = async () => {
+    const r = await js(`window.__darkroom.capture().then(async b => {
+      const bm = await createImageBitmap(b);
+      const cv = document.createElement('canvas'); cv.width = bm.width; cv.height = bm.height;
+      const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(bm, 0, 0);
+      const px = (x, y) => { const d = g.getImageData(Math.round(x), Math.round(y), 1, 1).data; return (d[0] + d[1] + d[2]) / 3 / 255; };
+      const W = cv.width, H = cv.height;
+      const corner = (px(W * 0.04, H * 0.06) + px(W * 0.96, H * 0.06) + px(W * 0.04, H * 0.94) + px(W * 0.96, H * 0.94)) / 4;
+      return JSON.stringify({ corner, middle: px(W / 2, H / 2) });
+    })`);
+    return JSON.parse(r);
+  };
+
+  const before = await corners();
+  expect(await js(`__smoke.toggle('Vignette')`), "the vignette toggle did not switch on");
+  await js(`__smoke.slider(__smoke.open('Vignette'), 'Amount', -100); true`);
+  await sleep(1400);
+  const dark = await corners();
+  expect(dark.corner < before.corner - 0.05, `the corners did not darken: ${before.corner.toFixed(3)} -> ${dark.corner.toFixed(3)}`);
+  expect(Math.abs(dark.middle - before.middle) < 0.02, `the middle was darkened too: ${before.middle.toFixed(3)} -> ${dark.middle.toFixed(3)}`);
+
+  // And the other way takes them towards white, as the slider reads. Measured
+  // against the darkened corners rather than the untouched ones: a photo whose
+  // corners are already near white has no room to show the lightening.
+  await js(`__smoke.slider(__smoke.open('Vignette'), 'Amount', 100); true`);
+  await sleep(1400);
+  const light = await corners();
+  expect(
+    light.corner > dark.corner + 0.2,
+    `the two ends of the slider do the same thing: dark ${dark.corner.toFixed(3)}, light ${light.corner.toFixed(3)}`,
+  );
+  expect(
+    light.corner >= before.corner - 0.005,
+    `a positive amount darkened instead: ${before.corner.toFixed(3)} -> ${light.corner.toFixed(3)}`,
+  );
+
+  expect(!(await js(`__smoke.toggle('Vignette')`)), "the vignette toggle did not switch off");
+  await sleep(1200);
+});
+
 await step("the starburst filter lights up the highlights", async () => {
   const off = await js(`__smoke.shot()`);
   expect(await js(`__smoke.toggle('Starburst')`), "the starburst toggle did not switch on");

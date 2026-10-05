@@ -39,6 +39,7 @@ pub const PRESET_KEYS: &[&str] = &[
     "denoiseDetail",
     "grain",
     "star",
+    "vignette",
     "grading",
     "hsl",
     "curves",

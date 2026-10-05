@@ -966,3 +966,180 @@ fn a_watermark_keeps_its_corner_when_the_photo_is_cropped() {
     // and it really is in the bottom right, not merely consistent
     assert!(on_crop.0 > 0.7 && on_crop.1 > 0.75, "the mark is not in its corner: {on_crop:?}");
 }
+
+#[cfg(test)]
+mod hsl {
+    use super::*;
+    use crate::color::{mul3, SRGB_TO_DWG};
+    use crate::pipeline::{hsl_band_weight, hsl_push, EditParams};
+
+    const CENTRES: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 310.0];
+    const NAMES: [&str; 8] = ["red", "orange", "yellow", "green", "aqua", "blue", "purple", "magenta"];
+
+    fn srgb_dec(v: f32) -> f32 {
+        if v <= 0.04045 { v / 12.92 } else { ((v + 0.055) / 1.055).powf(2.4) }
+    }
+
+    fn patch(hdeg: f32, s: f32, v: f32) -> [f32; 3] {
+        let c = v * s;
+        let h = hdeg / 60.0;
+        let x = c * (1.0 - (h % 2.0 - 1.0).abs());
+        let (r, g, b) = match h as i32 {
+            0 => (c, x, 0.0),
+            1 => (x, c, 0.0),
+            2 => (0.0, c, x),
+            3 => (0.0, x, c),
+            4 => (x, 0.0, c),
+            _ => (c, 0.0, x),
+        };
+        let m = v - c;
+        mul3(&SRGB_TO_DWG, [srgb_dec(r + m), srgb_dec(g + m), srgb_dec(b + m)])
+    }
+
+    fn hsv_of(rgb: [f32; 3]) -> [f32; 3] {
+        let (r, g, b) = (rgb[0], rgb[1], rgb[2]);
+        let mx = r.max(g).max(b);
+        let mn = r.min(g).min(b);
+        let d = mx - mn;
+        let h = if d < 1e-6 {
+            0.0
+        } else if mx == r {
+            60.0 * (((g - b) / d) % 6.0)
+        } else if mx == g {
+            60.0 * ((b - r) / d + 2.0)
+        } else {
+            60.0 * ((r - g) / d + 4.0)
+        };
+        [h.rem_euclid(360.0), if mx > 1e-6 { d / mx } else { 0.0 }, mx]
+    }
+
+    fn through(p: &EditParams, hdeg: f32) -> [f32; 3] {
+        let c = patch(hdeg, 0.85, 0.75);
+        let img = LinearImage { width: 1, height: 1, data: c.to_vec() };
+        let out = develop(&img, p);
+        hsv_of([out[0], out[1], out[2]])
+    }
+
+    /// The eight bands have to divide the hue circle between them: a hue on a
+    /// centre belongs wholly to that band, and every hue's weights add to one.
+    /// They are not evenly spaced, so a fixed reach cannot do this - with one,
+    /// a band reached past its neighbour's centre.
+    #[test]
+    fn the_bands_divide_the_hue_circle_between_them() {
+        for (i, name) in NAMES.iter().enumerate() {
+            let own = hsl_band_weight(CENTRES[i], i);
+            assert!((own - 1.0).abs() < 1e-5, "{name} does not own its own centre: {own}");
+            for (j, other) in NAMES.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let bleed = hsl_band_weight(CENTRES[j], i);
+                assert!(bleed < 1e-5, "{name} reaches as far as {other}: {bleed}");
+            }
+        }
+        // and nowhere on the circle do they add up to anything but one
+        for step in 0..720 {
+            let h = step as f32 * 0.5;
+            let sum: f32 = (0..8).map(|i| hsl_band_weight(h, i)).sum();
+            assert!((sum - 1.0).abs() < 1e-4, "at {h} degrees the weights add to {sum}");
+        }
+    }
+
+    /// Pushing a band must move its own colour further than anything else.
+    /// It used to move the neighbour further: Red moved orange by +0.097 and
+    /// red itself by only +0.061.
+    #[test]
+    fn a_band_moves_its_own_colour_most() {
+        for (i, name) in NAMES.iter().enumerate() {
+            let mut p = quiet();
+            p.hsl.saturation[i] = 100.0;
+            let own = through(&p, CENTRES[i])[1] - through(&quiet(), CENTRES[i])[1];
+            assert!(own > 0.01, "{name} barely moved its own colour: {own:+.4}");
+            for (j, other) in NAMES.iter().enumerate() {
+                if i == j {
+                    continue;
+                }
+                let bleed = (through(&p, CENTRES[j])[1] - through(&quiet(), CENTRES[j])[1]).abs();
+                assert!(
+                    bleed < own * 0.5,
+                    "{name} moved {other} by {bleed:+.4}, against {own:+.4} of its own"
+                );
+            }
+        }
+    }
+
+    /// Saturation and luminance used to multiply, so a colour already near the
+    /// top had nowhere to go and the same slider did four times as much to
+    /// yellow as to blue. Closing a share of what is left always has somewhere
+    /// to go, and never overshoots.
+    #[test]
+    fn pushing_a_band_never_runs_into_the_ceiling() {
+        for start in [0.0f32, 0.2, 0.5, 0.9, 0.99, 1.0] {
+            for amount in [-1.0f32, -0.5, 0.0, 0.5, 1.0] {
+                let out = hsl_push(start, amount);
+                assert!((0.0..=1.0).contains(&out), "{start} pushed by {amount} left 0..1: {out}");
+                if amount > 0.0 && start < 1.0 {
+                    assert!(out > start, "pushing {start} up by {amount} did nothing");
+                }
+                if amount < 0.0 && start > 0.0 {
+                    assert!(out < start, "pulling {start} down by {amount} did nothing");
+                }
+            }
+        }
+        assert_eq!(hsl_push(0.4, 0.0), 0.4, "a band at rest must change nothing");
+    }
+}
+
+#[cfg(test)]
+mod profiles {
+    use super::*;
+
+    /// How far a profile moves the picture against Standard, averaged over the
+    /// test card.
+    fn distance_from_standard(id: &str) -> f32 {
+        let img = test_card();
+        let mut base = quiet();
+        base.profile = "standard".into();
+        let mut p = quiet();
+        p.profile = id.into();
+        mean_diff(&develop(&img, &base), &develop(&img, &p))
+    }
+
+    /// A profile you cannot see is a profile that is not there. Neutral and
+    /// Portrait used to move the picture by six and seven thousandths, which is
+    /// below noticing; the whole set was about half as strong as it reads.
+    #[test]
+    fn every_profile_is_visibly_its_own_thing() {
+        for id in ["flat", "neutral", "portrait", "landscape", "vivid", "mono"] {
+            let d = distance_from_standard(id);
+            assert!(d > 0.012, "the {id} profile barely changes anything: {d:.4}");
+        }
+        // and the strong ones have to be clearly stronger than the mild ones
+        assert!(
+            distance_from_standard("vivid") > distance_from_standard("neutral") * 2.0,
+            "Vivid is not much more than Neutral"
+        );
+        assert!(
+            distance_from_standard("landscape") > distance_from_standard("neutral") * 2.0,
+            "Landscape is not much more than Neutral"
+        );
+    }
+
+    /// Two profiles that do the same thing are one profile with two names.
+    #[test]
+    fn the_profiles_differ_from_each_other() {
+        let img = test_card();
+        let out = |id: &str| {
+            let mut p = quiet();
+            p.profile = id.into();
+            develop(&img, &p)
+        };
+        let ids = ["flat", "neutral", "portrait", "landscape", "vivid"];
+        for (i, a) in ids.iter().enumerate() {
+            for b in ids.iter().skip(i + 1) {
+                let d = mean_diff(&out(a), &out(b));
+                assert!(d > 0.004, "{a} and {b} are nearly the same picture: {d:.4}");
+            }
+        }
+    }
+}

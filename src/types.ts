@@ -109,6 +109,25 @@ export interface Star {
   dispersion: number;
 }
 
+/**
+ * Darken or lighten towards the corners of the cropped frame. Twin of
+ * vignette.rs; it follows the crop, so cropping in moves it to the new edges.
+ */
+export interface Vignette {
+  enabled: boolean;
+  /** -100 darkens the corners, +100 lightens them towards white */
+  amount: number;
+  /** 0..100 how far out it starts */
+  midpoint: number;
+  /** 0..100 how gradually it comes on */
+  feather: number;
+  opacity: number;
+}
+
+export function defaultVignette(): Vignette {
+  return { enabled: false, amount: -35, midpoint: 50, feather: 50, opacity: 100 };
+}
+
 export function defaultStar(): Star {
   return {
     enabled: false,
@@ -487,6 +506,7 @@ export const PRESET_KEYS: (keyof EditParams)[] = [
   "denoiseDetail",
   "grain",
   "star",
+  "vignette",
   "grading",
   "hsl",
   "curves",
@@ -589,6 +609,8 @@ export interface EditParams {
   grain: Grain;
   /** cross-screen ("starburst") lens filter */
   star: Star;
+  /** darken or lighten towards the corners of the cropped frame */
+  vignette: Vignette;
   /** flagged as finished and wanted in the next export */
   marked: boolean;
   hsl: HslParams;
@@ -726,6 +748,7 @@ export function defaultParams(): EditParams {
     blend: defaultBlend(),
     grain: defaultGrain(),
     star: defaultStar(),
+    vignette: defaultVignette(),
     marked: false,
     hsl: {
       hue: new Array(8).fill(0),

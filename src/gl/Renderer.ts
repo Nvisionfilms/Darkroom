@@ -150,6 +150,11 @@ export function mirrorGeom(m: Mirror, width: number, height: number): MirrorGeom
   };
 }
 
+/** Same as FEATHER_MIN / FEATHER_MAX in vignette.rs. */
+const VIG_FEATHER_MIN = 0.04;
+const VIG_FEATHER_MAX = 0.6;
+const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+
 /** Same as denoise.rs h_luma / h_chroma / RESPONSE / HALF_RES_SIGMA. */
 const RESPONSE = 2.0;
 const hLuma = (sigma: number, a: number) => sigma * (0.4 + 4.0 * a ** RESPONSE);
@@ -1021,6 +1026,7 @@ export class Renderer {
     const wm = p.watermark;
     this.watermarkOn = wm.enabled && wm.opacity > 0 && !!this.wmTex && this.wmPath === wm.path;
     this.wmPlace = { x: wm.x, y: wm.y, size: wm.size, opacity: Math.max(0, Math.min(1, wm.opacity / 100)) };
+    this.vig = p.vignette;
     // fence so the histogram read-back can wait without blocking the UI thread
     if (this.histFence) gl.deleteSync(this.histFence);
     this.histFence = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
@@ -1085,6 +1091,13 @@ export class Renderer {
   private mirrorOn = false;
   private watermarkOn = false;
   private wmPlace = { x: 0.85, y: 0.92, size: 0.2, opacity: 0.8 };
+  private vig: EditParams["vignette"] = {
+    enabled: false,
+    amount: -35,
+    midpoint: 50,
+    feather: 50,
+    opacity: 100,
+  };
   private wmTex: WebGLTexture | null = null;
   private wmPath = "";
   private wmW = 1;
@@ -1177,6 +1190,16 @@ export class Renderer {
     // however the photo is cropped.
     // the quad covers the cropped frame before rotation, which is the space
     // the watermark is stored in
+    // the vignette belongs to the cropped frame, like the watermark
+    const vg = this.vig;
+    const vigOn = vg.enabled && vg.amount !== 0 && vg.opacity > 0;
+    gl.uniform1i(this.loc(pr, "uVigOn2"), vigOn ? 1 : 0);
+    if (vigOn) {
+      const k = clamp(vg.amount / 100, -1, 1) * clamp(vg.opacity / 100, 0, 1);
+      gl.uniform1f(this.loc(pr, "uVigK"), k);
+      gl.uniform1f(this.loc(pr, "uVigMid"), clamp(vg.midpoint / 100, 0, 1));
+      gl.uniform1f(this.loc(pr, "uVigHalf"), VIG_FEATHER_MIN + clamp(vg.feather / 100, 0, 1) * (VIG_FEATHER_MAX - VIG_FEATHER_MIN));
+    }
     gl.uniform1i(this.loc(pr, "uWmOn"), this.watermarkOn ? 1 : 0);
     if (this.watermarkOn && this.wmTex) {
       const wp = this.wmPlace;

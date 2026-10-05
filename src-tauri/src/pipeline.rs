@@ -18,6 +18,7 @@ use crate::lut3d::Lut3d;
 use crate::mask::{self, Mask};
 use crate::profiles;
 use crate::star::Star;
+use crate::vignette::Vignette;
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
@@ -115,6 +116,9 @@ pub struct EditParams {
     /// cross-screen ("starburst") lens filter
     #[serde(default)]
     pub star: Star,
+    /// darken or lighten towards the corners of the cropped frame
+    #[serde(default)]
+    pub vignette: Vignette,
     /// flagged as finished and wanted in the next export. Kept with the photo
     /// rather than the session so it survives closing the app.
     #[serde(default)]
@@ -511,6 +515,7 @@ impl Default for EditParams {
             blend: Blend::default(),
             grain: Grain::default(),
             star: Star::default(),
+            vignette: Vignette::default(),
             marked: false,
             hsl: HslParams {
                 hue: [0.0; 8],
@@ -683,6 +688,50 @@ impl Uniforms {
 }
 
 const HSL_CENTERS: [f32; 8] = [0.0, 30.0, 60.0, 120.0, 180.0, 240.0, 275.0, 310.0];
+
+/// Move a 0..1 quantity by `amount` in -1..1 without ever hitting the ceiling:
+/// up closes that share of the distance to 1, down scales towards 0. Twin of
+/// hslPush in the shader.
+#[inline]
+pub fn hsl_push(v: f32, amount: f32) -> f32 {
+    let a = amount.clamp(-1.0, 1.0);
+    if a >= 0.0 {
+        (v + (1.0 - v) * a).clamp(0.0, 1.0)
+    } else {
+        (v * (1.0 + a)).clamp(0.0, 1.0)
+    }
+}
+
+/// Shortest way round the hue circle, in degrees, signed.
+#[inline]
+fn hue_delta(a: f32, b: f32) -> f32 {
+    let d = (a - b).rem_euclid(360.0);
+    if d > 180.0 { d - 360.0 } else { d }
+}
+
+/// How much band `i` owns a hue.
+///
+/// The bands are not evenly spaced - red and orange are 30 degrees apart, aqua
+/// and blue 60 - so a fixed reach cannot divide them fairly. With one, a band
+/// reached past its neighbour's centre: measured, the Red slider moved orange
+/// MORE than it moved red (+0.097 against +0.061), and pure orange received
+/// only two thirds of its own slider, the rest going to red and yellow.
+///
+/// Each band now falls to nothing exactly at the centres either side of it, so
+/// the weights add to one everywhere, a hue sitting on a centre belongs wholly
+/// to that band, and a hue between two centres is shared by just those two.
+/// Twin of hslBandWeight in the shader.
+#[inline]
+pub fn hsl_band_weight(hdeg: f32, i: usize) -> f32 {
+    let d = hue_delta(hdeg, HSL_CENTERS[i]);
+    if d >= 0.0 {
+        let gap = hue_delta(HSL_CENTERS[(i + 1) % 8], HSL_CENTERS[i]).abs();
+        (1.0 - d / gap.max(1e-3)).max(0.0)
+    } else {
+        let gap = hue_delta(HSL_CENTERS[i], HSL_CENTERS[(i + 7) % 8]).abs();
+        (1.0 + d / gap.max(1e-3)).max(0.0)
+    }
+}
 const LOG_MID: f32 = -2.473931188; // log2(0.18)
 
 /// sRGB OETF: linear light to display code value. `cube.rs` has to undo exactly
@@ -1001,25 +1050,22 @@ pub fn develop_pixel_gain(
     // 8. HSL bands
     let mut hsv = rgb2hsv(g);
     let hdeg = hsv[0] * 360.0;
-    let (mut dh, mut ds, mut dl, mut wsum) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
+    let (mut dh, mut ds, mut dl) = (0.0f32, 0.0f32, 0.0f32);
     for i in 0..8 {
-        let mut d = (hdeg - HSL_CENTERS[i]).abs();
-        d = d.min(360.0 - d);
-        let w = (1.0 - d / 40.0).max(0.0);
+        let w = hsl_band_weight(hdeg, i);
         dh += w * u.hsl_hue[i];
         ds += w * u.hsl_sat[i];
         dl += w * u.hsl_lum[i];
-        wsum += w;
-    }
-    if wsum > 0.0 {
-        dh /= wsum;
-        ds /= wsum;
-        dl /= wsum;
     }
     let sv = hsv[1];
     hsv[0] = (hsv[0] + dh * (30.0 / 360.0) * sv).rem_euclid(1.0);
-    hsv[1] = (hsv[1] * (1.0 + ds)).clamp(0.0, 1.0);
-    hsv[2] = (hsv[2] * (1.0 + dl * 0.5 * sv)).clamp(0.0, 1.0);
+    // Multiplying ran into the ceiling: a colour already near full saturation
+    // had nowhere to go, so the same slider moved yellow four times as far as
+    // blue purely because blue had less headroom. Pushing up now closes a share
+    // of the gap that is left, which every hue has, and pulling down still
+    // scales towards grey.
+    hsv[1] = hsl_push(hsv[1], ds);
+    hsv[2] = hsl_push(hsv[2], dl * sv);
     hsv2rgb(hsv)
 }
 

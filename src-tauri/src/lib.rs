@@ -23,6 +23,7 @@ pub mod profiles;
 pub mod sidecar;
 pub mod cube;
 pub mod star;
+pub mod vignette;
 pub mod tether;
 pub mod thumb;
 

@@ -36,6 +36,37 @@ const groups = [
     ],
   },
   {
+    what: "vignette",
+    rust: read("src-tauri/src/vignette.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [
+      ["t * t * (3.0 - 2.0 * t)", "t * t * (3.0 - 2.0 * t)"],
+      ["std::f32::consts::SQRT_2", "1.41421356"],
+      ["rgb[c] * (1.0 + f)", "c * (1.0 + f)"],
+      ["rgb[c] + (1.0 - rgb[c]) * f", "c + (1.0 - c) * f"],
+    ],
+  },
+  {
+    what: "vignette sliders",
+    rust: read("src-tauri/src/vignette.rs"),
+    glsl: read("src/gl/Renderer.ts"),
+    pairs: [
+      ["FEATHER_MIN: f32 = 0.04", "VIG_FEATHER_MIN = 0.04"],
+      ["FEATHER_MAX: f32 = 0.60", "VIG_FEATHER_MAX = 0.6"],
+    ],
+  },
+  {
+    what: "HSL bands",
+    rust: read("src-tauri/src/pipeline.rs"),
+    glsl: read("src/gl/shaders.ts"),
+    pairs: [
+      ["if d > 180.0 { d - 360.0 } else { d }", "d > 180.0 ? d - 360.0 : d"],
+      ["(1.0 - d / gap.max(1e-3)).max(0.0)", "max(1.0 - d / max(gap, 1e-3), 0.0)"],
+      ["(1.0 + d / gap.max(1e-3)).max(0.0)", "max(1.0 + d / max(gap, 1e-3), 0.0)"],
+      ["dh * (30.0 / 360.0) * sv", "dh * (30.0 / 360.0) * sv"],
+    ],
+  },
+  {
     what: "retouch blending",
     rust: read("src-tauri/src/heal.rs"),
     glsl: read("src/heal.ts"),

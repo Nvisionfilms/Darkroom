@@ -65,7 +65,7 @@ export const PHONE_TABS: PhoneTab[] = [
   { id: "color", label: "Color", glyph: "◑", sections: ["Color", "HSL", "Color Grading"] },
   { id: "curves", label: "Curves", glyph: "∿", sections: ["Curves"] },
   { id: "detail", label: "Detail", glyph: "◇", sections: ["Detail", "Noise Reduction", "Grain"] },
-  { id: "effects", label: "Effects", glyph: "✦", sections: ["Double Exposure", "Starburst", "Watermark"] },
+  { id: "effects", label: "Effects", glyph: "✦", sections: ["Double Exposure", "Vignette", "Starburst", "Watermark"] },
   { id: "optics", label: "Optics", glyph: "◎", sections: ["Lens Corrections", "Transform"] },
   { id: "crop", label: "Crop", glyph: "⌗", sections: ["Crop & Straighten"] },
   { id: "masks", label: "Masks", glyph: "◐", sections: ["Masks", "Motion Trails"] },

@@ -61,6 +61,7 @@ import { PHONE_TABS, usePhone, type PhoneTabId } from "./phone";
 import { useHistory } from "./history";
 import { MirrorPanel } from "./components/MirrorPanel";
 import { StarPanel } from "./components/StarPanel";
+import { VignettePanel } from "./components/VignettePanel";
 import { Slider } from "./components/Slider";
 import { AboutDialog } from "./components/AboutDialog";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -119,6 +120,7 @@ type InspectorKey =
   | "heal"
   | "blend"
   | "star"
+  | "vignette"
   | "presets";
 
 /** The inspector section each phone tab opens, the rest start collapsed. */
@@ -226,21 +228,33 @@ function defaultParamsForImage(info: ImageInfo | null): EditParams {
  * changes normal Darkroom sliders; it does not generate, replace, mask, or
  * invent image content.
  */
+/**
+ * The one-click recipe. Deterministic, built from ordinary develop sliders, and
+ * not generative: it adds, removes and invents nothing.
+ *
+ * It sets these values rather than raising the ones already there. Raising them
+ * meant that on a photo you had already worked on - which is most of them by the
+ * time you reach for Auto - every value was already past the floor and the
+ * button did nothing at all. Setting them makes it do the same thing every time
+ * and on every photo, and undo takes it back.
+ */
 function applyAutoEdit(p: EditParams, noiseSigma: number): EditParams {
-  const autoLuma = Math.round(clamp(8 + noiseSigma * 850, 8, 35));
+  const autoLuma = Math.round(clamp(10 + noiseSigma * 900, 10, 45));
   return {
     ...p,
-    contrast: Math.max(p.contrast, 12),
-    highlights: Math.min(p.highlights, -10),
-    shadows: Math.max(p.shadows, 10),
-    vibrance: Math.max(p.vibrance, 14),
-    saturation: Math.max(p.saturation, 5),
-    texture: Math.max(p.texture, 8),
-    clarity: Math.max(p.clarity, 12),
-    sharpen: Math.max(p.sharpen, 45),
-    denoiseLuma: Math.max(p.denoiseLuma, autoLuma),
-    denoiseChroma: Math.max(p.denoiseChroma, 30),
-    denoiseDetail: Math.max(p.denoiseDetail, 55),
+    contrast: 22,
+    highlights: -22,
+    shadows: 20,
+    vibrance: 25,
+    saturation: 8,
+    texture: 15,
+    clarity: 20,
+    sharpen: 55,
+    denoiseLuma: autoLuma,
+    denoiseChroma: 30,
+    // matches the noise reduction default: Detail puts noise back, and this
+    // used to push it to 55, undoing most of what the sliders had just removed
+    denoiseDetail: 35,
   };
 }
 
@@ -312,6 +326,7 @@ export default function App() {
     heal: false,
     blend: false,
     star: false,
+    vignette: false,
     presets: false,
   });
   // phones are updated by whatever installed them, never by themselves
@@ -1886,6 +1901,21 @@ export default function App() {
                 onChange={set("blend")}
               />
             </div>
+          </InspectorSection>
+
+          <InspectorSection title="Vignette" open={openSections.vignette} onToggle={() => toggleSection("vignette")}>
+            <label className="feature-toggle">
+              <span>
+                <strong>Enable vignette</strong>
+                <small>Darken or lighten towards the corners. Follows the crop.</small>
+              </span>
+              <input
+                type="checkbox"
+                checked={params.vignette.enabled}
+                onChange={(e) => set("vignette")({ ...params.vignette, enabled: e.target.checked })}
+              />
+            </label>
+            <VignettePanel vignette={params.vignette} onChange={set("vignette")} />
           </InspectorSection>
 
           <InspectorSection title="Starburst" open={openSections.star} onToggle={() => toggleSection("star")}>
