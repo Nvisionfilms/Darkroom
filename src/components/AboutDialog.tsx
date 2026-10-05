@@ -8,6 +8,10 @@ interface Props {
   os: string;
   /** the folder the Open Photos dialog starts in, or "" for the last one used */
   photoFolder: string;
+  /** the library folder each import is copied into, a session folder at a time; "" = off */
+  libraryFolder: string;
+  onPickLibraryFolder: () => void;
+  onClearLibraryFolder: () => void;
   onPickPhotoFolder: () => void;
   onClearPhotoFolder: () => void;
   onCheck: () => void;
@@ -23,6 +27,9 @@ export function AboutDialog({
   canUpdate,
   os,
   photoFolder,
+  libraryFolder,
+  onPickLibraryFolder,
+  onClearLibraryFolder,
   onPickPhotoFolder,
   onClearPhotoFolder,
   onCheck,
@@ -92,6 +99,29 @@ export function AboutDialog({
             )}
           </div>
         </div>
+
+        {os !== "android" && os !== "ios" && (
+          <div className="setting-row">
+            <div className="setting-label">
+              <strong>Library folder</strong>
+              <small>
+                Every Open Photos import is copied into a new session folder here, edits and all. Leave it unset to
+                open photos where they are.
+              </small>
+            </div>
+            <div className="setting-value" title={libraryFolder || undefined}>
+              {libraryFolder || <em>not set</em>}
+            </div>
+            <div className="setting-actions">
+              <button onClick={onPickLibraryFolder}>Choose…</button>
+              {libraryFolder && (
+                <button className="tab" onClick={onClearLibraryFolder}>
+                  Clear
+                </button>
+              )}
+            </div>
+          </div>
+        )}
 
         {shows && (
           <div className="about-repo" title="Darkroom update channel">
