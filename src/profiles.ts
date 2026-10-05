@@ -39,43 +39,52 @@ export const PROFILES: { id: string; name: string; hint: string }[] = [
   { id: "mono-red", name: "Mono · Red filter", hint: "Black and white, dramatic skies" },
 ];
 
+/**
+ * What each picture profile adds to the sliders.
+ *
+ * TWIN of profiles.rs: the preview reads this table and the export reads that
+ * one, so every number has to be the same in both. They were once strengthened
+ * in the Rust file alone, which changed every export and left the screen exactly
+ * as it was - the profiles looked as though they did nothing, because on screen
+ * they did not. scripts/twins.mjs now compares the two tables number for number.
+ */
 export function look(id: string): ProfileLook {
   switch (id) {
     case "flat":
     case "linear":
-      return { ...base(), contrast: -10, saturation: -8 };
+      return { ...base(), contrast: -22, saturation: -18 };
     case "neutral":
-      return { ...base(), contrast: -6, saturation: -6, vibrance: 4 };
+      return { ...base(), contrast: -14, saturation: -12, vibrance: 8 };
     case "portrait":
       return {
         ...base(),
-        contrast: 4,
-        saturation: -2,
-        vibrance: 10,
-        temperature: 4,
-        bandSat: [-4, -8, -4, 0, 0, 0, 0, -2],
-        bandLum: [2, 5, 3, 0, 0, 0, 0, 0],
-        bandHue: [0, 3, 0, 0, 0, 0, 0, 0],
+        contrast: 10,
+        saturation: -5,
+        vibrance: 22,
+        temperature: 8,
+        bandSat: [-9, -18, -9, 0, 0, 0, 0, -5],
+        bandLum: [5, 12, 7, 0, 0, 0, 0, 0],
+        bandHue: [0, 7, 0, 0, 0, 0, 0, 0],
       };
     case "landscape":
       return {
         ...base(),
-        contrast: 12,
-        saturation: 6,
-        vibrance: 12,
-        temperature: -2,
-        bandSat: [0, 0, 6, 14, 10, 14, 0, 0],
-        bandLum: [0, 0, 2, -4, -2, -6, 0, 0],
-        bandHue: [0, 0, -4, -6, 0, 0, 0, 0],
+        contrast: 26,
+        saturation: 14,
+        vibrance: 26,
+        temperature: -5,
+        bandSat: [0, 0, 14, 30, 22, 30, 0, 0],
+        bandLum: [0, 0, 5, -9, -5, -13, 0, 0],
+        bandHue: [0, 0, -9, -13, 0, 0, 0, 0],
       };
     case "vivid":
-      return { ...base(), contrast: 18, saturation: 18, vibrance: 10 };
+      return { ...base(), contrast: 38, saturation: 38, vibrance: 22 };
     case "mono":
-      return { ...base(), contrast: 8, mono: true };
+      return { ...base(), contrast: 18, mono: true };
     case "mono-red":
-      return { ...base(), contrast: 12, mono: true, monoMix: [0.62, 0.31, 0.07] };
+      return { ...base(), contrast: 26, mono: true, monoMix: [0.62, 0.31, 0.07] };
     case "mono-yellow":
-      return { ...base(), contrast: 10, mono: true, monoMix: [0.42, 0.48, 0.1] };
+      return { ...base(), contrast: 22, mono: true, monoMix: [0.42, 0.48, 0.1] };
     default:
       return base();
   }

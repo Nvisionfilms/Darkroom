@@ -45,6 +45,12 @@ const groups = [
     ],
   },
   {
+    what: "auto vibrance",
+    rust: read("src-tauri/src/tonematch.rs"),
+    glsl: read("src/App.tsx"),
+    pairs: [["AUTO_VIBRANCE: f32 = 18.0", "AUTO_VIBRANCE = 18;"]],
+  },
+  {
     what: "noise by tone",
     rust: read("src-tauri/src/denoise.rs"),
     glsl: read("src/gl/shaders.ts"),
@@ -190,6 +196,70 @@ const groups = [
   },
 ];
 
+// ---------------------------------------------------------------------------
+// The picture profiles are a table that lives twice: profiles.rs for the export
+// and profiles.ts for the screen. They were once strengthened in the Rust file
+// alone, which changed every exported file and left the preview exactly as it
+// was - so the profiles looked as though they did nothing, because on screen
+// they did not. Pairs of constants are not enough to catch that, so this reads
+// both tables and compares every number of every profile.
+const camel = (k) => k.replace(/_([a-z])/g, (_, c) => c.toUpperCase());
+const numbersIn = (block) => {
+  const out = {};
+  for (const m of block.matchAll(/\b([a-z_A-Z]+):\s*\[([^\]]*)\]/g)) {
+    out[camel(m[1])] = m[2].split(",").map((v) => parseFloat(v)).filter((v) => !Number.isNaN(v)).join(",");
+  }
+  for (const m of block.matchAll(/\b([a-z_A-Z]+):\s*(-?\d+(?:\.\d+)?)(?:f32)?\b/g)) {
+    if (!(camel(m[1]) in out)) out[camel(m[1])] = String(parseFloat(m[2]));
+  }
+  if (/\bmono:\s*true/.test(block)) out.mono = "true";
+  return out;
+};
+const FIELDS = ["contrast", "saturation", "vibrance", "temperature", "bandSat", "bandLum", "bandHue", "mono"];
+const profilesRust = (() => {
+  const src = read("src-tauri/src/profiles.rs");
+  const out = {};
+  for (const m of src.matchAll(/((?:"[a-z-]+"\s*\|?\s*)+)=>\s*ProfileLook\s*\{([\s\S]*?)\n\s{8}\},/g)) {
+    const ids = [...m[1].matchAll(/"([a-z-]+)"/g)].map((x) => x[1]);
+    for (const id of ids) out[id] = numbersIn(m[2]);
+  }
+  return out;
+})();
+const profilesTs = (() => {
+  const src = read("src/profiles.ts");
+  const body = src.slice(src.indexOf("export function look"));
+  const out = {};
+  const cases = [...body.matchAll(/((?:case "[a-z-]+":\s*)+)return\s*\{([\s\S]*?)\};/g)];
+  for (const m of cases) {
+    const ids = [...m[1].matchAll(/case "([a-z-]+)"/g)].map((x) => x[1]);
+    for (const id of ids) out[id] = numbersIn(m[2]);
+  }
+  return out;
+})();
+let profileBad = 0;
+const ids = new Set([...Object.keys(profilesRust), ...Object.keys(profilesTs)]);
+if (ids.size < 7) {
+  console.error(`profiles: only found ${ids.size} profiles to compare - the table was moved or reformatted`);
+  profileBad++;
+}
+for (const id of ids) {
+  const a = profilesRust[id];
+  const b = profilesTs[id];
+  if (!a || !b) {
+    console.error(`profiles: ${id} is in the ${a ? "export (Rust)" : "preview (TypeScript)"} table only`);
+    profileBad++;
+    continue;
+  }
+  for (const f of FIELDS) {
+    const x = a[f] ?? (f.startsWith("band") ? "0,0,0,0,0,0,0,0" : f === "mono" ? "false" : "0");
+    const y = b[f] ?? (f.startsWith("band") ? "0,0,0,0,0,0,0,0" : f === "mono" ? "false" : "0");
+    if (x !== y) {
+      console.error(`profiles: ${id}.${f} is ${x} in the export but ${y} on screen`);
+      profileBad++;
+    }
+  }
+}
+
 let bad = 0;
 for (const g of groups) {
   for (const [rust, glsl] of g.pairs) {
@@ -201,5 +271,6 @@ for (const g of groups) {
     console.error(`${g.what}: ${missing} - the two pipelines would not match`);
   }
 }
-if (bad === 0) console.log(`twin constants agree (${groups.reduce((n, g) => n + g.pairs.length, 0)} checked)`);
+if (bad === 0) console.log(`twin constants agree (${groups.reduce((n, g) => n + g.pairs.length, 0)} checked, ${ids.size} profiles compared)`);
+bad += profileBad;
 process.exit(bad === 0 ? 0 : 1);

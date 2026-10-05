@@ -254,7 +254,14 @@ fn total_loss(s: &ToneStats, t: &ToneStats) -> f32 {
 /// Pattern search over the chosen sliders: nudge each way, keep what helps, and
 /// halve the steps when nothing does. It needs no gradients, and the develop
 /// pipeline is far from smooth, with its shoulders and clips.
-fn search(start: [f32; N], free: &[usize], mut loss: impl FnMut(&[f32; N]) -> f32, base: [f32; N]) -> [f32; N] {
+fn search(
+    start: [f32; N],
+    free: &[usize],
+    mut loss: impl FnMut(&[f32; N]) -> f32,
+    base: [f32; N],
+    limits: &[(f32, f32); N],
+    pull: f32,
+) -> [f32; N] {
     let mut p = start;
     // A pull back towards where it started. Several sliders overlap - highlights,
     // whites and contrast can make nearly the same picture - so without it the
@@ -265,10 +272,10 @@ fn search(start: [f32; N], free: &[usize], mut loss: impl FnMut(&[f32; N]) -> f3
     let mut reg = |p: &[f32; N], loss: &mut dyn FnMut(&[f32; N]) -> f32| {
         let mut r = 0.0;
         for &k in free {
-            let range = LIMITS[k].1 - LIMITS[k].0;
+            let range = limits[k].1 - limits[k].0;
             r += ((p[k] - base[k]) / range).powi(2);
         }
-        loss(p) + 0.004 * r
+        loss(p) + pull * r
     };
     let mut best = reg(&p, &mut loss);
     let mut step = STEPS;
@@ -278,7 +285,7 @@ fn search(start: [f32; N], free: &[usize], mut loss: impl FnMut(&[f32; N]) -> f3
         for &k in free {
             for dir in [1.0f32, -1.0] {
                 let mut q = p;
-                q[k] = (p[k] + dir * step[k]).clamp(LIMITS[k].0, LIMITS[k].1);
+                q[k] = (p[k] + dir * step[k]).clamp(limits[k].0, limits[k].1);
                 if (q[k] - p[k]).abs() < 1e-9 {
                     continue;
                 }
@@ -311,6 +318,46 @@ fn search(start: [f32; N], free: &[usize], mut loss: impl FnMut(&[f32; N]) -> f3
 /// Find the sliders that make `src` - a small linear copy of the photo - look
 /// like the reference, starting from the photo's own settings in `base`.
 pub fn run(src: &LinearImage, base: &EditParams, lut: &[f32], reference: &ToneStats) -> Match {
+    run_with(src, base, lut, reference, &LIMITS, 0.004)
+}
+
+/// How far Auto may push each slider. A match to a reference is allowed to go a
+/// long way, because the reference asked for it; Auto is a suggestion made on
+/// the photo's own behalf, and a suggestion that needs Contrast at +80 is not
+/// one worth making. Tighter, and with a stronger pull towards leaving things be.
+pub const AUTO_LIMITS: [(f32, f32); N] = [
+    (-2.0, 2.0),
+    (-40.0, 40.0),
+    (-45.0, 45.0),
+    (-45.0, 45.0),
+    (-40.0, 40.0),
+    (-40.0, 40.0),
+    (-25.0, 25.0),
+    (-25.0, 25.0),
+    (-35.0, 35.0),
+];
+const AUTO_PULL: f32 = 0.03;
+
+/// The vibrance Auto applies, which is a matter of taste rather than of
+/// measurement and so a constant. Twin of the 18 in applyAutoLook in App.tsx.
+///
+/// It has to be in the photo when the photo is measured. Auto used to measure the
+/// picture without it and then add it, so pressing Auto a second time measured a
+/// picture that already had it and landed a hair differently - contrast 22 the
+/// first time and 23 the second. Measured with it in place, the first and every
+/// press after are the same.
+pub const AUTO_VIBRANCE: f32 = 18.0;
+
+/// As `run`, with the slider limits and the pull towards the starting values
+/// given.
+pub fn run_with(
+    src: &LinearImage,
+    base: &EditParams,
+    lut: &[f32],
+    reference: &ToneStats,
+    limits: &[(f32, f32); N],
+    pull: f32,
+) -> Match {
     // only the plain develop is compared: the things that need neighbourhood
     // maps, and the local adjustments, are not what is being matched
     let mut proxy = base.clone();
@@ -334,9 +381,9 @@ pub fn run(src: &LinearImage, base: &EditParams, lut: &[f32], reference: &ToneSt
     // tone first, then colour, then saturation, then tone again with the colour
     // in place, since warming a picture moves its brightness a little
     for _ in 0..2 {
-        cur = search(cur, &[0, 1, 2, 3, 4, 5], |a| tone_loss(&eval(a), reference), origin);
-        cur = search(cur, &[6, 7], |a| colour_loss(&eval(a), reference), origin);
-        cur = search(cur, &[8], |a| sat_loss(&eval(a), reference), origin);
+        cur = search(cur, &[0, 1, 2, 3, 4, 5], |a| tone_loss(&eval(a), reference), origin, limits, pull);
+        cur = search(cur, &[6, 7], |a| colour_loss(&eval(a), reference), origin, limits, pull);
+        cur = search(cur, &[8], |a| sat_loss(&eval(a), reference), origin, limits, pull);
     }
     let values = Tune::from_array(cur);
     let after = measure(&values);
@@ -374,7 +421,23 @@ pub fn auto_target(s: &ToneStats) -> ToneStats {
     let aim = (median + 0.4 * (0.46 - median)).clamp(0.12, 0.72);
     // where each measured tone should land: black and white at the ends, the
     // median at `aim`, the rest in proportion on each side
-    let (t_lo, t_hi) = (0.02f32, 0.97f32);
+    // Part of the way to the ends of the range, not all of it. Taking the 99th
+    // percentile all the way to 0.97 asks for a threefold stretch of the top of
+    // a photo whose highlights are bunched together - a bright sky, say - and the
+    // only way to deliver that is Contrast and Highlights at their limits, which
+    // is a harsh picture. Measured on a real photo: Contrast +80, Highlights +80.
+    let t_lo = if lo > 0.03 { lo + 0.6 * (0.03 - lo) } else { lo.max(0.0) };
+    let t_hi = if hi < 0.96 { hi + 0.55 * (0.96 - hi) } else { 0.96 };
+    // And never more than about one and a half times the range the photo already has. A flat,
+    // foggy photo asked to fill the whole scale is a threefold stretch, and the
+    // only way to deliver it is Contrast at the end of its travel - a picture
+    // that looks processed rather than looked after.
+    let (t_lo, t_hi) = {
+        let have = (hi - lo).max(1e-3);
+        let want = (t_hi - t_lo).max(1e-3);
+        let k = (1.6 * have / want).min(1.0);
+        (aim + (t_lo - aim) * k, aim + (t_hi - aim) * k)
+    };
     let map = |v: f32| -> f32 {
         let out = if v <= median {
             let span = (median - lo).max(1e-4);
@@ -415,6 +478,7 @@ pub fn auto(src: &LinearImage, base: &EditParams, lut: &[f32]) -> Match {
     neutral.temperature = 0.0;
     neutral.tint = 0.0;
     neutral.saturation = 0.0;
+    neutral.vibrance = AUTO_VIBRANCE;
     let mut proxy = neutral.clone();
     proxy.texture = 0.0;
     proxy.clarity = 0.0;
@@ -422,7 +486,7 @@ pub fn auto(src: &LinearImage, base: &EditParams, lut: &[f32]) -> Match {
     proxy.masks.clear();
     proxy.heal.clear();
     let here = stats(&pipeline::develop_buffer(&src.data, src.width, None, &proxy, lut));
-    run(src, &neutral, lut, &auto_target(&here))
+    run_with(src, &neutral, lut, &auto_target(&here), &AUTO_LIMITS, AUTO_PULL)
 }
 
 /// Blend a match back towards where the sliders started: 0 is untouched, 1 is
@@ -611,6 +675,96 @@ mod tests {
         assert!(a.after.q[3] < 0.40, "a dark photo was turned into a bright one: {}", a.after.q[3]);
     }
 
+    /// A picture whose brightness percentiles are exactly `q` (display values),
+    /// built by sampling the quantile function; grey, so only tone is in play.
+    fn from_quantiles(q: [f32; 7]) -> LinearImage {
+        let marks = [0.0f32, 0.01, 0.05, 0.25, 0.5, 0.75, 0.95, 0.99, 1.0];
+        let vals = [
+            (q[0] - 0.02).max(0.0),
+            q[0],
+            q[1],
+            q[2],
+            q[3],
+            q[4],
+            q[5],
+            q[6],
+            (q[6] + 0.02).min(1.0),
+        ];
+        let n = W * H;
+        let mut data = vec![0.0f32; n * 3];
+        for i in 0..n {
+            let t = i as f32 / (n - 1) as f32;
+            let mut k = 0;
+            while k + 2 < marks.len() && t > marks[k + 1] {
+                k += 1;
+            }
+            let f = ((t - marks[k]) / (marks[k + 1] - marks[k]).max(1e-6)).clamp(0.0, 1.0);
+            let disp = vals[k] + (vals[k + 1] - vals[k]) * f;
+            let lin = if disp <= 0.04045 { disp / 12.92 } else { ((disp + 0.055) / 1.055).powf(2.4) };
+            let g = mul3(&crate::color::SRGB_TO_DWG, [lin, lin, lin]);
+            // scatter the values rather than leaving them in a ramp
+            let j = (i * 7919) % n;
+            data[j * 3..j * 3 + 3].copy_from_slice(&g);
+        }
+        LinearImage { width: W, height: H, data }
+    }
+
+    /// Auto must never need a slider at the end of its travel. Run on a spread of
+    /// real-world shapes, including a bright photo with its highlights bunched
+    /// together, measured off an actual photograph, where it used to set Contrast
+    /// and Highlights to +80.
+    #[test]
+    fn auto_never_slams_a_slider_into_its_limit() {
+        let lut = pipeline::identity_lut();
+        let shapes: [(&str, [f32; 7]); 5] = [
+            ("bunched highlights (a real photo)", [0.039, 0.10, 0.273, 0.687, 0.764, 0.79, 0.818]),
+            ("low key", [0.01, 0.02, 0.05, 0.12, 0.26, 0.45, 0.62]),
+            ("high key", [0.30, 0.45, 0.66, 0.84, 0.93, 0.98, 1.0]),
+            ("flat and grey", [0.28, 0.31, 0.38, 0.45, 0.52, 0.58, 0.62]),
+            ("contrasty", [0.0, 0.01, 0.12, 0.45, 0.80, 0.97, 1.0]),
+        ];
+        println!("\nshape                                 exposure contrast highl shadows whites blacks");
+        for (name, q) in shapes {
+            let m = auto(&from_quantiles(q), &EditParams::default(), &lut);
+            let v = m.values;
+            println!(
+                "{name:36} {:+7.2} {:+8.1} {:+5.1} {:+7.1} {:+6.1} {:+6.1}",
+                v.exposure, v.contrast, v.highlights, v.shadows, v.whites, v.blacks
+            );
+            // What matters is that the picture is not harsh, which is a matter of
+            // what came out, not of where a slider sits: nothing clips, and no
+            // tone is thrown across more than a third of the scale.
+            assert!(m.after.q[0] > 0.0 && m.after.q[6] < 1.0, "{name}: Auto clipped the picture");
+            for i in 0..7 {
+                let moved = (m.after.q[i] - m.before.q[i]).abs();
+                assert!(moved < 0.34, "{name}: Auto threw percentile {i} across {moved:.2} of the scale");
+            }
+            for (label, val, lim) in [
+                ("highlights", v.highlights, 45.0f32),
+                ("shadows", v.shadows, 45.0),
+                ("whites", v.whites, 40.0),
+                ("blacks", v.blacks, 40.0),
+            ] {
+                assert!(
+                    val.abs() < lim - 0.5,
+                    "{name}: Auto put {label} at {val:+.1}, against the end of its travel at {lim}"
+                );
+            }
+            // Contrast is the one slider allowed to use its whole range, and only
+            // on a photo that really is flat: a picture spanning a third of the
+            // scale needs a lot of it, and the limit is there so that it cannot
+            // have more. Everything else must leave room.
+            // judged on the shape it was given, before the app's own tone curve
+            let flat = q[6] - q[0] < 0.45;
+            assert!(
+                flat || v.contrast.abs() < 39.5,
+                "{name}: Auto put contrast at {:+.1} on a photo that is not flat",
+                v.contrast
+            );
+            assert!(v.exposure.abs() < 2.0 - 0.05, "{name}: Auto re-exposed by {:+.2} stops", v.exposure);
+        }
+    }
+
     /// The black and white points go to the ends of the range, so the picture
     /// uses the room it has.
     #[test]
@@ -620,7 +774,11 @@ mod tests {
         let m = auto(&flat, &EditParams::default(), &lut);
         let spread = |q: &[f32; 7]| q[6] - q[0];
         println!("\nspread {:.3} -> {:.3}", spread(&m.before.q), spread(&m.after.q));
-        assert!(spread(&m.after.q) > spread(&m.before.q) + 0.2, "a flat photo was not stretched");
+        // Clearly wider, but gently: about a quarter as much again, where the
+        // first version took it from 0.30 to 0.55 and needed Contrast at +80 on
+        // real photos to do it. See auto_target.
+        assert!(spread(&m.after.q) > spread(&m.before.q) * 1.15, "a flat photo was not stretched");
+        assert!(spread(&m.after.q) < spread(&m.before.q) * 2.0, "a flat photo was stretched past double its range");
         assert!(m.after.q[6] < 1.0 && m.after.q[0] >= 0.0, "it clipped");
     }
 
@@ -661,6 +819,9 @@ mod tests {
         fiddled.exposure = 1.5;
         fiddled.contrast = -40.0;
         fiddled.temperature = 30.0;
+        // and with the vibrance a first press leaves behind, which is what a
+        // second press actually meets
+        fiddled.vibrance = AUTO_VIBRANCE;
         let after = auto(&img, &fiddled, &lut);
         assert_eq!(fresh.values, after.values, "Auto depends on what the sliders were");
     }

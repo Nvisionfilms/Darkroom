@@ -189,6 +189,63 @@ await step("filmstrip thumbnail generated", async () => {
   expect(await waitFor(`[...document.querySelectorAll('.thumb')].some(t => t.querySelector('img'))`), "no thumbnail appeared");
 });
 
+await step("picture profiles visibly change what is on screen", async () => {
+  // Measured on the preview itself. The profiles were once strengthened in the
+  // export's copy of the table and not the preview's, so every exported file
+  // changed while the screen stayed exactly as it was - and a test of the table,
+  // or of the export, cannot see that. Only the picture you are looking at can.
+  const look = async () =>
+    JSON.parse(
+      await js(`window.__darkroom.capture().then(async b => {
+        const bm = await createImageBitmap(b);
+        const cv = document.createElement('canvas'); cv.width = bm.width; cv.height = bm.height;
+        const g = cv.getContext('2d', { willReadFrequently: true }); g.drawImage(bm, 0, 0);
+        const d = g.getImageData(0, 0, cv.width, cv.height).data;
+        const ys = []; let sat = 0, n = 0;
+        for (let i = 0; i < d.length; i += 4) {
+          ys.push((0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]) / 255);
+          const mx = Math.max(d[i], d[i + 1], d[i + 2]), mn = Math.min(d[i], d[i + 1], d[i + 2]);
+          if (mx > 8) { sat += (mx - mn) / mx; n++; }
+        }
+        ys.sort((a, b) => a - b);
+        const q = (f) => ys[Math.floor((ys.length - 1) * f)];
+        return JSON.stringify({ spread: q(0.75) - q(0.25), sat: sat / n });
+      })`),
+    );
+  const setProfile = (id) =>
+    js(`(() => {
+      const sel = [...document.querySelectorAll('select')].find(x => [...x.options].some(o => o.value === 'vivid'));
+      if (!sel) return false;
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value').set.call(sel, ${JSON.stringify(id)});
+      sel.dispatchEvent(new Event('change', { bubbles: true }));
+      return true;
+    })()`);
+
+  await js(`__smoke.open('Color'); true`);
+  await sleep(500);
+  expect(await setProfile("standard"), "no profile selector found");
+  await sleep(1500);
+  const standard = await look();
+  await setProfile("flat");
+  await sleep(1600);
+  const flat = await look();
+  await setProfile("landscape");
+  await sleep(1600);
+  const landscape = await look();
+  await setProfile("vivid");
+  await sleep(1600);
+  const vivid = await look();
+  await setProfile("standard");
+  await sleep(1200);
+
+  // Flat is meant to be flat: measured, about a quarter off the tonal spread
+  expect(flat.spread < standard.spread - 0.06, `Flat barely flattens the preview: ${standard.spread.toFixed(3)} -> ${flat.spread.toFixed(3)}`);
+  // Landscape is meant to be colourful: measured, +0.12 saturation
+  expect(landscape.sat > standard.sat + 0.04, `Landscape barely adds colour to the preview: ${standard.sat.toFixed(3)} -> ${landscape.sat.toFixed(3)}`);
+  // Vivid is meant to be punchy: measured, +0.10 spread
+  expect(vivid.spread > standard.spread + 0.035, `Vivid barely adds punch to the preview: ${standard.spread.toFixed(3)} -> ${vivid.spread.toFixed(3)}`);
+});
+
 await step("every inspector section opens", async () => {
   const titles = await js(`[...document.querySelectorAll('.inspector-section')].map(s => s.dataset.section)`);
   expect(titles.length >= 12, `only ${titles.length} sections`);

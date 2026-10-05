@@ -254,11 +254,15 @@ function defaultParamsForImage(info: ImageInfo | null): EditParams {
  * contrast, sharpening - which stays constant, with the noise reduction following
  * the noise.
  */
+const AUTO_VIBRANCE = 18;
+
 function applyAutoLook(p: EditParams, tune: Tune, noiseSigma: number): EditParams {
   const autoLuma = Math.round(clamp(10 + noiseSigma * 900, 10, 45));
   return {
     ...withTune(p, tune),
-    vibrance: 18,
+    // twin of AUTO_VIBRANCE in tonematch.rs: the photo is measured with it in
+    // place, so it has to be the same number
+    vibrance: AUTO_VIBRANCE,
     texture: 15,
     clarity: 20,
     sharpen: 55,
