@@ -1,0 +1,125 @@
+/* The NFrame look: the logo's brushed-chrome and holographic sheen, kept for
+   switches and the few buttons that matter, so the photograph stays the
+   brightest thing on screen. */
+:root {
+  --holo: linear-gradient(115deg, #8fbaff 0%, #b9a8ff 16%, #f0b8e6 28%, #aee0ff 42%, #dfe2ee 54%, #9fb0ff 70%, #e6c8ff 85%, #8fc8ff 100%);
+  --chrome-edge: #e9ecf8;
+}
+
+/* ---- switches: every checkbox is a chrome-knobbed switch ---- */
+input[type="checkbox"] {
+  appearance: none;
+  -webkit-appearance: none;
+  position: relative;
+  flex: none;
+  width: 36px;
+  height: 20px;
+  margin: 0;
+  border-radius: 999px;
+  background: linear-gradient(#17171d, #202028);
+  border: 1px solid #3a3a46;
+  box-shadow: inset 0 1px 3px #0009;
+  cursor: pointer;
+  transition: background-position 0.5s ease, border-color 0.2s, box-shadow 0.2s;
+  background-size: 100% 100%;
+}
+input[type="checkbox"]::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #fff 0%, #d6daea 45%, #8d92a8 100%);
+  box-shadow: 0 1px 3px #000a, inset 0 0 0 1px #ffffff55;
+  transition: transform 0.18s cubic-bezier(0.3, 0.9, 0.3, 1.2);
+}
+input[type="checkbox"]:checked {
+  background: var(--holo);
+  background-size: 220% 100%;
+  background-position: 0% 0;
+  border-color: var(--chrome-edge);
+  box-shadow: inset 0 1px 2px #ffffffaa, 0 0 8px #a9b4ff55;
+}
+input[type="checkbox"]:checked::before {
+  transform: translateX(16px);
+}
+input[type="checkbox"]:checked:hover {
+  background-position: 100% 0;
+}
+input[type="checkbox"]:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* ---- the buttons that matter: Export and anything primary ---- */
+button.primary,
+.export-button {
+  background: var(--holo);
+  background-size: 200% 100%;
+  background-position: 0% 0;
+  color: #15151d;
+  font-weight: 650;
+  border: 1px solid var(--chrome-edge);
+  box-shadow: inset 0 1px 1px #fffc, 0 2px 10px #8fa0ff33;
+  text-shadow: 0 1px 0 #ffffff66;
+  transition: background-position 0.5s ease, box-shadow 0.2s;
+}
+button.primary:hover:not(:disabled),
+.export-button:hover:not(:disabled) {
+  background-position: 100% 0;
+  box-shadow: inset 0 1px 1px #fff, 0 2px 14px #a9b4ff66;
+}
+
+/* ---- what is switched on in a row of buttons wears a thin holographic ring ---- */
+.toolrail button.active,
+.tab.active,
+.phone-tabs button.active,
+button.active:not(.primary) {
+  border: 1px solid transparent;
+  background:
+    linear-gradient(#22212c, #22212c) padding-box,
+    var(--holo) border-box;
+  color: #f1eeff;
+}
+
+/* ---- sliders take the chrome knob ---- */
+.slider-range::-webkit-slider-thumb {
+  background: radial-gradient(circle at 35% 30%, #fff 0%, #d6daea 50%, #8d92a8 100%);
+  box-shadow: 0 1px 3px #000a;
+}
+
+/* ---- the quick-access effect cards ---- */
+.effect-launcher button:hover:not(:disabled) {
+  border-color: transparent;
+  background:
+    linear-gradient(#25242f, #25242f) padding-box,
+    var(--holo) border-box;
+}
+.effect-launcher button > span {
+  background: var(--holo);
+  color: #1b1b25;
+  background-clip: padding-box;
+}
+
+/* ---- the logo ---- */
+.brand-logo {
+  display: block;
+  height: 34px;
+  width: auto;
+  filter: drop-shadow(0 0 10px #8fa0ff33);
+}
+.viewer-empty-logo {
+  width: min(320px, 60%);
+  height: auto;
+  filter: drop-shadow(0 0 24px #8fa0ff40);
+}
+@media (prefers-reduced-motion: reduce) {
+  input[type="checkbox"],
+  input[type="checkbox"]::before,
+  button.primary,
+  .export-button {
+    transition: none;
+  }
+}

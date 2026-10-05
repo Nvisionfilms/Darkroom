@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Renderer, type View } from "../gl/Renderer";
+import nframeLogo from "../assets/nframe-logo.png";
 import { getBlendPixels, getLookPixels, getWatermarkPixels, openBlend, openLook, openWatermark } from "../api";
 import {
   brushRaster,
@@ -1062,7 +1063,8 @@ export function Viewer({
       {error && <div className="viewer-error">{error}</div>}
       {!image && !error && (
         <div className="viewer-empty">
-          <div className="viewer-empty-kicker">NFRAME STUDIO / BY NVISION</div>
+          <img className="viewer-empty-logo" src={nframeLogo} alt="NFrame Studio" draggable={false} />
+          <div className="viewer-empty-kicker">STUDIO / BY NVISION</div>
           <div className="viewer-empty-title">Make the frame yours.</div>
           <div>Light, color, motion. Start with your photograph.
           </div>

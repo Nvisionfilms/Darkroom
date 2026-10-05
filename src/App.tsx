@@ -102,6 +102,8 @@ import {
 } from "./types";
 import "./App.css";
 import "./Studio.css";
+import "./Holo.css";
+import nframeLogo from "./assets/nframe-logo.png";
 
 /**
  * A trail being switched on picks up the mask the photo already has, which is
@@ -1671,11 +1673,7 @@ export default function App() {
       )}
       <header className="topbar">
         <div className="brand-lockup">
-          <span className="brand-mark" aria-hidden="true">N<span className="brand-spark">✦</span></span>
-          <span className="brand-copy">
-            <strong>NFrame Studio</strong>
-            <small>by NVision</small>
-          </span>
+          <img className="brand-logo" src={nframeLogo} alt="NFrame Studio by NVision" draggable={false} />
         </div>
 
         <div className="file-context">
