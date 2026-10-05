@@ -763,6 +763,31 @@ async fn match_tone(
     .map_err(err)
 }
 
+/// Work out how to look after the open photo, from the photo itself.
+///
+/// The same solver as Tone Match, aimed at a target built from the photo's own
+/// measurements instead of a reference picture's: it reads where the tones sit
+/// and moves them to where a well-exposed photo would, by as much as is needed.
+#[tauri::command]
+async fn auto_look(
+    params: pipeline::EditParams,
+    lut: Vec<f32>,
+    state: State<'_, AppState>,
+) -> Result<tonematch::Match, String> {
+    let image = {
+        let guard = state.loaded.lock().unwrap();
+        guard.as_ref().ok_or("no image loaded")?.image.clone()
+    };
+    tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<tonematch::Match> {
+        let lut = if lut.len() == 1024 { lut } else { pipeline::identity_lut() };
+        let small = decode::downsample(&image, tonematch::PROXY_EDGE);
+        Ok(tonematch::auto(&small, &params, &lut))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(err)
+}
+
 /// The watermarks saved for reuse.
 #[tauri::command]
 fn watermark_library(app: tauri::AppHandle) -> Result<Vec<wmlib::Mark>, String> {
@@ -815,6 +840,7 @@ pub fn run() {
             export_cube,
             mobile_update,
             match_tone,
+            auto_look,
             watermark_library,
             watermark_save,
             watermark_delete,

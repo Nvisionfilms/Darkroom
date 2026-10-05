@@ -11,6 +11,20 @@
 
 const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
 
+/**
+ * The long edge the trail is measured against: the cropped frame, not the whole
+ * photograph. The export lays trails on the finished, cropped picture and takes
+ * its distances from that, so the preview has to as well. It used the uncropped
+ * image, which made the trail a different length on screen than in the file as
+ * soon as the photo was cropped - by half, for a crop that kept half the width.
+ * Falls back to the whole image when no crop is known.
+ */
+export function trailLongEdge(frame: { width: number; height: number; outW?: number; outH?: number }): number {
+  const w = frame.outW && frame.outW > 0 ? frame.outW : frame.width;
+  const h = frame.outH && frame.outH > 0 ? frame.outH : frame.height;
+  return Math.max(w, h);
+}
+
 /** A masked subject echoes as separate ghosts until there are enough to join up. */
 export const MAX_TRAIL_COPIES = 24;
 

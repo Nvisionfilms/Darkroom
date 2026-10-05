@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { ComponentProps } from "react";
 import { buildLut } from "../curve";
 import { maskGroupAlpha, maskGroupKey, type AlphaMap } from "../mask";
-import { TRAIL_MASK_FEATHER, trailAlpha, trailBlur, trailCopies, trailDistance, trailFadeRetention } from "../trail";
+import { TRAIL_MASK_FEATHER, trailLongEdge, trailAlpha, trailBlur, trailCopies, trailDistance, trailFadeRetention } from "../trail";
 import { cropIsIdentity, defaultParams, type EditParams } from "../types";
 import { Viewer as CoreViewer } from "./ViewerCore";
 import type { Mapper } from "./MirrorOverlay";
@@ -368,7 +368,8 @@ export function Viewer(props: Props) {
       // panned - and the preview only matched the export at Fit.
       const cssScale = rect.width > 0 ? W / rect.width : 1;
       const mapperNow = mapperRef.current;
-      const imgLong = mapperNow ? Math.max(mapperNow.width, mapperNow.height) : 0;
+      // the cropped frame, as the export measures it (see trailLongEdge)
+      const imgLong = mapperNow ? trailLongEdge(mapperNow) : 0;
       const pxPerImage = mapperNow ? mapperNow.scale * cssScale : 0;
       const long = imgLong > 0 && pxPerImage > 0 ? imgLong * pxPerImage : Math.max(W, H);
       const copies = trailCopies(trail.cx);

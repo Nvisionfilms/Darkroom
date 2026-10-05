@@ -17,6 +17,7 @@ import {
   startTether,
   deletePreset,
   findHealSource,
+  autoLook,
   exportCube,
   listPresets,
   matchTone,
@@ -246,6 +247,28 @@ function defaultParamsForImage(info: ImageInfo | null): EditParams {
  * button did nothing at all. Setting them makes it do the same thing every time
  * and on every photo, and undo takes it back.
  */
+/**
+ * Auto, read from the photo: the tone and colour sliders come from what the
+ * photo actually is (see tonematch.rs auto), and what is left is the part that is
+ * a matter of taste rather than of measurement - a little vibrance, local
+ * contrast, sharpening - which stays constant, with the noise reduction following
+ * the noise.
+ */
+function applyAutoLook(p: EditParams, tune: Tune, noiseSigma: number): EditParams {
+  const autoLuma = Math.round(clamp(10 + noiseSigma * 900, 10, 45));
+  return {
+    ...withTune(p, tune),
+    vibrance: 18,
+    texture: 15,
+    clarity: 20,
+    sharpen: 55,
+    denoiseLuma: autoLuma,
+    denoiseChroma: 30,
+    denoiseDetail: 35,
+  };
+}
+
+/** The fixed recipe, for when the photo cannot be read. */
 function applyAutoEdit(p: EditParams, noiseSigma: number): EditParams {
   const autoLuma = Math.round(clamp(10 + noiseSigma * 900, 10, 45));
   return {
@@ -1215,11 +1238,17 @@ export default function App() {
     if (!current) return;
     setParams((p) => ({ ...p, ...autoNoise(current.noiseSigma) }));
   }, [current]);
-  const autoEdit = useCallback(() => {
+  const autoEdit = useCallback(async () => {
     if (!current) return;
-    setParams((p) => applyAutoEdit(p, current.noiseSigma));
+    try {
+      const m = await autoLook(params, [...buildLut(params.curves)]);
+      setParams((p) => applyAutoLook(p, m.values, current.noiseSigma));
+    } catch {
+      // the photo could not be read; the fixed recipe is better than nothing
+      setParams((p) => applyAutoEdit(p, current.noiseSigma));
+    }
     setOpenSections((prev) => ({ ...prev, tone: true, color: true, detail: true, denoise: true }));
-  }, [current]);
+  }, [current, params]);
 
   const rotate = useCallback(
     (deg: number) => setParams((p) => ({ ...p, rotation: (((p.rotation + deg) % 360) + 360) % 360 })),

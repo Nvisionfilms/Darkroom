@@ -656,6 +656,20 @@ await step("trail distances are measured against the photo, not the window", asy
   expect(t.blurOne === t.blurFit * 4, "the blur did not follow the zoom");
   expect(t.blurOne === 32, `blur should clamp at 32 photo pixels, got ${t.blurOne}`);
   expect(JSON.stringify(t.copies) === "[4,24,24]", `copies: ${JSON.stringify(t.copies)}`);
+
+  // The export lays trails on the cropped picture, so the preview must measure
+  // them against the crop too - against the whole image they were twice as long
+  // on screen as in the file for a crop that kept half the width.
+  const crop = JSON.parse(await js(`import('/src/trail.ts').then(m => JSON.stringify({
+    whole: m.trailLongEdge({ width: 2000, height: 1333 }),
+    half: m.trailLongEdge({ width: 2000, height: 1333, outW: 1000, outH: 1333 }),
+    tall: m.trailLongEdge({ width: 2000, height: 1333, outW: 500, outH: 900 }),
+    junk: m.trailLongEdge({ width: 2000, height: 1333, outW: 0, outH: 0 }),
+  }))`));
+  expect(crop.whole === 2000, `no crop should use the whole image: ${crop.whole}`);
+  expect(crop.half === 1333, `a half-width crop should be measured by its own long edge: ${crop.half}`);
+  expect(crop.tall === 900, `a tall crop should use its height: ${crop.tall}`);
+  expect(crop.junk === 2000, `an unknown crop should fall back to the whole image: ${crop.junk}`);
   expect(Math.abs(t.fade - 0.98) < 1e-9, `full fade should retain 0.98, got ${t.fade}`);
 });
 
@@ -1110,6 +1124,52 @@ await step("the look exports as a .cube LUT and says what it left behind", async
   await js(`__smoke.slider(__smoke.open('Tone'), 'Exposure', 0); true`);
   // let the debounced sidecar write land before the filmstrip steps start
   await sleep(1800);
+});
+
+await step("Auto reads the photo, and gives the same answer however the sliders were left", async () => {
+  // The command itself first, so a failure can be told apart from a UI problem.
+  const direct = JSON.parse(
+    await js(`Promise.all([import('/src/api.ts'), import('/src/types.ts'), import('/src/curve.ts')]).then(async ([api, t, cv]) => {
+      const p = t.defaultParams();
+      const r = await api.autoLook(p, Array.from(cv.buildLut(p.curves)));
+      return JSON.stringify({ v: r.values, before: r.distanceBefore, after: r.distanceAfter, ok: Object.values(r.values).every(Number.isFinite) });
+    })`),
+  );
+  expect(direct.ok, `Auto returned a slider that is not a number: ${JSON.stringify(direct.v)}`);
+  expect(direct.after <= direct.before + 1e-6, `Auto left the photo further from its target: ${direct.before} -> ${direct.after}`);
+
+  const read = async () =>
+    JSON.parse(
+      await js(`JSON.stringify({
+        exposure: __smoke.sliderValue(__smoke.open('Tone'), 'Exposure'),
+        contrast: __smoke.sliderValue(__smoke.open('Tone'), 'Contrast'),
+        shadows: __smoke.sliderValue(__smoke.open('Tone'), 'Shadows'),
+      })`),
+    );
+
+  await js(`window.__darkroom.autoEdit(); true`);
+  await sleep(2500);
+  const once = await read();
+  expect(
+    [once.exposure, once.contrast, once.shadows].every(Number.isFinite),
+    `Auto left a slider that is not a number: ${JSON.stringify(once)}`,
+  );
+
+  // fiddle with the very sliders Auto sets, then press it again
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Exposure', 1.7); true`);
+  await js(`__smoke.slider(__smoke.open('Tone'), 'Contrast', -55); true`);
+  await sleep(900);
+  await js(`window.__darkroom.autoEdit(); true`);
+  await sleep(2500);
+  const again = await read();
+  expect(
+    Math.abs(again.exposure - once.exposure) < 0.02 && Math.abs(again.contrast - once.contrast) < 0.6,
+    `Auto depends on what the sliders were: ${JSON.stringify(once)} then ${JSON.stringify(again)}`,
+  );
+  // and the part that is a matter of taste is set too
+  const taste = await js(`JSON.stringify({ sharpen: __smoke.sliderValue(__smoke.open('Detail'), 'Sharpening'), clarity: __smoke.sliderValue(__smoke.open('Detail'), 'Clarity') })`);
+  const t = JSON.parse(taste);
+  expect(t.sharpen === 55 && t.clarity === 20, `the detail part of Auto was not applied: ${taste}`);
 });
 
 await step("the filmstrip offers the batch actions", async () => {

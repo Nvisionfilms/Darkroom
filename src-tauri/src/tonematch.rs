@@ -350,6 +350,81 @@ pub fn run(src: &LinearImage, base: &EditParams, lut: &[f32], reference: &ToneSt
     }
 }
 
+/// What a photo should look like once it has been looked after, worked out from
+/// the photo itself.
+///
+/// Auto used to be a fixed recipe - the same contrast, highlights, shadows and
+/// vibrance on every photo, the only thing it read being the noise level - so a
+/// dark photo and a bright one got the same treatment. This reads where the
+/// photo's tones actually sit and moves them to where a well-exposed one would,
+/// by as much as it needs rather than as much as a constant says.
+///
+///  * The black and white points go to just inside the ends of the range, so the
+///    picture uses the room it has without clipping.
+///  * The middle moves part of the way towards a comfortable brightness. Only
+///    part: a night scene should stay a night scene, so a dark photo is lifted and
+///    not turned into a daylight one.
+///  * Tones in between follow, kept in order, with a little added contrast.
+///  * A colour cast is reduced by about a third rather than removed. A warm
+///    sunset is a warm sunset; a photo shot under the wrong light is not.
+///  * Saturation is brought into a sensible range if it is outside it.
+pub fn auto_target(s: &ToneStats) -> ToneStats {
+    let (lo, hi) = (s.q[0], s.q[6]);
+    let median = s.q[3];
+    let aim = (median + 0.4 * (0.46 - median)).clamp(0.12, 0.72);
+    // where each measured tone should land: black and white at the ends, the
+    // median at `aim`, the rest in proportion on each side
+    let (t_lo, t_hi) = (0.02f32, 0.97f32);
+    let map = |v: f32| -> f32 {
+        let out = if v <= median {
+            let span = (median - lo).max(1e-4);
+            t_lo + (aim - t_lo) * ((v - lo) / span)
+        } else {
+            let span = (hi - median).max(1e-4);
+            aim + (t_hi - aim) * ((v - median) / span)
+        };
+        // a touch more contrast about the middle
+        (aim + (out - aim) * 1.06).clamp(0.0, 1.0)
+    };
+    let mut q = [0.0f32; 7];
+    for i in 0..7 {
+        q[i] = map(s.q[i]);
+    }
+    // keep them strictly ordered whatever the arithmetic did
+    for i in 1..7 {
+        q[i] = q[i].max(q[i - 1]);
+    }
+    let neutral = 1.0 / 3.0;
+    let mid = [s.mid[0] + 0.35 * (neutral - s.mid[0]), s.mid[1] + 0.35 * (neutral - s.mid[1])];
+    let sat = s.sat.clamp(0.22, 0.55) + 0.02;
+    ToneStats { q, mid, sat }
+}
+
+/// Look after a photo: find the sliders that move it to `auto_target` of itself.
+///
+/// It starts from the tone sliders at zero rather than where they are, so
+/// pressing Auto twice gives the same answer whatever was done in between.
+pub fn auto(src: &LinearImage, base: &EditParams, lut: &[f32]) -> Match {
+    let mut neutral = base.clone();
+    neutral.exposure = 0.0;
+    neutral.contrast = 0.0;
+    neutral.highlights = 0.0;
+    neutral.shadows = 0.0;
+    neutral.whites = 0.0;
+    neutral.blacks = 0.0;
+    neutral.temperature = 0.0;
+    neutral.tint = 0.0;
+    neutral.saturation = 0.0;
+    let mut proxy = neutral.clone();
+    proxy.texture = 0.0;
+    proxy.clarity = 0.0;
+    proxy.dehaze = 0.0;
+    proxy.masks.clear();
+    proxy.heal.clear();
+    let here = stats(&pipeline::develop_buffer(&src.data, src.width, None, &proxy, lut));
+    run(src, &neutral, lut, &auto_target(&here))
+}
+
 /// Blend a match back towards where the sliders started: 0 is untouched, 1 is
 /// the full match. Linear in each slider, so a strength of one half is halfway
 /// in every one of them.
@@ -499,6 +574,95 @@ mod tests {
         let s = reference_stats(&img, false, &pipeline::identity_lut());
         assert!((s.q[3] - 0.5).abs() < 0.01, "a 0.5 grey bitmap measured as {}", s.q[3]);
         assert!(s.sat < 0.02, "grey measured as saturated: {}", s.sat);
+    }
+
+    /// A scene lit by a ramp from `lo` to `hi` (linear), crossed with a cast.
+    fn lit(lo: f32, hi: f32, cast: f32) -> LinearImage {
+        let mut data = vec![0.0f32; W * H * 3];
+        for y in 0..H {
+            for x in 0..W {
+                let u = x as f32 / (W - 1) as f32;
+                let l = lo + (hi - lo) * u.powf(1.6);
+                let i = (y * W + x) * 3;
+                data[i] = l * (1.0 + cast);
+                data[i + 1] = l;
+                data[i + 2] = l * (1.0 - cast);
+            }
+        }
+        LinearImage { width: W, height: H, data }
+    }
+
+    /// Auto has to read the photo: a dark one is lifted, a bright one is pulled
+    /// down, and neither ends up treated like the other.
+    #[test]
+    fn auto_lifts_a_dark_photo_and_pulls_a_bright_one() {
+        let lut = pipeline::identity_lut();
+        let base = EditParams::default();
+        let dark = lit(0.002, 0.12, 0.0);
+        let bright = lit(0.25, 3.0, 0.0);
+        let a = auto(&dark, &base, &lut);
+        let b = auto(&bright, &base, &lut);
+        println!("\ndark   median {:.3} -> {:.3}  exposure {:+.2}", a.before.q[3], a.after.q[3], a.values.exposure);
+        println!("bright median {:.3} -> {:.3}  exposure {:+.2}", b.before.q[3], b.after.q[3], b.values.exposure);
+        assert!(a.after.q[3] > a.before.q[3] + 0.04, "a dark photo was not lifted");
+        assert!(b.after.q[3] < b.before.q[3] - 0.04, "a bright photo was not pulled down");
+        assert!(a.values.exposure > b.values.exposure + 0.5, "Auto gave the dark and bright photos the same treatment");
+        // a night scene stays a night scene: lifted, not turned into daylight
+        assert!(a.after.q[3] < 0.40, "a dark photo was turned into a bright one: {}", a.after.q[3]);
+    }
+
+    /// The black and white points go to the ends of the range, so the picture
+    /// uses the room it has.
+    #[test]
+    fn auto_uses_the_range_a_flat_photo_leaves_unused() {
+        let lut = pipeline::identity_lut();
+        let flat = lit(0.12, 0.30, 0.0);
+        let m = auto(&flat, &EditParams::default(), &lut);
+        let spread = |q: &[f32; 7]| q[6] - q[0];
+        println!("\nspread {:.3} -> {:.3}", spread(&m.before.q), spread(&m.after.q));
+        assert!(spread(&m.after.q) > spread(&m.before.q) + 0.2, "a flat photo was not stretched");
+        assert!(m.after.q[6] < 1.0 && m.after.q[0] >= 0.0, "it clipped");
+    }
+
+    /// A photo that is already fine should come out about as it went in.
+    #[test]
+    fn auto_leaves_a_well_exposed_photo_alone() {
+        let lut = pipeline::identity_lut();
+        let m = auto(&scene(), &EditParams::default(), &lut);
+        println!("\nfine photo: exposure {:+.2}", m.values.exposure);
+        assert!(m.values.exposure.abs() < 0.6, "a fine photo was re-exposed by {}", m.values.exposure);
+        for i in 0..7 {
+            assert!((m.after.q[i] - m.before.q[i]).abs() < 0.15, "percentile {i} moved by {}", m.after.q[i] - m.before.q[i]);
+        }
+    }
+
+    /// A cast is reduced, not erased.
+    #[test]
+    fn auto_softens_a_colour_cast_without_removing_it() {
+        let lut = pipeline::identity_lut();
+        let warm = lit(0.01, 0.8, 0.22);
+        let m = auto(&warm, &EditParams::default(), &lut);
+        let neutral = 1.0 / 3.0;
+        let before = (m.before.mid[0] - neutral).abs();
+        let after = (m.after.mid[0] - neutral).abs();
+        println!("\nred balance off neutral by {before:.4} -> {after:.4}");
+        assert!(after < before * 0.9, "the cast was not reduced: {before:.4} -> {after:.4}");
+        assert!(after > before * 0.3, "the cast was erased: {before:.4} -> {after:.4}");
+    }
+
+    /// Pressing Auto twice is the same as pressing it once, wherever the tone
+    /// sliders were left in between.
+    #[test]
+    fn auto_gives_the_same_answer_whatever_was_done_before() {
+        let lut = pipeline::identity_lut();
+        let img = lit(0.003, 0.25, 0.05);
+        let fresh = auto(&img, &EditParams::default(), &lut);
+        let mut fiddled = EditParams::default();
+        fiddled.exposure = 1.5;
+        fiddled.contrast = -40.0;
+        fiddled.temperature = 30.0;
+        let after = auto(&img, &fiddled, &lut);
+        assert_eq!(fresh.values, after.values, "Auto depends on what the sliders were");
     }
 
     #[test]

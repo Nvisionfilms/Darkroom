@@ -217,6 +217,11 @@ export async function matchTone(path: string, params: EditParams, lut: number[])
   return invoke<ToneMatch>("match_tone", { path, params, lut });
 }
 
+/** How to look after the open photo, worked out from the photo itself. */
+export async function autoLook(params: EditParams, lut: number[]): Promise<ToneMatch> {
+  return invoke<ToneMatch>("auto_look", { params, lut });
+}
+
 /** A watermark saved in the library. */
 export interface WatermarkMark {
   name: string;
