@@ -444,6 +444,18 @@ async fn import_to_library(library: String, session: String, paths: Vec<String>)
         .map_err(|e| format!("{e:#}"))
 }
 
+/// The session folders in the library, newest first.
+#[tauri::command]
+fn list_sessions(library: String) -> Result<Vec<library::Session>, String> {
+    library::sessions(Path::new(&library)).map_err(|e| format!("{e:#}"))
+}
+
+/// The photos in one session folder.
+#[tauri::command]
+fn list_session_photos(path: String) -> Result<Vec<String>, String> {
+    library::photos_in(Path::new(&path)).map_err(|e| format!("{e:#}"))
+}
+
 /// Write the current look as a .cube 3D LUT, for Resolve and anything else
 /// that loads one. Returns the settings it could not carry, so the app can say
 /// so rather than letting the photographer assume the file holds everything.
@@ -849,6 +861,8 @@ pub fn run() {
             export_image,
             export_cube,
             import_to_library,
+            list_sessions,
+            list_session_photos,
             mobile_update,
             match_tone,
             auto_look,

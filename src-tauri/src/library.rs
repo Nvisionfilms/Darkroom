@@ -97,6 +97,57 @@ pub fn import(library: &Path, session: &str, paths: &[String]) -> Result<Importe
     })
 }
 
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Session {
+    pub name: String,
+    pub path: String,
+    pub count: usize,
+}
+
+fn is_photo(p: &Path) -> bool {
+    let ext = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+    crate::decode::RAW_EXTENSIONS.iter().chain(crate::decode::IMAGE_EXTENSIONS.iter()).any(|e| e.eq_ignore_ascii_case(&ext))
+}
+
+/// The photos directly inside `dir`, in name order.
+pub fn photos_in(dir: &Path) -> Result<Vec<String>> {
+    let mut out: Vec<String> = std::fs::read_dir(dir)?
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| p.is_file() && is_photo(p))
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect();
+    out.sort_by_key(|s| s.to_lowercase());
+    Ok(out)
+}
+
+/// The session folders in the library that hold photos, newest first (the names
+/// start with the date, so name order is time order).
+pub fn sessions(library: &Path) -> Result<Vec<Session>> {
+    if !library.is_dir() {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    for e in std::fs::read_dir(library)?.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let count = photos_in(&p).map(|v| v.len()).unwrap_or(0);
+        if count == 0 {
+            continue;
+        }
+        out.push(Session {
+            name: e.file_name().to_string_lossy().into_owned(),
+            path: p.to_string_lossy().into_owned(),
+            count,
+        });
+    }
+    out.sort_by(|a, b| b.name.to_lowercase().cmp(&a.name.to_lowercase()));
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -135,6 +186,25 @@ mod tests {
         let again = import(&lib, "later", &one.files).unwrap();
         assert_eq!(again.files, one.files);
         assert!(again.session.is_empty());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn sessions_list_newest_first_with_their_photos() {
+        let root = scratch("c");
+        for (d, n) in [("2026-01-02_1000", 2), ("2026-03-04_0900", 1)] {
+            std::fs::create_dir_all(root.join(d)).unwrap();
+            for i in 0..n {
+                std::fs::write(root.join(d).join(format!("p{i}.jpg")), b"x").unwrap();
+            }
+            std::fs::write(root.join(d).join("p0.jpg.drk.json"), b"{}").unwrap();
+        }
+        std::fs::create_dir_all(root.join("empty")).unwrap();
+        let s = sessions(&root).unwrap();
+        assert_eq!(s.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(), ["2026-03-04_0900", "2026-01-02_1000"]);
+        assert_eq!((s[0].count, s[1].count), (1, 2), "edit files must not be counted as photos");
+        assert_eq!(photos_in(Path::new(&s[1].path)).unwrap().len(), 2);
+        assert!(sessions(&root.join("nope")).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(&root);
     }
 
