@@ -1730,6 +1730,10 @@ export default function App() {
 
       <div className="main">
         <nav className="toolrail" aria-label="Workspace tools">
+          {/* The two columns say what they are: the rail picks a workspace, the
+              panel on the right holds that workspace's controls. Without the
+              captions the effects look missing rather than one click away. */}
+          <span className="rail-caption" aria-hidden="true">Workspace</span>
           <button type="button" onClick={openFiles} title="Open photos">
             <span className="tool-glyph">▧</span><span>Browse</span>
           </button>
@@ -1861,6 +1865,7 @@ export default function App() {
           )}
           <div className="inspector-top">
             <div>
+              <small className="panel-caption">{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].label} controls</small>
               <strong>{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].label}</strong>
               <span>{WORKSPACES[cropMode ? "crop" : healTool ? "repair" : workspace].hint}</span>
             </div>

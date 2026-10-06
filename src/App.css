@@ -1930,3 +1930,24 @@ input[type="number"] {
   margin-right: 8px;
   font-size: 12px;
 }
+
+/* Column captions. The left rail chooses a workspace and the right panel holds
+   that workspace's controls; unlabelled, a photographer looking at Edit reads
+   the hidden effects as missing instead of one click away. */
+.rail-caption,
+.panel-caption {
+  color: var(--muted-2);
+  font-size: 8px;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+.rail-caption {
+  margin-bottom: 4px;
+  padding: 2px 0 6px;
+  border-bottom: 1px solid var(--border-soft);
+  text-align: center;
+}
+.panel-caption {
+  margin-bottom: 3px;
+}

@@ -227,7 +227,7 @@ jobs:
           src=$(find src-tauri/gen/android/app/build/outputs/apk -name "*.apk" ! -name "*unsigned*" | head -1)
           if [ -z "$src" ]; then echo "no signed APK was produced" >&2; exit 1; fi
           mkdir -p dist-android
-          out="dist-android/Darkroom_${VERSION}_aarch64.apk"
+          out="dist-android/NFrame-Studio_${VERSION}_aarch64.apk"
           cp "$src" "$out"
           # the phone polls this through the same proxy the desktop updater uses
           cat > dist-android/android.json <<JSON
@@ -235,7 +235,7 @@ jobs:
             "version": "${VERSION}",
             "notes": "NFrame Studio ${VERSION}",
             "pub_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
-            "url": "https://updates.nvisionfilms.com/darkroom/assets/Darkroom_${VERSION}_aarch64.apk"
+            "url": "https://updates.nvisionfilms.com/darkroom/assets/NFrame-Studio_${VERSION}_aarch64.apk"
           }
           JSON
           echo "apk=$out" >> "$GITHUB_OUTPUT"
