@@ -111,6 +111,40 @@ need to be on the same Wi-Fi.
 - **Apple Developer Program ($99/year):** apps last a year, and TestFlight can
   put it on other people's phones.
 
+### Updating over the air
+
+Running `bun tauri ios run` from the Mac is the way to install, but it means
+plugging in every time. A paid account can also publish a build the iPhone
+installs by itself, the way the Android one does.
+
+An iPhone will not install a file a browser downloaded, so instead of naming an
+.ipa the way `android.json` names an APK, the phone is handed an
+`itms-services:` link pointing at a plist, and Apple's own installer takes it
+from there. The update proxy generates both from the newest release carrying an
+`.ipa`, so publishing a build is all it takes:
+
+| URL | Read by |
+| --- | --- |
+| `.../darkroom/ios.json` | the app's own update check |
+| `.../darkroom/ios-manifest.plist` | Apple's installer |
+
+Build the archive and attach it to the release for the version it came from:
+
+```bash
+bun tauri ios build --export-method ad-hoc
+gh release upload v0.2.27 "src-tauri/gen/apple/build/arm64/Darkroom.ipa" --clobber
+```
+
+To install the first copy, open the `url` from `ios.json` on the iPhone **in
+Safari** - not in another browser and not inside a chat app's viewer. After that
+the app checks for itself and offers the update, the same as on Android.
+
+The catch is the one Ad Hoc always has: **the build only installs on iPhones
+whose identifier was registered before it was signed.** A phone that is not on
+the profile says "Unable to Install" and gives no reason, and adding one later
+means signing and publishing again. The profile also expires after a year, and
+the installed app stops opening when it does.
+
 ### Things to know on iPhone
 
 - **HEIC photos don't open yet.** The iPhone camera saves HEIC by default. Set
