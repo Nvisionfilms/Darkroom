@@ -126,6 +126,22 @@ while (end < lines.length && (lines[end].trim() === "" || lines[end].startsWith(
 lines.splice(end, 0, ...packages.map((p) => `${indent}  - package: ${p.name}`));
 yml = lines.join(NL);
 
+// 3. force every member of those archives into the link.
+//
+// The @_cdecl exports - register_plugin, on_webview_created, init_plugin_dialog
+// and the rest - are called only from Rust. Nothing in Swift or Objective-C
+// refers to them, so the linker, which pulls archive members in only to satisfy
+// a symbol it already wants, leaves those objects on the floor however the
+// libraries are ordered. -all_load takes every member of every static archive.
+if (!/OTHER_LDFLAGS/.test(yml)) {
+  const out = yml.split(NL);
+  const at = out.indexOf(`${indent}dependencies:`);
+  const has = out.indexOf(`${indent}settings:`);
+  if (has >= 0) out.splice(has + 1, 0, `${indent}  OTHER_LDFLAGS: -all_load`);
+  else out.splice(at, 0, `${indent}settings:`, `${indent}  OTHER_LDFLAGS: -all_load`);
+  yml = out.join(NL);
+}
+
 writeFileSync(ymlPath, yml);
 console.log(`staged ${packages.length} Swift packages and added them to project.yml:`);
 for (const p of packages) console.log(`  ${p.name.padEnd(20)} gen/apple/${p.dir}`);
