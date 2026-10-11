@@ -3,9 +3,9 @@
 // `tauri ios init` (2.11.4 and 2.11.5) writes a project.yml that references the
 // Rust static library and Apple's own SDK frameworks, and nothing else - not the
 // Tauri Swift package, not the Swift half of any plugin. Those define
-// _register_plugin, _on_webview_created, _run_plugin_command and swift-rs's
-// _retain_object / _string_from_bytes, so the app fails to link with exactly
-// those symbols missing, every time.
+// _register_plugin, _on_webview_created, _run_plugin_command, _log_stdout and
+// each plugin's _init_plugin_*, so the app fails to link with exactly those
+// symbols missing, every time.
 //
 // Everything needed is already on disk, in the cargo registry. It cannot be
 // pointed at where it lies, though: SwiftPM takes a local package's identity
@@ -31,6 +31,7 @@ import { cpSync, existsSync, readFileSync, readdirSync, rmSync, writeFileSync } 
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+const NL = String.fromCharCode(10);
 const root = process.cwd();
 const lockPath = join(root, "src-tauri/Cargo.lock");
 const appleDir = join(root, "src-tauri/gen/apple");
@@ -46,8 +47,8 @@ for (const [what, p] of [["Cargo.lock", lockPath], ["the generated project.yml",
 /** Every crate version in the lock file, by name. */
 const versions = new Map();
 for (const block of readFileSync(lockPath, "utf8").split("[[package]]")) {
-  const name = /\nname = "([^"]+)"/.exec(block)?.[1];
-  const version = /\nversion = "([^"]+)"/.exec(block)?.[1];
+  const name = /name = "([^"]+)"/.exec(block)?.[1];
+  const version = /version = "([^"]+)"/.exec(block)?.[1];
   if (name && version) versions.set(name, version);
 }
 
@@ -65,7 +66,7 @@ function swiftPackage(crate) {
   for (const reg of registries) {
     const from = join(reg, `${crate}-${version}`, sub);
     if (!existsSync(join(from, "Package.swift"))) continue;
-    const name = /\bname:\s*"([^"]+)"/.exec(readFileSync(join(from, "Package.swift"), "utf8"))?.[1];
+    const name = /name:\s*"([^"]+)"/.exec(readFileSync(join(from, "Package.swift"), "utf8"))?.[1];
     // dir is where it has to end up: the directory name IS the SwiftPM identity
     if (name) return { name, from, dir: crate === "tauri" ? ".tauri/tauri-api" : crate };
   }
@@ -91,31 +92,41 @@ for (const p of packages) {
   cpSync(p.from, dest, { recursive: true, dereference: true });
 }
 
-let yml = readFileSync(ymlPath, "utf8").replace(/\r\n/g, "\n");
+let yml = readFileSync(ymlPath, "utf8").split(String.fromCharCode(13, 10)).join(NL);
 if (/^packages:/m.test(yml)) {
   console.log("project.yml already declares packages; only the copies were refreshed");
   process.exit(0);
 }
 
 // 1. the package list, at the top level; paths are relative to project.yml
-const block = ["packages:", ...packages.flatMap((p) => [`  ${p.name}:`, `    path: ${p.dir}`]), ""].join("\n");
+const block = ["packages:", ...packages.flatMap((p) => [`  ${p.name}:`, `    path: ${p.dir}`]), ""].join(NL);
 if (!/^targets:$/m.test(yml)) {
   console.error("project.yml has no top-level `targets:` - the generated layout changed, so this script needs rewriting");
   process.exit(1);
 }
 yml = yml.replace(/^targets:$/m, `${block}targets:`);
 
-// 2. depend on them from the iOS target, the one that links the app
-const deps = /( *)dependencies:\n/;
-const m = deps.exec(yml);
+// 2. depend on them from the iOS target - at the END of the list, AFTER
+// libapp.a. Link order is not cosmetic here: the linker walks static archives
+// left to right and takes from each only the members that resolve something
+// undefined at that moment. Listed before libapp.a, nothing has asked for
+// _register_plugin yet when libTauri.a goes past, so its object is skipped -
+// and libapp.a asks for it too late.
+const m = /( *)dependencies:/.exec(yml);
 if (!m) {
   console.error("project.yml has no `dependencies:` under a target - the generated layout changed");
   process.exit(1);
 }
-const lines = packages.map((p) => `${m[1]}  - package: ${p.name}`).join("\n");
-yml = yml.replace(deps, `${m[0]}${lines}\n`);
+const indent = m[1];
+const lines = yml.split(NL);
+const start = lines.indexOf(`${indent}dependencies:`);
+// the block runs until a line indented no further than `dependencies:` itself
+let end = start + 1;
+while (end < lines.length && (lines[end].trim() === "" || lines[end].startsWith(`${indent} `))) end++;
+lines.splice(end, 0, ...packages.map((p) => `${indent}  - package: ${p.name}`));
+yml = lines.join(NL);
 
 writeFileSync(ymlPath, yml);
 console.log(`staged ${packages.length} Swift packages and added them to project.yml:`);
 for (const p of packages) console.log(`  ${p.name.padEnd(20)} gen/apple/${p.dir}`);
-console.log("\nnow regenerate the Xcode project:\n  (cd src-tauri/gen/apple && xcodegen generate)");
+console.log(`${NL}now regenerate the Xcode project:${NL}  (cd src-tauri/gen/apple && xcodegen generate)`);
