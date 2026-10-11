@@ -38,6 +38,10 @@
     "macOS": {
       "signingIdentity": "-"
     },
+    "iOS": {
+      "minimumSystemVersion": "15.0",
+      "developmentTeam": "T2W4E2YL3A"
+    },
     "windows": {
       "nsis": {
         "installMode": "perMachine"
