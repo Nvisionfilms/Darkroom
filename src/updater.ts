@@ -4,7 +4,7 @@ import { relaunch } from "@tauri-apps/plugin-process";
 import { check, type Update } from "@tauri-apps/plugin-updater";
 import { mobileUpdate } from "./api";
 
-interface AndroidRelease {
+interface MobileRelease {
   version: string;
   url: string;
   notes?: string;
@@ -29,18 +29,19 @@ export function isNewer(a: string, b: string): boolean {
 /**
  * The release a phone could install.
  *
- * The Tauri updater cannot install an APK - only Android's own package
- * installer may - so the phone reads a small manifest instead and hands the
- * download to the browser, which puts the installer in front of you the way any
- * sideloaded app does.
+ * The Tauri updater cannot replace a phone app in place, so the phone reads a
+ * small manifest instead and opens the link it names. On Android that is an APK
+ * the browser downloads and the package installer opens; on iOS it is an
+ * `itms-services:` link, because an iPhone will not install a file a browser
+ * downloaded. Rust picks the manifest for the platform it was built for.
  *
  * The manifest is read by Rust rather than fetched from here. The webview is
  * served from tauri.localhost, so a fetch to the update domain is cross-origin,
  * and the browser refuses it before it reaches the network - which is exactly
  * what "Update check failed: TypeError: Failed to fetch" was.
  */
-async function androidRelease(): Promise<AndroidRelease | null> {
-  const j = (await mobileUpdate()) as Partial<AndroidRelease> | null;
+async function mobileRelease(): Promise<MobileRelease | null> {
+  const j = (await mobileUpdate()) as Partial<MobileRelease> | null;
   if (!j || typeof j.version !== "string" || typeof j.url !== "string") return null;
   return { version: j.version, url: j.url, notes: typeof j.notes === "string" ? j.notes : undefined };
 }
@@ -50,7 +51,7 @@ export type UpdateStatus =
   | { kind: "checking" }
   | { kind: "latest"; version: string }
   | { kind: "available"; update: Update }
-  /** Android: a newer APK exists, which the browser has to download and install */
+  /** a phone: a newer build exists, which the phone's own installer has to put on */
   | { kind: "manual"; version: string; url: string; notes?: string }
   | { kind: "installing"; progress: number | null }
   | { kind: "error"; message: string };
@@ -60,12 +61,12 @@ export type UpdateStatus =
  * tauri.conf.json), downloads the signed bundle and relaunches.
  */
 /**
- * `enabled` is false where the Tauri updater cannot run - on a phone. Android
- * still gets told about a new version; it just downloads the APK through the
- * browser instead of replacing itself.
+ * `enabled` is false where the Tauri updater cannot run - on a phone. A phone is
+ * still told about a new version; it just hands the install to the platform
+ * instead of replacing itself.
  */
 export function useUpdater(currentVersion: string, enabled = true, os = "") {
-  const android = !enabled && os === "android";
+  const mobile = !enabled && (os === "android" || os === "ios");
   const [status, setStatus] = useState<UpdateStatus>({ kind: "idle" });
   const updateRef = useRef<Update | null>(null);
   // install() reads the status it was given rather than closing over a stale one
@@ -74,9 +75,9 @@ export function useUpdater(currentVersion: string, enabled = true, os = "") {
 
   const checkNow = useCallback(async () => {
     setStatus({ kind: "checking" });
-    if (android) {
+    if (mobile) {
       try {
-        const r = await androidRelease();
+        const r = await mobileRelease();
         if (r && isNewer(r.version, currentVersion)) setStatus({ kind: "manual", ...r });
         else setStatus({ kind: "latest", version: currentVersion });
       } catch (e) {
@@ -98,8 +99,9 @@ export function useUpdater(currentVersion: string, enabled = true, os = "") {
   }, [currentVersion]);
 
   const install = useCallback(async () => {
-    if (android) {
-      // the browser downloads it and Android's installer takes it from there
+    if (mobile) {
+      // Android: the browser downloads the APK and the package installer opens
+      // it. iOS: the link is itms-services:, which Apple's installer answers.
       const s = statusRef.current;
       if (s.kind === "manual") await openUrl(s.url).catch((e) => setStatus({ kind: "error", message: String(e) }));
       return;
@@ -121,16 +123,16 @@ export function useUpdater(currentVersion: string, enabled = true, os = "") {
     } catch (e) {
       setStatus({ kind: "error", message: String(e) });
     }
-  }, [android]);
+  }, [mobile]);
 
   const dismiss = useCallback(() => setStatus({ kind: "idle" }), []);
 
   // automatic check a few seconds after launch (packaged builds only)
   useEffect(() => {
     if (import.meta.env.DEV) return;
-    if (android) {
+    if (mobile) {
       const t = window.setTimeout(() => {
-        androidRelease()
+        mobileRelease()
           .then((r) => {
             if (r && isNewer(r.version, currentVersion)) setStatus({ kind: "manual", ...r });
           })
@@ -150,7 +152,7 @@ export function useUpdater(currentVersion: string, enabled = true, os = "") {
         .catch(() => {});
     }, 3000);
     return () => window.clearTimeout(t);
-  }, [enabled, android, currentVersion]);
+  }, [enabled, mobile, currentVersion]);
 
   return { status, checkNow, install, dismiss };
 }

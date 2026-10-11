@@ -36,9 +36,9 @@ export function AboutDialog({
   onInstall,
   onClose,
 }: Props) {
-  // Android checks and downloads; only the install is Android's own business
-  const android = !canUpdate && os === "android";
-  const shows = canUpdate || android;
+  // a phone checks for itself; only the install belongs to the platform
+  const phone = !canUpdate && (os === "android" || os === "ios");
+  const shows = canUpdate || phone;
   const busy = shows && (status.kind === "checking" || status.kind === "installing");
   let line: string;
   switch (status.kind) {
@@ -52,7 +52,10 @@ export function AboutDialog({
       line = `Version ${status.update.version} is available.`;
       break;
     case "manual":
-      line = `Version ${status.version} is available. Downloading it opens Android's installer.`;
+      line =
+        os === "ios"
+          ? `Version ${status.version} is available. Installing it hands the build to iOS.`
+          : `Version ${status.version} is available. Downloading it opens Android's installer.`;
       break;
     case "installing":
       line = status.progress === null ? "Downloading…" : `Downloading… ${Math.round(status.progress * 100)}%`;
@@ -61,9 +64,11 @@ export function AboutDialog({
       line = `Update check failed: ${status.message}`;
       break;
     default:
-      line = android
-        ? "NFrame Studio checks the update channel and hands the download to your browser; Android installs it."
-        : "Updates are delivered through the secure NFrame Studio update channel.";
+      line = !phone
+        ? "Updates are delivered through the secure NFrame Studio update channel."
+        : os === "ios"
+          ? "NFrame Studio checks the update channel and hands the build to iOS to install. Only a build signed for this iPhone will install."
+          : "NFrame Studio checks the update channel and hands the download to your browser; Android installs it.";
   }
   return (
     <div className="modal-backdrop" onClick={busy ? undefined : onClose}>

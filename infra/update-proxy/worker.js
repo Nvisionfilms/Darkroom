@@ -144,6 +144,112 @@ async function serveAsset(request, env, name) {
   return new Response(response.body, { status: 200, headers });
 }
 
+/** The bundle identifier an Ad Hoc build is signed with. */
+const IOS_BUNDLE_ID = "com.nvisi.darkroom";
+
+/** The newest release carrying an .ipa, with its version. */
+async function newestIpa(env) {
+  for (const release of await recentReleases(env)) {
+    const ipa = release.assets?.find((item) => item.name.toLowerCase().endsWith(".ipa"));
+    if (!ipa) continue;
+    const version = String(release.tag_name || "").replace(/^v/, "");
+    if (!version) continue;
+    return { release, ipa, version };
+  }
+  return null;
+}
+
+function xmlEscape(value) {
+  return String(value).replace(/[<>&'"]/g, (c) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;", "'": "&apos;", '"': "&quot;" })[c]);
+}
+
+/**
+ * The install manifest an iPhone reads.
+ *
+ * An iPhone will not install an app a browser downloaded, the way Android does
+ * with an APK. The only way onto the device outside the App Store is Apple's own
+ * installer, which is handed an `itms-services:` link naming a plist like this
+ * one; the plist in turn names the .ipa. Both have to be plain HTTPS with a
+ * valid certificate, which is the whole reason this runs here rather than being
+ * a file in the release.
+ *
+ * The build still has to be signed for the particular iPhone asking: an Ad Hoc
+ * profile only installs on the devices whose identifiers were registered when it
+ * was made. A phone that is not on the profile gets "Unable to Install" with no
+ * further explanation, and nothing served from here can change that.
+ */
+async function serveIosManifest(request, env) {
+  const found = await newestIpa(env);
+  if (!found) return new Response("No iPhone build has been published yet", { status: 404 });
+  const ipaUrl = publicAssetUrl(request, found.ipa.name);
+  const title = found.release.name || `NFrame Studio ${found.version}`;
+  const body = `<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>items</key>
+  <array>
+    <dict>
+      <key>assets</key>
+      <array>
+        <dict>
+          <key>kind</key>
+          <string>software-package</string>
+          <key>url</key>
+          <string>${xmlEscape(ipaUrl)}</string>
+        </dict>
+      </array>
+      <key>metadata</key>
+      <dict>
+        <key>bundle-identifier</key>
+        <string>${xmlEscape(IOS_BUNDLE_ID)}</string>
+        <key>bundle-version</key>
+        <string>${xmlEscape(found.version)}</string>
+        <key>kind</key>
+        <string>software</string>
+        <key>title</key>
+        <string>${xmlEscape(title)}</string>
+      </dict>
+    </dict>
+  </array>
+</dict>
+</plist>
+`;
+  return new Response(body, {
+    headers: {
+      "Content-Type": "application/xml; charset=utf-8",
+      "Cache-Control": "public, max-age=30, s-maxage=30",
+      "X-Content-Type-Options": "nosniff",
+    },
+  });
+}
+
+/**
+ * What the iPhone's own update check reads: the same shape as android.json, but
+ * the url is the `itms-services:` link rather than a file to download.
+ */
+async function serveIosJson(request, env) {
+  const found = await newestIpa(env);
+  if (!found) return new Response("No iPhone build has been published yet", { status: 404 });
+  const manifest = new URL(request.url);
+  manifest.pathname = "/darkroom/ios-manifest.plist";
+  manifest.search = "";
+  return Response.json(
+    {
+      version: found.version,
+      notes: found.release.name || `NFrame Studio ${found.version}`,
+      pub_date: found.release.published_at || found.release.created_at || new Date().toISOString(),
+      url: `itms-services://?action=download-manifest&url=${encodeURIComponent(manifest.toString())}`,
+    },
+    {
+      headers: {
+        "Cache-Control": "public, max-age=30, s-maxage=30",
+        "X-Content-Type-Options": "nosniff",
+      },
+    },
+  );
+}
+
 export default {
   async fetch(request, env) {
     try {
@@ -161,12 +267,22 @@ export default {
         return await serveAndroidJson(request, env);
       }
 
+      if (url.pathname === "/darkroom/ios.json") {
+        return await serveIosJson(request, env);
+      }
+
+      // Apple's installer fetches this one itself, by the url in the link above
+      if (url.pathname === "/darkroom/ios-manifest.plist") {
+        return await serveIosManifest(request, env);
+      }
+
       const prefix = "/darkroom/assets/";
       if (url.pathname.startsWith(prefix)) {
         const name = decodeURIComponent(url.pathname.slice(prefix.length));
         if (!name || name.includes("/") || name.includes("\\")) return new Response("Not found", { status: 404 });
         // every phone already out there asks for it under the assets path
         if (name === "android.json") return await serveAndroidJson(request, env);
+        if (name === "ios.json") return await serveIosJson(request, env);
         return await serveAsset(request, env, name);
       }
 

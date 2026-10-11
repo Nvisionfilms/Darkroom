@@ -722,6 +722,15 @@ fn platform() -> PlatformInfo {
 }
 
 /// Where a phone looks for its own release.
+///
+/// The two phones are told apart because what they can do with the answer
+/// differs. Android is handed an APK its own package installer opens. An iPhone
+/// cannot install anything a browser downloads, so it is handed an
+/// `itms-services:` link instead and Apple's installer takes it from there -
+/// which only works for a build signed for that particular device.
+#[cfg(target_os = "ios")]
+const MOBILE_MANIFEST: &str = "https://updates.nvisionfilms.com/darkroom/assets/ios.json";
+#[cfg(not(target_os = "ios"))]
 const MOBILE_MANIFEST: &str = "https://updates.nvisionfilms.com/darkroom/assets/android.json";
 
 /// The release a phone could install, or None where the app updates itself.
