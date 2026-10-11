@@ -131,7 +131,9 @@ from there. The update proxy generates both from the newest release carrying an
 Build the archive and attach it to the release for the version it came from:
 
 ```bash
-bun tauri ios build --export-method ad-hoc
+# tauri-cli 2.11 calls the Ad Hoc method "release-testing"; the three it takes
+# are app-store-connect, release-testing and debugging
+bun tauri ios build --export-method release-testing
 gh release upload v0.2.27 "src-tauri/gen/apple/build/arm64/Darkroom.ipa" --clobber
 ```
 
