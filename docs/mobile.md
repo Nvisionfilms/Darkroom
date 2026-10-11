@@ -88,7 +88,11 @@ ld: symbol(s) not found for architecture arm64
 ```
 
 Nothing is missing from the machine - each crate ships its `Package.swift` in
-the cargo registry - so the fix is to point project.yml at them:
+the cargo registry. They cannot be used where they lie, though, because SwiftPM
+takes a local package's identity from its directory name: tauri's would be
+`ios-api`, every plugin's would be `ios` and collide, and each plugin looks for
+Tauri at `../.tauri/tauri-api` by name. So they are copied into `gen/apple` in
+the layout they expect and project.yml is pointed at the copies:
 
 ```bash
 bun scripts/ios-swift-packages.mjs
