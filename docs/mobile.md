@@ -73,6 +73,32 @@ iOS apps can only be built on a Mac with Xcode.
    phone turn on **Settings > Privacy & Security > Developer Mode** (it only
    appears after the phone has been connected to Xcode once) and let it restart.
 
+### After every `ios init`: put the Swift packages back
+
+`tauri ios init` (2.11.4 and 2.11.5) generates a project.yml that references the
+Rust static library and Apple's SDK frameworks and nothing else - no Tauri Swift
+package, none of the plugins' Swift halves. Those define `_register_plugin`,
+`_on_webview_created`, `_run_plugin_command` and swift-rs's `_retain_object`, so
+the app fails to link with exactly those symbols missing:
+
+```
+Undefined symbols for architecture arm64:
+  "_register_plugin", referenced from: ... in libapp.a
+ld: symbol(s) not found for architecture arm64
+```
+
+Nothing is missing from the machine - each crate ships its `Package.swift` in
+the cargo registry - so the fix is to point project.yml at them:
+
+```bash
+bun scripts/ios-swift-packages.mjs
+(cd src-tauri/gen/apple && xcodegen generate)
+```
+
+This has to be re-run after every `tauri ios init`, because init rewrites
+project.yml. It is a workaround for a Tauri bug rather than a fix, and worth
+dropping the moment a release generates the packages itself.
+
 ### Register the iPhone (first time only)
 
 A new phone is not in your signing team yet, and the build stops with:
